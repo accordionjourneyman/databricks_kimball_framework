@@ -1,0 +1,35 @@
+table_name: {{ env }}_gold.dim_employee
+table_type: dimension
+scd_type: 2
+keys:
+  surrogate_key: employee_sk
+  natural_keys: [employee_id]
+
+# Use Identity Columns (requires Databricks Runtime with Identity Column support)
+surrogate_key_strategy: identity
+
+track_history_columns:
+  - department
+  - title
+  - manager_id
+
+default_rows:
+  -1: "Unknown"
+
+sources:
+  - name: {{ env }}_silver.employees
+    alias: e
+    cdc_strategy: cdf
+
+transformation_sql: |
+  SELECT
+    e.employee_id,
+    e.first_name,
+    e.last_name,
+    e.department,
+    e.title,
+    e.manager_id,
+    e.updated_at
+  FROM e
+
+audit_columns: true

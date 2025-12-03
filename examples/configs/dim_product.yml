@@ -1,0 +1,22 @@
+table_name: {{ env }}_gold.dim_product
+table_type: dimension
+scd_type: 1
+keys:
+  surrogate_key: product_sk
+  natural_keys: [product_id]
+
+sources:
+  - name: {{ env }}_silver.products
+    alias: p
+    cdc_strategy: cdf
+
+transformation_sql: |
+  SELECT
+    p.product_id,
+    p.name,
+    p.category,
+    p.unit_cost,
+    p.updated_at
+  FROM p
+
+audit_columns: true

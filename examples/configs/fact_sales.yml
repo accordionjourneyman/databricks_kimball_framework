@@ -1,0 +1,69 @@
+table_name: {{ env }}_gold.fact_sales
+table_type: fact
+
+# Merge keys: degenerate dimension used for MERGE condition (Kimball: facts have no SK)
+merge_keys: [order_item_id]
+
+# Enable schema evolution to automatically handle new columns
+schema_evolution: true
+
+# Handle Early Arriving Facts by generating skeleton dimension rows
+early_arriving_facts:
+  - dimension_table: {{ env }}_gold.dim_customer
+    fact_join_key: customer_id
+    dimension_join_key: customer_id
+    surrogate_key_col: customer_sk
+    surrogate_key_strategy: hash
+  - dimension_table: {{ env }}_gold.dim_employee
+    fact_join_key: employee_id
+    dimension_join_key: employee_id
+    surrogate_key_col: employee_sk
+    surrogate_key_strategy: identity
+
+# Liquid Clustering for optimal fact table queries
+# Cluster by primary foreign keys and date for best query performance
+cluster_by: [customer_sk, order_date]
+optimize_after_merge: true
+
+sources:
+  - name: {{ env }}_silver.order_items
+    alias: oi
+    cdc_strategy: cdf
+  - name: {{ env }}_silver.orders
+    alias: o
+    cdc_strategy: cdf # We join to orders to get the date/customer
+  - name: {{ env }}_gold.dim_customer
+    alias: c
+    cdc_strategy: full
+  - name: {{ env }}_gold.dim_product
+    alias: p
+    cdc_strategy: full
+  - name: {{ env }}_gold.dim_employee
+    alias: e
+    cdc_strategy: full
+
+transformation_sql: |
+  SELECT
+    oi.order_item_id,
+    o.order_id,
+    c.customer_sk,
+    p.product_sk,
+    e.employee_sk,
+    o.order_date,
+    oi.quantity,
+    oi.sales_amount,
+    (oi.sales_amount - (p.unit_cost * oi.quantity)) as net_profit
+  FROM oi
+  JOIN o ON oi.order_id = o.order_id
+  -- Point-in-time lookup for Customer (SCD2)
+  LEFT JOIN c ON o.customer_id = c.customer_id 
+             AND o.order_date >= c.__valid_from 
+             AND o.order_date < c.__valid_to
+  -- Point-in-time lookup for Employee (SCD2)
+  LEFT JOIN e ON o.employee_id = e.employee_id
+             AND o.order_date >= e.__valid_from
+             AND o.order_date < e.__valid_to
+  -- Current lookup for Product (SCD1)
+  LEFT JOIN p ON oi.product_id = p.product_id
+
+audit_columns: true

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kimball_framework"
+version = "0.1.1"
+description = "A declarative, CDF-based ETL framework for Databricks"
+authors = [{name = "Tiago Marques"}]
+license = { text = "Apache-2.0" }
+dependencies = [
+    "pyyaml",
+    "great-expectations>=0.16.0",
+    "jinja2"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "isort",
+    "mypy"
+]

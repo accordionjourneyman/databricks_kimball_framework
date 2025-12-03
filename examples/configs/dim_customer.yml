@@ -1,0 +1,42 @@
+table_name: {{ env }}_gold.dim_customer
+table_type: dimension
+scd_type: 2
+keys:
+  surrogate_key: customer_sk
+  natural_keys: [customer_id]
+
+# New configuration for surrogate key strategy
+surrogate_key_strategy: hash # Options: identity, hash, sequence
+
+# Columns that trigger a new SCD2 version when changed
+track_history_columns: 
+  - first_name
+  - last_name
+  - email
+  - address
+
+# Default rows to seed into the dimension
+default_rows:
+  -1: "Unknown"
+  -2: "N/A"
+
+# Liquid Clustering for optimal query performance
+cluster_by: [customer_id]
+optimize_after_merge: true
+
+sources:
+  - name: {{ env }}_silver.customers
+    alias: c
+    cdc_strategy: cdf
+
+transformation_sql: |
+  SELECT
+    c.customer_id,
+    c.first_name,
+    c.last_name,
+    c.email,
+    c.address,
+    c.updated_at
+  FROM c
+
+audit_columns: true
