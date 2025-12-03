@@ -206,10 +206,6 @@ Check that the source table has new versions: `DESCRIBE HISTORY source_table`
 ### Duplicate keys in SCD2
 Verify `natural_keys` uniquely identify business entities
 
-## Contributing
-
-See `learned_lessons.md` for architectural insights and design patterns.
-
 ## License
 
 Licensed under the Apache License, Version 2.0. See the `LICENSE` file for details.

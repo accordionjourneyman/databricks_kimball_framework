@@ -141,7 +141,6 @@ You should see:
 
 - Explore the `examples/` directory for more complex scenarios
 - Read `README.md` for full configuration reference
-- Check `learned_lessons.md` for architectural insights
 
 ## Common Issues
 
