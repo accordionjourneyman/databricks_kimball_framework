@@ -44,5 +44,5 @@ wheels/
 # Databricks
 .databricks-connect
 .env.temp
-
+.vscode
 .databricks
