@@ -50,6 +50,7 @@ sources:
   - name: {{ env }}_silver.customers
     alias: c
     cdc_strategy: cdf  # or: full
+    primary_keys: [customer_id]  # Required for CDF deduplication
 
 # Optional: Custom transformation SQL
 transformation_sql: |
@@ -145,6 +146,25 @@ How to read source data.
 |----------|-------------|-------------|
 | `cdf` | Change Data Feed (incremental) | Large tables, frequent updates |
 | `full` | Full table snapshot | Small dimensions, fact lookups |
+
+### primary_keys
+**Required for CDF sources.** List of columns that uniquely identify a row in the source table.
+
+Used for **deduplication** when a single CDF batch contains multiple operations on the same row (e.g., insert then update). Without this, you may get duplicate rows.
+
+**Example:**
+```yaml
+sources:
+  - name: silver.customers
+    alias: c
+    cdc_strategy: cdf
+    primary_keys: [customer_id]  # Single key
+
+  - name: silver.order_items
+    alias: oi
+    cdc_strategy: cdf
+    primary_keys: [order_id, line_number]  # Composite key
+```
 
 ### transformation_sql
 Spark SQL to transform source data.

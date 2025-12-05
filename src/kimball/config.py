@@ -9,7 +9,18 @@ class SourceConfig:
     name: str
     alias: str
     join_on: str = None
-    cdc_strategy: str = "cdf" # cdf, full, timestamp
+    cdc_strategy: str = "cdf"  # cdf, full, timestamp
+    primary_keys: List[str] = None  # Keys for CDF deduplication (prevents duplicate row errors)
+
+@dataclass
+class ForeignKeyConfig:
+    """
+    Kimball-style foreign key declaration for fact tables.
+    Explicitly declares which columns are surrogate key references to dimensions.
+    """
+    column: str  # Column name in the fact table (e.g., 'customer_sk')
+    references: str = None  # Optional: dimension table name for documentation/Bus Matrix
+    default_value: int = -1  # Default value for NULL handling (-1=Unknown, -2=N/A, -3=Error)
 
 @dataclass
 class TableConfig:
@@ -30,6 +41,7 @@ class TableConfig:
     cluster_by: List[str] = None  # Columns for Liquid Clustering
     optimize_after_merge: bool = False  # Run OPTIMIZE after MERGE
     merge_keys: List[str] = None  # For facts: columns used in MERGE condition (degenerate dimensions)
+    foreign_keys: List[ForeignKeyConfig] = None  # Kimball: explicit FK declarations for fact tables
 
 class ConfigLoader:
     """
@@ -63,7 +75,8 @@ class ConfigLoader:
                     name=s["name"],
                     alias=s.get("alias", s["name"].split(".")[-1]),
                     join_on=s.get("join_on"),
-                    cdc_strategy=s.get("cdc_strategy", "cdf")
+                    cdc_strategy=s.get("cdc_strategy", "cdf"),
+                    primary_keys=s.get("primary_keys")
                 ) for s in config.get("sources", [])
             ]
 
@@ -80,6 +93,16 @@ class ConfigLoader:
 
             # For facts, use merge_keys (degenerate dimension columns for MERGE condition)
             merge_keys = config.get("merge_keys", [])
+
+            # Parse foreign_keys for fact tables (Kimball-proper FK declarations)
+            foreign_keys_raw = config.get("foreign_keys", []) or []
+            foreign_keys = [
+                ForeignKeyConfig(
+                    column=fk["column"],
+                    references=fk.get("references"),
+                    default_value=fk.get("default_value", -1)
+                ) for fk in foreign_keys_raw
+            ]
 
             return TableConfig(
                 table_name=config["table_name"],
@@ -98,7 +121,8 @@ class ConfigLoader:
                 early_arriving_facts=config.get("early_arriving_facts"),
                 cluster_by=config.get("cluster_by"),
                 optimize_after_merge=config.get("optimize_after_merge", False),
-                merge_keys=merge_keys
+                merge_keys=merge_keys,
+                foreign_keys=foreign_keys if foreign_keys else None
             )
         except KeyError as e:
             raise ValueError(f"Missing required configuration field: {e}")

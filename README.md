@@ -2,16 +2,19 @@
 
 A declarative, production-ready framework for building Kimball-style data warehouses on Databricks using Delta Lake.
 
-## Release 0.1.1 (2025-12-03)
+## Release 0.1.1 (2025-01-06)
 
-- Short summary: fixes for imports, SCD merge behavior (SCD1 & SCD2), config parsing improvements, schema-evolution handling, Delta identity surrogate-key support, watermark and CDF ingestion fixes. See `CHANGELOG.md` for full details and migration notes.
+- **Renamed `WatermarkManager` → `ETLControlManager`** - Better reflects Kimball-style ETL auditing role.
+- **`KIMBALL_ETL_SCHEMA` environment variable** - Set once at notebook start, no need to pass to every Orchestrator.
+- See `CHANGELOG.md` for full details.
 
 ## Features
 
 - **Declarative YAML Configuration** - Define dimensions and facts without writing boilerplate code
 - **SCD Type 1 & Type 2** - Full support for slowly changing dimensions with multiple surrogate key strategies
 - **Change Data Feed (CDF) Integration** - Efficient incremental processing using Delta Lake CDF
-- **Watermark Management** - Automatic tracking of processed data versions for exactly-once semantics
+- **ETL Control Table** - Kimball-style batch auditing with watermarks, lifecycle tracking, and metrics
+- **Parallel Execution** - Wave-based parallel pipelines (dimensions before facts)
 - **Early Arriving Facts** - Automatic skeleton dimension row generation
 - **Schema Evolution** - Opt-in automatic schema merging
 - **Liquid Clustering** - Automatic table optimization with configurable clustering columns
@@ -27,7 +30,14 @@ pip install -e .
 
 ### Basic Usage
 
-1. **Define a Dimension** (`configs/dim_customer.yml`):
+1. **Configure ETL Schema** (set once at notebook start):
+
+```python
+import os
+os.environ["KIMBALL_ETL_SCHEMA"] = "prod_gold"  # Where to store ETL control table
+```
+
+2. **Define a Dimension** (`configs/dim_customer.yml`):
 
 ```yaml
 table_name: prod_gold.dim_customer
@@ -44,6 +54,7 @@ sources:
   - name: prod_silver.customers
     alias: c
     cdc_strategy: cdf
+    primary_keys: [customer_id]  # Required for CDF deduplication
 
 transformation_sql: |
   SELECT
@@ -57,13 +68,13 @@ transformation_sql: |
 audit_columns: true
 ```
 
-2. **Run the Pipeline**:
+3. **Run the Pipeline**:
 
 ```python
-from kimball.orchestrator import Orchestrator
+from kimball import Orchestrator
 
-orchestrator = Orchestrator("configs/dim_customer.yml")
-orchestrator.run()
+# Uses KIMBALL_ETL_SCHEMA from environment
+Orchestrator("configs/dim_customer.yml").run()
 ```
 
 ## Architecture
@@ -75,7 +86,7 @@ orchestrator.run()
          │
          ▼
 ┌─────────────────┐      ┌──────────────┐
-│  Orchestrator   │─────▶│  Watermark   │
+│  Orchestrator   │─────▶│ ETLControl   │
 └────────┬────────┘      │   Manager    │
          │               └──────────────┘
          ▼
@@ -99,6 +110,7 @@ orchestrator.run()
 ### Table Types
 
 #### Dimension (SCD Type 1)
+
 ```yaml
 table_type: dimension
 scd_type: 1
@@ -108,20 +120,32 @@ keys:
 ```
 
 #### Dimension (SCD Type 2)
+
 ```yaml
 table_type: dimension
 scd_type: 2
-surrogate_key_strategy: hash  # or: identity, sequence
+surrogate_key_strategy: hash # or: identity, sequence
 track_history_columns: [name, category, price]
 ```
 
 #### Fact Table
+
 ```yaml
 table_type: fact
 # Facts do not define surrogate or natural keys. Instead, provide
 # `merge_keys` which are the degenerate key columns used in the MERGE
 # condition (e.g., order_item_id for fact lines).
 merge_keys: [order_item_id]
+
+# Kimball-proper: Explicit foreign key declarations
+# Replaces the old naming convention hack (columns ending with '_sk')
+foreign_keys:
+  - column: customer_sk
+    references: prod_gold.dim_customer # Optional: for documentation/Bus Matrix
+    default_value: -1 # Default for NULL handling (-1=Unknown, -2=N/A, -3=Error)
+  - column: product_sk
+    references: prod_gold.dim_product
+
 schema_evolution: true
 early_arriving_facts:
   - dimension_table: prod_gold.dim_customer
@@ -138,23 +162,35 @@ early_arriving_facts:
 
 ## Key Concepts
 
-### Watermark Management
+### ETL Control Table
 
-The framework maintains a `kimball_watermarks` table tracking:
+The framework maintains an `etl_control` table tracking:
+
 - `target_table` - The table being loaded
 - `source_table` - The source being read
-- `last_processed_version` - Last Delta version processed
+- `last_processed_version` - Last Delta version processed (watermark)
+- `batch_id`, `batch_status` - Lifecycle tracking (RUNNING/SUCCESS/FAILED)
+- `rows_read`, `rows_written` - Row metrics
+- `batch_started_at`, `batch_completed_at` - Timing
+
+Configure once at notebook start:
+```python
+import os
+os.environ["KIMBALL_ETL_SCHEMA"] = "gold"  # Where to store ETL control table
+```
 
 This ensures exactly-once processing even across failures.
 
 ### SCD Type 2 Implementation
 
 Uses the "Union Approach" for atomic SCD2 updates:
+
 1. Compute `hashdiff` for change detection
 2. Duplicate changed rows (one for UPDATE, one for INSERT)
 3. Execute single MERGE with conditional logic
 
 Standard SCD2 columns:
+
 - `__valid_from` - Row effective date
 - `__valid_to` - Row expiration date (NULL for current)
 - `__is_current` - Boolean flag for current version
@@ -169,6 +205,7 @@ Standard SCD2 columns:
 ## Examples
 
 See the `examples/` directory for complete working examples:
+
 - `dim_customer.yml` - SCD2 dimension with hash keys
 - `dim_employee_scd2_identity.yml` - SCD2 with identity columns
 - `dim_product.yml` - SCD1 dimension
@@ -198,12 +235,23 @@ pytest --cov=kimball tests/
 ## Troubleshooting
 
 ### "No module named 'kimball'"
+
 Install in editable mode: `pip install -e .`
 
+### ETL control table not found
+
+Set the `KIMBALL_ETL_SCHEMA` environment variable:
+```python
+import os
+os.environ["KIMBALL_ETL_SCHEMA"] = "gold"
+```
+
 ### Watermark not advancing
+
 Check that the source table has new versions: `DESCRIBE HISTORY source_table`
 
 ### Duplicate keys in SCD2
+
 Verify `natural_keys` uniquely identify business entities
 
 ## License

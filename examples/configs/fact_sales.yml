@@ -4,6 +4,19 @@ table_type: fact
 # Merge keys: degenerate dimension used for MERGE condition (Kimball: facts have no SK)
 merge_keys: [order_item_id]
 
+# Kimball-proper: Explicit foreign key declarations
+# Default values: -1=Unknown, -2=N/A, -3=Error
+foreign_keys:
+  - column: customer_sk
+    references: {{ env }}_gold.dim_customer
+    default_value: -1
+  - column: product_sk
+    references: {{ env }}_gold.dim_product
+    default_value: -1
+  - column: employee_sk
+    references: {{ env }}_gold.dim_employee
+    default_value: -1
+
 # Enable schema evolution to automatically handle new columns
 schema_evolution: true
 
@@ -29,9 +42,11 @@ sources:
   - name: {{ env }}_silver.order_items
     alias: oi
     cdc_strategy: cdf
+    primary_keys: [order_item_id]  # Required for CDF deduplication
   - name: {{ env }}_silver.orders
     alias: o
-    cdc_strategy: cdf # We join to orders to get the date/customer
+    cdc_strategy: cdf
+    primary_keys: [order_id]  # Required for CDF deduplication
   - name: {{ env }}_gold.dim_customer
     alias: c
     cdc_strategy: full

@@ -28,6 +28,7 @@ sources:
   - name: {{ env }}_silver.customers
     alias: c
     cdc_strategy: cdf
+    primary_keys: [customer_id]  # Required for CDF deduplication
 
 transformation_sql: |
   SELECT

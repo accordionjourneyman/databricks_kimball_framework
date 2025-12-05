@@ -10,10 +10,19 @@ dbutils.library.restartPython()
 
 # COMMAND ----------
 
-# Imports
+# Imports and ETL Configuration
 import os
 from pyspark.sql.functions import col, lit, current_timestamp
 from delta.tables import DeltaTable
+
+# ============================================================================
+# SET ETL SCHEMA - Configure once, use everywhere
+# ============================================================================
+# This environment variable tells the Kimball framework where to store the
+# ETL control table (watermarks, batch tracking, metrics).
+# Set this ONCE at the start of your notebook - no need to pass it to every
+# Orchestrator or PipelineExecutor call.
+os.environ["KIMBALL_ETL_SCHEMA"] = "demo_gold"
 
 # Setup Paths
 # - Configs: Write to workspace (allowed for file I/O)
@@ -38,6 +47,7 @@ for db in ['demo_silver', 'demo_gold']:
 
 print(f"✓ Demo environment set up")
 print(f"✓ Config path: {CONFIG_PATH}")
+print(f"✓ ETL schema: {os.environ['KIMBALL_ETL_SCHEMA']}")
 print(f"✓ Using managed tables for data storage")
 
 # COMMAND ----------
@@ -61,6 +71,7 @@ sources:
   - name: demo_silver.customers
     alias: c
     cdc_strategy: cdf
+    primary_keys: [customer_id]  # Required for CDF deduplication
 transformation_sql: |
   SELECT customer_id, first_name, last_name, email, address, updated_at FROM c
 audit_columns: true
@@ -77,6 +88,7 @@ sources:
   - name: demo_silver.products
     alias: p
     cdc_strategy: cdf
+    primary_keys: [product_id]  # Required for CDF deduplication
 transformation_sql: |
   SELECT product_id, name, category, unit_cost, updated_at FROM p
 audit_columns: true
@@ -85,13 +97,26 @@ audit_columns: true
 fact_sales_yaml = """table_name: demo_gold.fact_sales
 table_type: fact
 merge_keys: [order_item_id]
+
+# Kimball-proper: Explicit foreign key declarations
+# Replaces the old naming convention hack (columns ending with '_sk')
+foreign_keys:
+  - column: customer_sk
+    references: demo_gold.dim_customer
+    default_value: -1  # Unknown customer
+  - column: product_sk
+    references: demo_gold.dim_product
+    default_value: -1  # Unknown product
+
 sources:
   - name: demo_silver.order_items
     alias: oi
     cdc_strategy: cdf
+    primary_keys: [order_item_id]  # Required for CDF deduplication
   - name: demo_silver.orders
     alias: o
     cdc_strategy: cdf
+    primary_keys: [order_id]  # Required for CDF deduplication
   - name: demo_gold.dim_customer
     alias: c
     cdc_strategy: full
@@ -214,16 +239,16 @@ from kimball import Orchestrator
 # Set Environment Variable for Jinja
 os.environ["env"] = "demo"
 
-# Run Dimensions
+# Run Dimensions (ETL schema already configured via KIMBALL_ETL_SCHEMA env var)
 print("Running dim_customer...")
-Orchestrator(f"{CONFIG_PATH}/dim_customer.yml", watermark_database="demo_gold").run()
+Orchestrator(f"{CONFIG_PATH}/dim_customer.yml").run()
 
 print("Running dim_product...")
-Orchestrator(f"{CONFIG_PATH}/dim_product.yml", watermark_database="demo_gold").run()
+Orchestrator(f"{CONFIG_PATH}/dim_product.yml").run()
 
 # Run Fact
 print("Running fact_sales...")
-Orchestrator(f"{CONFIG_PATH}/fact_sales.yml", watermark_database="demo_gold").run()
+Orchestrator(f"{CONFIG_PATH}/fact_sales.yml").run()
 
 print("Day 1 Pipeline Complete.")
 
@@ -286,14 +311,14 @@ print("Day 2 Data Ingested.")
 
 # Run Dimensions
 print("Running dim_customer (Day 2)...")
-Orchestrator(f"{CONFIG_PATH}/dim_customer.yml", watermark_database="demo_gold").run()
+Orchestrator(f"{CONFIG_PATH}/dim_customer.yml").run()
 
 print("Running dim_product (Day 2)...")
-Orchestrator(f"{CONFIG_PATH}/dim_product.yml", watermark_database="demo_gold").run()
+Orchestrator(f"{CONFIG_PATH}/dim_product.yml").run()
 
 # Run Fact
 print("Running fact_sales (Day 2)...")
-Orchestrator(f"{CONFIG_PATH}/fact_sales.yml", watermark_database="demo_gold").run()
+Orchestrator(f"{CONFIG_PATH}/fact_sales.yml").run()
 
 print("Day 2 Pipeline Complete.")
 

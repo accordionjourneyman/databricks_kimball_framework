@@ -26,8 +26,8 @@
    │        │        │        │        │
    ▼        ▼        ▼        ▼        ▼
 ┌─────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌────────┐
-│Water││ Data │ │Trans-│ │Merge │ │Skeleton│
-│mark ││Loader│ │former│ │  r   │ │  Gen   │
+│ ETL ││ Data │ │Trans-│ │Merge │ │Skeleton│
+│Ctrl ││Loader│ │former│ │  r   │ │  Gen   │
 └─────┘ └──────┘ └──────┘ └──────┘ └────────┘
    │        │        │        │        │
    ▼        ▼        ▼        ▼        ▼
@@ -35,7 +35,7 @@
 │            Delta Lake Tables             │
 │  • Source (Silver)                       │
 │  • Target (Gold)                         │
-│  • Watermarks (Control)                  │
+│  • ETL Control (Audit)                   │
 └──────────────────────────────────────────┘
 ```
 
@@ -49,21 +49,37 @@
 - Validates required fields
 - Supports Jinja2 templating
 
-### WatermarkManager
-**Responsibility:** Track processed data versions
+### ETLControlManager
+**Responsibility:** Kimball-style ETL auditing with watermarks and batch lifecycle tracking
+
+**Configuration:**
+```python
+import os
+os.environ["KIMBALL_ETL_SCHEMA"] = "gold"  # Set once at notebook start
+```
 
 **Key Methods:**
 - `get_watermark(target, source)` - Retrieve last processed version
-- `update_watermark(target, source, version)` - Record successful processing
+- `batch_start(target, source)` - Mark batch as RUNNING
+- `batch_complete(target, source, version, rows_read, rows_written)` - Mark SUCCESS
+- `batch_fail(target, source, error_message)` - Mark FAILED
 
 **Table Schema:**
 ```sql
-CREATE TABLE kimball_watermarks (
+CREATE TABLE etl_control (
   target_table STRING,
   source_table STRING,
   last_processed_version LONG,
+  batch_id STRING,
+  batch_started_at TIMESTAMP,
+  batch_completed_at TIMESTAMP,
+  batch_status STRING,  -- RUNNING, SUCCESS, FAILED
+  rows_read LONG,
+  rows_written LONG,
+  error_message STRING,
   updated_at TIMESTAMP
 )
+PARTITIONED BY (target_table, source_table)
 ```
 
 ### DataLoader
@@ -71,8 +87,18 @@ CREATE TABLE kimball_watermarks (
 
 **Key Methods:**
 - `load_full_snapshot(table)` - Full table read
-- `load_cdf(table, start_version)` - Incremental CDF read
+- `load_cdf(table, start_version, deduplicate_keys)` - Incremental CDF read with deduplication
 - `get_latest_version(table)` - Get current table version
+
+**CDF Deduplication:**
+When a single CDF batch contains multiple operations on the same row (e.g., insert then update), `deduplicate_keys` ensures only the final state is processed:
+```python
+# Config specifies primary_keys for deduplication
+sources:
+  - name: silver.customers
+    cdc_strategy: cdf
+    primary_keys: [customer_id]  # Used for deduplication
+```
 
 **CDF Metadata:**
 - `_change_type` - insert, update_preimage, update_postimage, delete
@@ -121,25 +147,27 @@ CREATE TABLE kimball_watermarks (
 
 ```
 1. ConfigLoader reads YAML
-2. WatermarkManager returns None (first run)
-3. DataLoader performs full snapshot
-4. Transformation SQL executes
-5. DeltaMerger inserts all rows
-6. WatermarkManager records version
+2. ETLControlManager.batch_start() marks RUNNING
+3. ETLControlManager.get_watermark() returns None (first run)
+4. DataLoader performs full snapshot
+5. Transformation SQL executes
+6. DeltaMerger inserts all rows
+7. ETLControlManager.batch_complete() marks SUCCESS + records version
 ```
 
 ### Incremental Load (With Watermark)
 
 ```
 1. ConfigLoader reads YAML
-2. WatermarkManager returns last version (e.g., V5)
-3. DataLoader reads CDF from V6+
-4. SkeletonGenerator checks for missing dimension keys
-5. Transformation SQL executes (CDF + snapshots)
-6. DeltaMerger:
+2. ETLControlManager.batch_start() marks RUNNING
+3. ETLControlManager.get_watermark() returns last version (e.g., V5)
+4. DataLoader reads CDF from V6+ (with deduplication via primary_keys)
+5. SkeletonGenerator checks for missing dimension keys
+6. Transformation SQL executes (CDF + snapshots)
+7. DeltaMerger:
    - SCD1: UPDATE existing, INSERT new
    - SCD2: EXPIRE changed, INSERT new versions
-7. WatermarkManager records new version
+8. ETLControlManager.batch_complete() marks SUCCESS + records new version
 ```
 
 ## Key Design Patterns
@@ -201,12 +229,12 @@ Re-running a batch is safe:
 
 ### Failure Scenarios
 
-| Failure Point | Recovery |
-|---------------|----------|
-| During source read | No data written, watermark unchanged, retry safe |
-| During transformation | No data written, watermark unchanged, retry safe |
-| During MERGE | Delta ACID rollback, watermark unchanged, retry safe |
-| After MERGE, before watermark | Data written, watermark old, re-run is no-op (hashdiff) |
+| Failure Point | Recovery | ETL Control Status |
+|---------------|----------|--------------------|
+| During source read | No data written, retry safe | FAILED |
+| During transformation | No data written, retry safe | FAILED |
+| During MERGE | Delta ACID rollback, retry safe | FAILED |
+| After MERGE, before batch_complete | Data written, re-run is no-op (hashdiff) | RUNNING (stale) |
 
 ## Performance Considerations
 
@@ -227,9 +255,10 @@ Not currently implemented, but recommended for:
 
 ## Future Enhancements
 
-- [ ] Automatic partitioning based on config
+- [x] ~~Automatic partitioning based on config~~ (Liquid Clustering)
+- [x] ~~Metrics and monitoring~~ (ETL Control Table with row counts)
+- [x] ~~Parallel execution~~ (PipelineExecutor, Databricks Jobs for_each)
 - [ ] Z-ordering optimization
-- [ ] Metrics and monitoring
 - [ ] Error bucket for quarantine
 - [ ] Late arriving dimension handling
 - [ ] Factless fact tables

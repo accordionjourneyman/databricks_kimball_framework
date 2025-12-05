@@ -20,6 +20,7 @@ sources:
   - name: {{ env }}_silver.employees
     alias: e
     cdc_strategy: cdf
+    primary_keys: [employee_id]  # Required for CDF deduplication
 
 transformation_sql: |
   SELECT

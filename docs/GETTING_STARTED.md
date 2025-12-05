@@ -69,6 +69,7 @@ sources:
   - name: dev_silver.customers
     alias: c
     cdc_strategy: cdf
+    primary_keys: [customer_id]  # Required for CDF deduplication
 
 transformation_sql: |
   SELECT
@@ -86,15 +87,14 @@ audit_columns: true
 ### Step 3: Run the Pipeline
 
 ```python
-from kimball.orchestrator import Orchestrator
-from pyspark.sql import SparkSession
+import os
+from kimball import Orchestrator
 
-# Initialize Spark (if not in Databricks notebook)
-spark = SparkSession.builder.getOrCreate()
+# Configure ETL schema once at notebook start
+os.environ["KIMBALL_ETL_SCHEMA"] = "dev_gold"
 
 # Run the pipeline
-orchestrator = Orchestrator("my_configs/dim_customer.yml", spark)
-orchestrator.run()
+Orchestrator("my_configs/dim_customer.yml").run()
 ```
 
 ### Step 4: Verify Results
@@ -148,6 +148,13 @@ You should see:
 - Verify source table exists and has data
 - Check that CDF is enabled on source table
 - Review Spark logs for errors
+
+**"ETL schema must be specified" error:**
+- Set `KIMBALL_ETL_SCHEMA` environment variable before running:
+  ```python
+  import os
+  os.environ["KIMBALL_ETL_SCHEMA"] = "dev_gold"
+  ```
 
 **"Table not found" error:**
 - Ensure you're using the correct catalog/schema names

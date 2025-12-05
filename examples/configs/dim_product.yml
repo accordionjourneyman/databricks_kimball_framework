@@ -9,6 +9,7 @@ sources:
   - name: {{ env }}_silver.products
     alias: p
     cdc_strategy: cdf
+    primary_keys: [product_id]  # Required for CDF deduplication
 
 transformation_sql: |
   SELECT
