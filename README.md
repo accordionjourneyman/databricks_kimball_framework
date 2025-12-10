@@ -2,7 +2,7 @@
 
 A declarative, production-ready framework for building Kimball-style data warehouses on Databricks using Delta Lake.
 
-## Release 0.1.1 (2025-01-06)
+## Release 0.1.1 (2025-12-06)
 
 - **Renamed `WatermarkManager` → `ETLControlManager`** - Better reflects Kimball-style ETL auditing role.
 - **`KIMBALL_ETL_SCHEMA` environment variable** - Set once at notebook start, no need to pass to every Orchestrator.
@@ -257,3 +257,4 @@ Verify `natural_keys` uniquely identify business entities
 ## License
 
 Licensed under the Apache License, Version 2.0. See the `LICENSE` file for details.
+
