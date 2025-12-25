@@ -253,7 +253,7 @@ class Orchestrator:
                 else:
                     raise ValueError("transformation_sql is required for multi-source pipelines")
 
-            # 4. Merge
+            # 4. Stage-then-Merge for concurrency resilience
             # Check if we have data to merge
             if transformed_df.isEmpty():
                 print("No data to merge. Skipping.")
@@ -298,12 +298,17 @@ class Orchestrator:
                             self.config.surrogate_key_strategy
                         )
 
-                print(f"Merging into {self.config.table_name}...")
+                # Stage the transformed data to minimize lock time
+                staging_table = f"{self.config.table_name}_staging_{batch_id}"
+                print(f"Staging data to {staging_table}...")
+                transformed_df.write.format("delta").mode("overwrite").saveAsTable(staging_table)
 
                 # Column pruning: Select only columns that exist in target schema
                 target_schema = spark.table(self.config.table_name).schema
                 target_columns = [f.name for f in target_schema.fields]
-                transformed_df = transformed_df.select(*[col(c) for c in transformed_df.columns if c in target_columns])
+                staging_df = spark.table(staging_table).select(*[col(c) for c in spark.table(staging_table).columns if c in target_columns])
+
+                print(f"Merging from {staging_table} into {self.config.table_name}...")
 
                 # Kimball: Dimensions use natural_keys for merge; Facts use merge_keys (degenerate dimensions)
                 if self.config.table_type == 'fact':
@@ -313,7 +318,7 @@ class Orchestrator:
 
                 self.merger.merge(
                     target_table_name=self.config.table_name,
-                    source_df=transformed_df,
+                    source_df=staging_df,
                     join_keys=join_keys, 
                     delete_strategy=self.config.delete_strategy,
                     batch_id=batch_id,
@@ -323,6 +328,9 @@ class Orchestrator:
                     surrogate_key_strategy=self.config.surrogate_key_strategy,
                     schema_evolution=self.config.schema_evolution
                 )
+
+                # Clean up staging table
+                spark.sql(f"DROP TABLE {staging_table}")
 
                 # 5. Optimize Table (if configured)
                 if self.config.optimize_after_merge:

@@ -7,10 +7,34 @@ from pyspark.sql.types import (
 )
 from delta.tables import DeltaTable
 from typing import List
+import time
+from functools import wraps
 from kimball.key_generator import KeyGenerator, IdentityKeyGenerator, HashKeyGenerator, SequenceKeyGenerator
 from kimball.hashing import compute_hashdiff
 from functools import reduce
 from databricks.sdk.runtime import spark
+
+def retry_on_concurrent_exception(max_retries=3, backoff_base=2):
+    """
+    Decorator to retry merge operations on ConcurrentAppendException with exponential backoff.
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    if "ConcurrentAppendException" in str(e) or "WriteConflictException" in str(e):
+                        if attempt < max_retries:
+                            wait_time = backoff_base ** attempt
+                            print(f"Concurrent write detected, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries + 1})")
+                            time.sleep(wait_time)
+                            continue
+                    raise
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
 
 class DeltaMerger:
     """
@@ -18,6 +42,7 @@ class DeltaMerger:
     Includes Audit Column injection and Delete handling.
     """
 
+    @retry_on_concurrent_exception()
     def merge(self, 
               target_table_name: str, 
               source_df: DataFrame, 

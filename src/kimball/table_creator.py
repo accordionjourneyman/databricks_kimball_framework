@@ -65,6 +65,17 @@ class TableCreator:
         # Enable Change Data Feed by default
         create_sql += "\nTBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"
 
+        # Add Delta Constraints for data integrity
+        constraints = []
+        if surrogate_key_col:
+            constraints.append(f"CONSTRAINT sk_not_null CHECK ({surrogate_key_col} IS NOT NULL)")
+        if "__is_current" in [f.name for f in schema_df.schema.fields]:
+            constraints.append("CONSTRAINT is_current_check CHECK (__is_current IN (true, false))")
+        
+        if constraints:
+            constraint_sql = ",\n  ".join(constraints)
+            create_sql += f"\nCONSTRAINTS (\n  {constraint_sql}\n)"
+
         if surrogate_key_col and surrogate_key_strategy == "identity":
             print(f"  - Surrogate key '{surrogate_key_col}' using IDENTITY column")
         if cluster_by:
