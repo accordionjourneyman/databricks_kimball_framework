@@ -176,10 +176,10 @@ class ETLControlManager:
         result = df.filter(
             (col("target_table") == target_table) &
             (col("source_table") == source_table)
-        ).select("last_processed_version").collect()
+        ).select("last_processed_version").first()
 
         if result:
-            return result[0]["last_processed_version"]
+            return result["last_processed_version"]
         return None
 
     def update_watermark(self, target_table: str, source_table: str, version: int):
@@ -297,17 +297,16 @@ class ETLControlManager:
         result = df.filter(
             (col("target_table") == target_table) &
             (col("source_table") == source_table)
-        ).collect()
+        ).first()
 
         if result:
-            row = result[0]
             return {
-                "batch_id": row["batch_id"],
-                "batch_status": row["batch_status"],
-                "batch_started_at": row["batch_started_at"],
-                "batch_completed_at": row["batch_completed_at"],
-                "last_processed_version": row["last_processed_version"],
-                "rows_read": row["rows_read"],
+                "batch_id": result["batch_id"],
+                "batch_status": result["batch_status"],
+                "batch_started_at": result["batch_started_at"],
+                "batch_completed_at": result["batch_completed_at"],
+                "last_processed_version": result["last_processed_version"],
+                "rows_read": result["rows_read"],
                 "rows_written": row["rows_written"],
                 "error_message": row["error_message"],
             }

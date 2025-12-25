@@ -49,6 +49,11 @@ class Orchestrator:
         self.config_loader = ConfigLoader()
         self.config = self.config_loader.load_config(config_path)
         
+        # Enable Photon and AQE for performance
+        spark.conf.set("spark.sql.adaptive.enabled", "true")
+        spark.conf.set("spark.sql.adaptive.skewJoin.enabled", "true")
+        spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
+        
         # Handle deprecated 'watermark_database' parameter
         if watermark_database is not None:
             warnings.warn(
@@ -293,6 +298,11 @@ class Orchestrator:
                         )
 
                 print(f"Merging into {self.config.table_name}...")
+
+                # Column pruning: Select only columns that exist in target schema
+                target_schema = spark.table(self.config.table_name).schema
+                target_columns = [f.name for f in target_schema.fields]
+                transformed_df = transformed_df.select(*[col(c) for c in transformed_df.columns if c in target_columns])
 
                 # Kimball: Dimensions use natural_keys for merge; Facts use merge_keys (degenerate dimensions)
                 if self.config.table_type == 'fact':

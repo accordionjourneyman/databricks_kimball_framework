@@ -69,7 +69,7 @@ class DeltaMerger:
                 key_gen = HashKeyGenerator(join_keys)
             elif surrogate_key_strategy == "sequence":
                 try:
-                    max_key_row = delta_table.toDF().agg({surrogate_key_col: "max"}).collect()[0][0]
+                    max_key_row = delta_table.toDF().agg({surrogate_key_col: "max"}).first()[0]
                     max_key = max_key_row if max_key_row else 0
                 except:
                     pass
@@ -220,7 +220,7 @@ class DeltaMerger:
             # This is expensive. For now, use 0 or fetch if feasible.
             # In production, use a separate generator service or Identity columns.
             try:
-                max_key_row = delta_table.toDF().agg({surrogate_key_col: "max"}).collect()[0][0]
+                max_key_row = delta_table.toDF().agg({surrogate_key_col: "max"}).first()[0]
                 max_key = max_key_row if max_key_row else 0
             except:
                 pass
@@ -345,8 +345,8 @@ class DeltaMerger:
         
         # Check if -1 exists
         # We use a quick check
-        existing_defaults = delta_table.toDF().filter(col(surrogate_key).isin([-1, -2, -3])).select(surrogate_key).collect()
-        existing_keys = {row[surrogate_key] for row in existing_defaults}
+        existing_defaults_df = delta_table.toDF().filter(col(surrogate_key).isin([-1, -2, -3])).select(surrogate_key).agg(collect_set(surrogate_key)).first()[0]
+        existing_keys = existing_defaults_df if existing_defaults_df else set()
         
         rows_to_insert = []
         
@@ -448,8 +448,8 @@ class DeltaMerger:
         delta_table = DeltaTable.forName(spark, target_table_name)
         
         # Check if defaults already exist
-        existing_defaults = delta_table.toDF().filter(col(surrogate_key).isin([-1, -2, -3])).select(surrogate_key).collect()
-        existing_keys = {row[surrogate_key] for row in existing_defaults}
+        existing_defaults_df = delta_table.toDF().filter(col(surrogate_key).isin([-1, -2, -3])).select(surrogate_key).agg(collect_set(surrogate_key)).first()[0]
+        existing_keys = existing_defaults_df if existing_defaults_df else set()
         
         rows_to_insert = []
         
