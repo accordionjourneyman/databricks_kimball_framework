@@ -59,12 +59,11 @@ class HashKeyGenerator(KeyGenerator):
 
 class SequenceKeyGenerator(KeyGenerator):
     """
-    Generates sequential integers.
+    Generates sequential integers using distributed generation.
     WARNING: This is not concurrency-safe without external locking or a dedicated sequence generator service.
-    This implementation uses window functions relative to a provided max key, which works for a single batch.
+    Uses monotonically_increasing_id for parallel generation (may have gaps).
     """
     def generate_keys(self, df: DataFrame, key_col_name: str, existing_max_key: int = 0) -> DataFrame:
-        window_spec = Window.orderBy(lit(1)) # Global order, might be slow for huge batches
-        # Better: use monotonically_increasing_id() + offset, but that's not strictly sequential (has gaps).
-        # For strict sequence:
-        return df.withColumn(key_col_name, row_number().over(window_spec) + lit(existing_max_key))
+        # Use monotonically_increasing_id for distributed, parallel key generation
+        # Adds offset for existing max key, may have gaps but scales across executors
+        return df.withColumn(key_col_name, monotonically_increasing_id() + lit(existing_max_key + 1))

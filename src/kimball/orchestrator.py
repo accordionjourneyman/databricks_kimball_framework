@@ -294,7 +294,8 @@ class Orchestrator:
                             self.config.table_name, 
                             target_schema, 
                             self.config.surrogate_key,
-                            self.config.default_rows
+                            self.config.default_rows,
+                            self.config.surrogate_key_strategy
                         )
 
                 print(f"Merging into {self.config.table_name}...")

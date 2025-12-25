@@ -422,16 +422,22 @@ class DeltaMerger:
             print(f"Seeding {len(rows_to_insert)} default rows into {target_table_name}...")
             df = spark.createDataFrame(rows_to_insert, schema=schema)
             
-            # Append to table
-            # We use append mode. Since we checked for existence, this is safe-ish.
-            # But to be atomic, we could use MERGE (Insert Only).
-            
-            (delta_table.alias("target")
-                .merge(df.alias("source"), f"target.{surrogate_key} = source.{surrogate_key}")
-                .whenNotMatchedInsertAll()
-                .execute())
+            # For IDENTITY columns, use OVERRIDING SYSTEM VALUE to allow explicit key values
+            if surrogate_key_strategy == "identity":
+                # Insert with OVERRIDING SYSTEM VALUE
+                df.createOrReplaceTempView("temp_defaults")
+                spark.sql(f"""
+                INSERT OVERRIDING SYSTEM VALUE INTO {target_table_name}
+                SELECT * FROM temp_defaults
+                """)
+            else:
+                # Standard MERGE for non-identity keys
+                (delta_table.alias("target")
+                    .merge(df.alias("source"), f"target.{surrogate_key} = source.{surrogate_key}")
+                    .whenNotMatchedInsertAll()
+                    .execute())
 
-    def ensure_scd1_defaults(self, target_table_name, schema, surrogate_key, default_values=None):
+    def ensure_scd1_defaults(self, target_table_name, schema, surrogate_key, default_values=None, surrogate_key_strategy="identity"):
         """
         Ensures that the standard SCD1 default rows (-1, -2, -3) exist in the table.
         Similar to SCD2 but without the SCD2-specific system columns.
@@ -507,10 +513,20 @@ class DeltaMerger:
             print(f"Seeding {len(rows_to_insert)} default rows into {target_table_name}...")
             df = spark.createDataFrame(rows_to_insert, schema=schema)
             
-            (delta_table.alias("target")
-                .merge(df.alias("source"), f"target.{surrogate_key} = source.{surrogate_key}")
-                .whenNotMatchedInsertAll()
-                .execute())
+            # For IDENTITY columns, use OVERRIDING SYSTEM VALUE to allow explicit key values
+            if surrogate_key_strategy == "identity":
+                # Insert with OVERRIDING SYSTEM VALUE
+                df.createOrReplaceTempView("temp_defaults")
+                spark.sql(f"""
+                INSERT OVERRIDING SYSTEM VALUE INTO {target_table_name}
+                SELECT * FROM temp_defaults
+                """)
+            else:
+                # Standard MERGE for non-identity keys
+                (delta_table.alias("target")
+                    .merge(df.alias("source"), f"target.{surrogate_key} = source.{surrogate_key}")
+                    .whenNotMatchedInsertAll()
+                    .execute())
 
     def optimize_table(self, table_name: str, cluster_by: List[str] = None):
         """
