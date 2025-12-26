@@ -117,8 +117,10 @@ class DeltaMerger:
                 try:
                     max_key_row = delta_table.toDF().agg({surrogate_key_col: "max"}).first()
                     max_key = max_key_row[0] if max_key_row else 0
-                except:
-                    pass
+                except PYSPARK_EXCEPTION_BASE as e:
+                    # Log warning but continue with max_key = 0
+                    print(f"Warning: Failed to retrieve max key for {surrogate_key_col}: {e}")
+                    max_key = 0
                 key_gen = SequenceKeyGenerator()
             else:
                 key_gen = None
@@ -276,8 +278,10 @@ class DeltaMerger:
             try:
                 max_key_row = delta_table.toDF().agg({surrogate_key_col: "max"}).first()
                 max_key = max_key_row[0] if max_key_row else 0
-            except:
-                pass
+            except PYSPARK_EXCEPTION_BASE as e:
+                # Log warning but continue with max_key = 0
+                print(f"Warning: Failed to retrieve max key for {surrogate_key_col}: {e}")
+                max_key = 0
             key_gen = SequenceKeyGenerator()
         else:
             raise ValueError(f"Unknown key strategy: {surrogate_key_strategy}")

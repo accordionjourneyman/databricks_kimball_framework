@@ -74,17 +74,6 @@ class TableCreator:
         # Enable Change Data Feed by default
         create_sql += "\nTBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"
 
-        # Add basic Delta Constraints
-        constraints = []
-        if surrogate_key_col:
-            constraints.append(f"CONSTRAINT sk_not_null CHECK ({surrogate_key_col} IS NOT NULL)")
-        if "__is_current" in [f.name for f in schema_df.schema.fields]:
-            constraints.append("CONSTRAINT is_current_check CHECK (__is_current IN (true, false))")
-        
-        if constraints:
-            constraint_sql = ",\n  ".join(constraints)
-            create_sql += f"\nCONSTRAINTS (\n  {constraint_sql}\n)"
-
         if surrogate_key_col and surrogate_key_strategy == "identity":
             print(f"  - Surrogate key '{surrogate_key_col}' using IDENTITY column")
         if cluster_by:
@@ -104,9 +93,39 @@ class TableCreator:
         except Exception as e:
             print(f"Warning: Could not enable Deletion Vectors: {e}")
         
+        # Apply basic Delta constraints after table creation
+        self.apply_basic_constraints(table_name, surrogate_key_col, schema_df)
+        
         # Apply additional constraints from config
         if config:
             self.apply_delta_constraints(table_name, config)
+
+    def apply_basic_constraints(self, table_name: str, surrogate_key_col: str = None, schema_df = None):
+        """
+        Apply basic Delta constraints using ALTER TABLE statements.
+        
+        Args:
+            table_name: Full table name
+            surrogate_key_col: Name of the surrogate key column
+            schema_df: DataFrame with schema information
+        """
+        # Apply surrogate key NOT NULL constraint
+        if surrogate_key_col:
+            alter_sql = f"ALTER TABLE {table_name} ADD CONSTRAINT sk_not_null CHECK ({surrogate_key_col} IS NOT NULL)"
+            try:
+                spark.sql(alter_sql)
+                print(f"Applied surrogate key NOT NULL constraint")
+            except Exception as e:
+                print(f"Warning: Could not apply surrogate key constraint: {e}")
+        
+        # Apply is_current boolean constraint for SCD2 tables
+        if schema_df and "__is_current" in [f.name for f in schema_df.schema.fields]:
+            alter_sql = f"ALTER TABLE {table_name} ADD CONSTRAINT is_current_check CHECK (__is_current IN (true, false))"
+            try:
+                spark.sql(alter_sql)
+                print(f"Applied is_current boolean constraint")
+            except Exception as e:
+                print(f"Warning: Could not apply is_current constraint: {e}")
 
     def apply_delta_constraints(self, table_name: str, config: dict):
         """

@@ -133,30 +133,47 @@ class StagingCleanupManager:
         spark.sql(f"DELETE FROM {self.registry_table} WHERE staging_table = '{staging_table}'")
         print(f"Unregistered staging table from cleanup: {staging_table}")
 
-    def cleanup_staging_tables(self, spark_session=None, pipeline_id: str = None):
-        """Clean up all registered staging tables, optionally filtered by pipeline."""
+    def cleanup_staging_tables(self, spark_session=None, pipeline_id: str = None, max_age_hours: int = 24):
+        """Clean up orphaned staging tables using TTL-based filtering."""
         if spark_session is None:
             spark_session = spark
 
+        # Build WHERE clause for TTL-based cleanup
+        where_conditions = []
+        
+        # Only clean tables older than max_age_hours to avoid interfering with concurrent pipelines
+        if max_age_hours > 0:
+            from pyspark.sql.functions import current_timestamp, expr
+            age_filter = f"current_timestamp() - created_at > INTERVAL {max_age_hours} HOURS"
+            where_conditions.append(age_filter)
+        
+        # Optional pipeline-specific filtering
+        if pipeline_id:
+            where_conditions.append(f"pipeline_id = '{pipeline_id}'")
+        
+        where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
+
         # Get tables to clean up
-        where_clause = f"WHERE pipeline_id = '{pipeline_id}'" if pipeline_id else ""
-        registry_df = spark.sql(f"SELECT staging_table FROM {self.registry_table} {where_clause}")
+        cleanup_df = spark.sql(f"""
+            SELECT staging_table FROM {self.registry_table}
+            WHERE {where_clause}
+        """)
 
         cleaned_count = 0
         failed_count = 0
 
-        for row in registry_df.collect():
+        for row in cleanup_df.collect():
             staging_table = row.staging_table
             try:
                 spark_session.sql(f"DROP TABLE IF EXISTS {staging_table}")
                 self.unregister_staging_table(staging_table)
                 cleaned_count += 1
-                print(f"Cleaned up staging table: {staging_table}")
+                print(f"Cleaned up orphaned staging table: {staging_table}")
             except Exception as e:
                 failed_count += 1
                 print(f"Failed to clean up {staging_table}: {e}")
 
-        print(f"Staging cleanup complete: {cleaned_count} cleaned, {failed_count} failed")
+        print(f"TTL-based staging cleanup complete: {cleaned_count} cleaned, {failed_count} failed")
         return cleaned_count, failed_count
 
 class PipelineCheckpoint:
@@ -361,13 +378,22 @@ class Orchestrator:
 
         return result_df
 
-    def cleanup_orphaned_staging_tables(self):
+    def cleanup_orphaned_staging_tables(self, pipeline_id: str = None, max_age_hours: int = 24):
         """
-        Clean up any orphaned staging tables from previous crashed runs.
-        Should be called at the beginning of pipeline execution.
+        Clean up orphaned staging tables from previous crashed runs.
+        Only cleans tables that are older than max_age_hours to avoid interfering with concurrent pipelines.
+        
+        Args:
+            pipeline_id: Optional pipeline ID to filter cleanup (for targeted cleanup)
+            max_age_hours: Maximum age of staging tables to clean up (default 24 hours)
         """
-        print("Checking for orphaned staging tables from previous runs...")
-        cleaned, failed = self.cleanup_manager.cleanup_staging_tables()
+        print(f"Checking for orphaned staging tables (max age: {max_age_hours}h)...")
+        
+        # Use TTL-based cleanup to avoid interfering with concurrent pipelines
+        cleaned, failed = self.cleanup_manager.cleanup_staging_tables(
+            pipeline_id=pipeline_id, 
+            max_age_hours=max_age_hours
+        )
         if cleaned > 0:
             print(f"Cleaned up {cleaned} orphaned staging tables")
         if failed > 0:
@@ -570,13 +596,13 @@ class Orchestrator:
                 checkpointed_df = transformed_df.localCheckpoint()
 
                 # Column pruning: Select only columns that exist in target schema
-                # Only perform pruning if target table already exists
-                if spark.catalog.tableExists(self.config.table_name):
+                # Only perform pruning if target table already exists AND schema evolution is disabled
+                if spark.catalog.tableExists(self.config.table_name) and not self.config.schema_evolution:
                     target_schema = spark.table(self.config.table_name).schema
                     target_columns = [f.name for f in target_schema.fields]
                     source_df = checkpointed_df.select(*[col(c) for c in checkpointed_df.columns if c in target_columns])
                 else:
-                    # First run - no target table exists yet, use all columns
+                    # First run or schema evolution enabled - use all columns
                     source_df = checkpointed_df
 
                 print(f"Merging directly from checkpointed DataFrame into {self.config.table_name}...")
