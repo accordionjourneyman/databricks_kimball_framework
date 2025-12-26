@@ -138,7 +138,10 @@ class StagingCleanupManager:
 
     def unregister_staging_table(self, staging_table: str):
         """Unregister a staging table after successful cleanup."""
-        spark.sql(f"DELETE FROM `{self.registry_table}` WHERE staging_table = '{staging_table}'")
+        # Use DeltaTable API to avoid SQL injection
+        from delta.tables import DeltaTable
+        registry_table = DeltaTable.forName(spark, self.registry_table)
+        registry_table.delete(col("staging_table") == staging_table)
         print(f"Unregistered staging table from cleanup: {staging_table}")
 
     def cleanup_staging_tables(self, spark_session=None, pipeline_id: str = None, max_age_hours: int = 24):
@@ -146,26 +149,20 @@ class StagingCleanupManager:
         if spark_session is None:
             spark_session = spark
 
-        # Build WHERE clause for TTL-based cleanup
-        where_conditions = []
+        # Use DataFrame API to avoid SQL injection
+        from pyspark.sql.functions import current_timestamp, expr, col
+        registry_df = spark.table(self.registry_table)
         
-        # Only clean tables older than max_age_hours to avoid interfering with concurrent pipelines
+        # Apply age filter
         if max_age_hours > 0:
-            from pyspark.sql.functions import current_timestamp, expr
-            age_filter = f"current_timestamp() - created_at > INTERVAL {max_age_hours} HOURS"
-            where_conditions.append(age_filter)
+            registry_df = registry_df.filter(current_timestamp() - col("created_at") > expr(f"INTERVAL {max_age_hours} HOURS"))
         
-        # Optional pipeline-specific filtering
+        # Apply pipeline filter
         if pipeline_id:
-            where_conditions.append(f"pipeline_id = '{pipeline_id}'")
-        
-        where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
+            registry_df = registry_df.filter(col("pipeline_id") == pipeline_id)
 
         # Get tables to clean up
-        cleanup_df = spark.sql(f"""
-            SELECT staging_table FROM `{self.registry_table}`
-            WHERE {where_clause}
-        """)
+        cleanup_df = registry_df.select("staging_table")
 
         cleaned_count = 0
         failed_count = 0
@@ -301,8 +298,11 @@ class PipelineCheckpoint:
 
     def list_checkpoints(self, pipeline_id: str = None) -> DataFrame:
         """List all checkpoints, optionally filtered by pipeline_id."""
-        where_clause = f"WHERE pipeline_id = '{pipeline_id}'" if pipeline_id else ""
-        return spark.sql(f"SELECT * FROM {self.checkpoint_table} {where_clause} ORDER BY pipeline_id, stage, timestamp DESC")
+        # Use DataFrame API to avoid SQL injection
+        checkpoint_df = spark.table(self.checkpoint_table)
+        if pipeline_id:
+            checkpoint_df = checkpoint_df.filter(col("pipeline_id") == pipeline_id)
+        return checkpoint_df.orderBy("pipeline_id", "stage", desc("timestamp"))
 
 class Orchestrator:
     """
@@ -329,7 +329,8 @@ class Orchestrator:
         # Deprecated parameter - for backward compatibility
         watermark_database: str = None,
         enable_metrics: bool = True,
-        checkpoint_table: str = None
+        checkpoint_table: str = None,
+        checkpoint_root: str = None
     ):
         """
         Args:
@@ -340,6 +341,9 @@ class Orchestrator:
             watermark_database: **Deprecated** - Use etl_schema instead.
             enable_metrics: Whether to collect QueryExecution metrics.
             checkpoint_table: Delta table for pipeline checkpoints (default: default.kimball_pipeline_checkpoints).
+            checkpoint_root: Root directory for DataFrame checkpoints (e.g., 'dbfs:/kimball/checkpoints/').
+                           If not provided, uses KIMBALL_CHECKPOINT_ROOT environment variable.
+                           Required for reliable checkpointing in production environments.
         """
         self.config_loader = ConfigLoader()
         self.config = self.config_loader.load_config(config_path)
@@ -375,6 +379,16 @@ class Orchestrator:
                     "  2. Pass etl_schema parameter to Orchestrator\n"
                     "  3. Use fully-qualified table names (db.table) in config"
                 )
+
+        # Handle checkpoint_root parameter
+        if checkpoint_root is None:
+            checkpoint_root = os.getenv("KIMBALL_CHECKPOINT_ROOT")
+        
+        if checkpoint_root:
+            print(f"Setting Spark checkpoint directory to: {checkpoint_root}")
+            spark.sparkContext.setCheckpointDir(checkpoint_root)
+        else:
+            print("Warning: No checkpoint_root provided. Using local checkpointing which is unreliable in production.")
 
         self.etl_control = ETLControlManager(etl_schema=etl_schema)
         self.loader = DataLoader()
@@ -553,6 +567,14 @@ class Orchestrator:
             if self.config.transformation_sql:
                 print("Executing Transformation SQL...")
                 transformed_df = spark.sql(self.config.transformation_sql)
+            else:
+                # No transformation SQL - use source data directly
+                if len(self.config.sources) == 1:
+                    source_name = self.config.sources[0].name
+                    transformed_df = active_dfs[source_name]
+                    print(f"Using source data directly (no transformation): {source_name}")
+                else:
+                    raise ValueError("transformation_sql is required for multi-source pipelines")
                 
                 # Kimball-proper: Handle NULL foreign keys using explicit FK declarations
                 # This replaces the old naming convention hack (endswith "_sk")
@@ -618,7 +640,8 @@ class Orchestrator:
                             self.config.table_name, 
                             target_schema, 
                             self.config.surrogate_key,
-                            self.config.default_rows
+                            self.config.default_rows,
+                            self.config.surrogate_key_strategy
                         )
                     elif self.config.scd_type == 1 and self.config.surrogate_key:
                         self.merger.ensure_scd1_defaults(

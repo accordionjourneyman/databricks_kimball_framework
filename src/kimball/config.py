@@ -3,6 +3,7 @@ import os
 from typing import Dict, Any, List
 from dataclasses import dataclass
 from jinja2 import Template
+from jsonschema import validate, ValidationError
 
 @dataclass
 class SourceConfig:
@@ -46,14 +47,127 @@ class TableConfig:
 class ConfigLoader:
     """
     Loads and validates YAML configuration files with Jinja2 templating support.
+    Validates against JSON Schema for robust configuration validation.
     """
+
+    # JSON Schema for YAML configuration validation
+    CONFIG_SCHEMA = {
+        "type": "object",
+        "required": ["table_name", "table_type", "sources"],
+        "properties": {
+            "table_name": {"type": "string", "minLength": 1},
+            "table_type": {
+                "type": "string",
+                "enum": ["dimension", "fact"]
+            },
+            "keys": {
+                "type": "object",
+                "properties": {
+                    "surrogate_key": {"type": "string"},
+                    "natural_keys": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    }
+                }
+            },
+            "sources": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "required": ["name"],
+                    "properties": {
+                        "name": {"type": "string", "minLength": 1},
+                        "alias": {"type": "string"},
+                        "join_on": {"type": "string"},
+                        "cdc_strategy": {
+                            "type": "string",
+                            "enum": ["cdf", "full", "timestamp"]
+                        },
+                        "primary_keys": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        }
+                    }
+                }
+            },
+            "transformation_sql": {"type": "string"},
+            "delete_strategy": {
+                "type": "string",
+                "enum": ["hard", "soft"]
+            },
+            "audit_columns": {"type": "boolean"},
+            "scd_type": {
+                "type": "integer",
+                "enum": [1, 2]
+            },
+            "track_history_columns": {
+                "type": "array",
+                "items": {"type": "string"}
+            },
+            "default_rows": {"type": "object"},
+            "surrogate_key_strategy": {
+                "type": "string",
+                "enum": ["identity", "hash", "sequence"]
+            },
+            "schema_evolution": {"type": "boolean"},
+            "early_arriving_facts": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "dimension_table": {"type": "string"},
+                        "fact_join_key": {"type": "string"},
+                        "dimension_join_key": {"type": "string"},
+                        "surrogate_key_col": {"type": "string"},
+                        "surrogate_key_strategy": {"type": "string"}
+                    }
+                }
+            },
+            "cluster_by": {
+                "type": "array",
+                "items": {"type": "string"}
+            },
+            "optimize_after_merge": {"type": "boolean"},
+            "merge_keys": {
+                "type": "array",
+                "items": {"type": "string"}
+            },
+            "foreign_keys": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["column"],
+                    "properties": {
+                        "column": {"type": "string"},
+                        "references": {"type": "string"},
+                        "default_value": {"type": "integer"}
+                    }
+                }
+            }
+        },
+        "allOf": [
+            {
+                "if": {"properties": {"table_type": {"const": "dimension"}}},
+                "then": {
+                    "required": ["keys"],
+                    "properties": {
+                        "keys": {
+                            "required": ["surrogate_key", "natural_keys"]
+                        }
+                    }
+                }
+            }
+        ]
+    }
 
     def __init__(self, env_vars: Dict[str, str] = None):
         self.env_vars = env_vars or os.environ.copy()
 
     def load_config(self, file_path: str) -> TableConfig:
         """
-        Reads a YAML file, renders it with Jinja2 using env_vars, and parses it into a TableConfig object.
+        Reads a YAML file, renders it with Jinja2 using env_vars, validates against JSON Schema,
+        and parses it into a TableConfig object.
         """
         with open(file_path, 'r') as f:
             raw_content = f.read()
@@ -65,10 +179,16 @@ class ConfigLoader:
         # Parse YAML
         config_dict = yaml.safe_load(rendered_content)
 
+        # Validate against JSON Schema
+        try:
+            validate(instance=config_dict, schema=self.CONFIG_SCHEMA)
+        except ValidationError as e:
+            raise ValueError(f"Configuration validation error in {file_path}: {e.message}")
+
         return self._parse_dict(config_dict)
 
     def _parse_dict(self, config: Dict[str, Any]) -> TableConfig:
-        """Validates and converts dictionary to TableConfig."""
+        """Converts validated dictionary to TableConfig with Kimball-specific business logic."""
         try:
             sources = [
                 SourceConfig(
@@ -83,8 +203,7 @@ class ConfigLoader:
             table_type = config.get("table_type", "fact")
             keys_cfg = config.get("keys", {}) or {}
 
-            # Kimball: Dimensions MUST have surrogate_key and natural_keys.
-            # Facts should NOT have keys; they use merge_keys (degenerate dimensions) instead.
+            # Kimball-specific business logic validation (beyond schema validation)
             if table_type == "dimension":
                 if not keys_cfg.get("surrogate_key"):
                     raise ValueError("Dimensions require keys.surrogate_key")

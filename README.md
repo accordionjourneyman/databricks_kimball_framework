@@ -73,8 +73,20 @@ audit_columns: true
 ```python
 from kimball import Orchestrator
 
-# Uses KIMBALL_ETL_SCHEMA from environment
-Orchestrator("configs/dim_customer.yml").run()
+# Configure checkpoint directory for reliable DataFrame checkpointing
+orchestrator = Orchestrator(
+    config_path="configs/dim_customer.yml",
+    checkpoint_root="dbfs:/kimball/checkpoints/"  # Required for production reliability
+)
+orchestrator.run()
+```
+
+**Environment Variables** (set once at notebook/cluster start):
+
+```python
+import os
+os.environ["KIMBALL_ETL_SCHEMA"] = "prod_gold"  # ETL control table location
+os.environ["KIMBALL_CHECKPOINT_ROOT"] = "dbfs:/kimball/checkpoints/"  # DataFrame checkpoints
 ```
 
 ## Architecture
@@ -106,6 +118,19 @@ Orchestrator("configs/dim_customer.yml").run()
 ```
 
 ## Configuration Reference
+
+### Configuration Validation
+
+YAML configurations are automatically validated against a JSON Schema to catch configuration errors early. The validation ensures:
+
+- Required fields are present (`table_name`, `table_type`, `sources`)
+- Field types match expected formats (strings, arrays, booleans, etc.)
+- Enum values are valid (e.g., `table_type` must be "dimension" or "fact")
+- Dimensions require `keys.surrogate_key` and `keys.natural_keys`
+- Sources have required `name` field
+- CDC strategies are valid ("cdf", "full", "timestamp")
+
+Invalid configurations will raise descriptive `ValueError` exceptions at load time.
 
 ### Table Types
 

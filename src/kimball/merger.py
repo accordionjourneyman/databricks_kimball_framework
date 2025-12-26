@@ -373,7 +373,7 @@ class DeltaMerger:
         sql = f"ALTER TABLE `{table_name}` SET TBLPROPERTIES ('delta.schema.autoMerge.enabled' = '{val}')"
         spark.sql(sql)
 
-    def ensure_scd2_defaults(self, target_table_name, schema, surrogate_key, default_values=None):
+    def ensure_scd2_defaults(self, target_table_name, schema, surrogate_key, default_values=None, surrogate_key_strategy="identity"):
         """
         Ensures that the standard SCD2 default rows (-1, -2, -3) exist in the table.
         """
@@ -472,9 +472,11 @@ class DeltaMerger:
             if surrogate_key_strategy == "identity":
                 # Insert with OVERRIDING SYSTEM VALUE
                 df.createOrReplaceTempView("temp_defaults")
+                column_names = [f.name for f in df.schema.fields]
+                columns_str = ", ".join(f"`{col}`" for col in column_names)
                 spark.sql(f"""
-                INSERT OVERRIDING SYSTEM VALUE INTO {target_table_name}
-                SELECT * FROM temp_defaults
+                INSERT OVERRIDING SYSTEM VALUE INTO `{target_table_name}` ({columns_str})
+                SELECT {columns_str} FROM temp_defaults
                 """)
             else:
                 # Standard MERGE for non-identity keys
@@ -563,9 +565,11 @@ class DeltaMerger:
             if surrogate_key_strategy == "identity":
                 # Insert with OVERRIDING SYSTEM VALUE
                 df.createOrReplaceTempView("temp_defaults")
+                column_names = [f.name for f in df.schema.fields]
+                columns_str = ", ".join(f"`{col}`" for col in column_names)
                 spark.sql(f"""
-                INSERT OVERRIDING SYSTEM VALUE INTO {target_table_name}
-                SELECT * FROM temp_defaults
+                INSERT OVERRIDING SYSTEM VALUE INTO `{target_table_name}` ({columns_str})
+                SELECT {columns_str} FROM temp_defaults
                 """)
             else:
                 # Standard MERGE for non-identity keys

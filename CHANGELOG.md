@@ -7,12 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **YAML Configuration Schema Validation**: Added JSON Schema validation for YAML configs to catch configuration errors early with descriptive error messages
+- **Enhanced Configuration Robustness**: Automatic validation of required fields, data types, enum values, and Kimball-specific business rules
+
 ### Planned
 - Early Arriving Facts support for referential integrity handling
 - Advanced SCD patterns (SCD3, SCD4, SCD6)
 - Data quality framework integration
 - Unity Catalog integration examples
 - Performance benchmarking suite
+
+---
+
+## [0.2.0] - 2025-12-26
+
+### Added
+- Resilient `StagingTableManager` context manager to prevent workspace pollution from failed ETL operations
+- `checkpoint_root` parameter to `Orchestrator` constructor for reliable DataFrame checkpointing
+- Support for Databricks Runtime 13+ exception patterns in retry decorator
+- `KIMBALL_CHECKPOINT_ROOT` environment variable support
+- `scripts/validate_fixes.py` for framework health checks
+
+### Changed
+- Shifted DataFrame checkpoints to persistent DBFS storage to support large-scale shuffles and prevent "No such file" errors
+- Updated hashing to use vectorized `struct` operations for Photon compatibility
+- Improved error handling in metadata lookups to prevent TypeError on empty results
+- Removed redundant `.count()` performance anti-patterns in merger operations
+
+### Fixed
+- SQL injection vulnerabilities in DDL operations with proper identifier escaping
+- Generic exception handling replaced with specific PySpark exception types
+- Unsafe metadata access patterns that could fail on empty DataFrames
 
 ---
 
