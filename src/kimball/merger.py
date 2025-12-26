@@ -9,7 +9,14 @@ from delta.tables import DeltaTable
 from typing import List
 import time
 from functools import wraps
-import pyspark.sql.utils
+try:
+    # Databricks Runtime 13+ - errors moved to pyspark.errors
+    from pyspark.errors import PySparkException
+    PYSPARK_EXCEPTION_BASE = PySparkException
+except ImportError:
+    # Fallback for older Databricks Runtime versions
+    import pyspark.sql.utils
+    PYSPARK_EXCEPTION_BASE = pyspark.sql.utils.AnalysisException
 from kimball.key_generator import KeyGenerator, IdentityKeyGenerator, HashKeyGenerator, SequenceKeyGenerator
 from kimball.hashing import compute_hashdiff
 from functools import reduce
@@ -18,6 +25,7 @@ from databricks.sdk.runtime import spark
 def retry_on_concurrent_exception(max_retries=3, backoff_base=2):
     """
     Decorator to retry merge operations on ConcurrentAppendException with exponential backoff.
+    Updated for Databricks Runtime 13+ compatibility.
     """
     def decorator(func):
         @wraps(func)
@@ -26,15 +34,16 @@ def retry_on_concurrent_exception(max_retries=3, backoff_base=2):
                 try:
                     return func(*args, **kwargs)
                 except Exception as e:
-                    # Only retry on specific PySpark analysis exceptions
-                    if isinstance(e, pyspark.sql.utils.AnalysisException):
-                        error_str = str(e)
-                        if "ConcurrentAppendException" in error_str or "WriteConflictException" in error_str:
-                            if attempt < max_retries:
-                                wait_time = backoff_base ** attempt
-                                print(f"Concurrent write detected, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries + 1})")
-                                time.sleep(wait_time)
-                                continue
+                    # Check for concurrent write exceptions in modern Databricks Runtime
+                    error_str = str(e)
+                    is_concurrent = any(x in error_str for x in ["ConcurrentAppendException", "WriteConflictException"])
+                    
+                    # Only retry on concurrent exceptions, not all PySpark exceptions
+                    if is_concurrent and attempt < max_retries:
+                        wait_time = backoff_base ** attempt
+                        print(f"Concurrent write detected, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries + 1})")
+                        time.sleep(wait_time)
+                        continue
                     raise
             return func(*args, **kwargs)
         return wrapper

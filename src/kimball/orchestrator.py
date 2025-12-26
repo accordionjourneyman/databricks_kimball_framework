@@ -84,13 +84,85 @@ class QueryMetricsCollector:
             'avg_query_time_ms': total_time / len(self.metrics) if self.metrics else 0
         }
 
-class PipelineCheckpoint:
+class StagingCleanupManager:
+    """
+    Manages cleanup of staging tables with crash resilience.
+    Registers staging tables in persistent storage and provides cleanup methods.
+    """
+    
+    def __init__(self, cleanup_registry_path: str = "/dbfs/kimball_staging_cleanup.json"):
+        self.cleanup_registry_path = cleanup_registry_path
+        self.active_staging_tables = set()
+        self._load_registry()
+    
+    def _load_registry(self):
+        """Load existing cleanup registry."""
+        try:
+            if os.path.exists(self.cleanup_registry_path):
+                with open(self.cleanup_registry_path, 'r') as f:
+                    registry = json.load(f)
+                    self.active_staging_tables = set(registry.get('active_tables', []))
+        except Exception as e:
+            print(f"Warning: Failed to load cleanup registry: {e}")
+            self.active_staging_tables = set()
+    
+    def _save_registry(self):
+        """Save cleanup registry to persistent storage."""
+        try:
+            registry = {
+                'active_tables': list(self.active_staging_tables),
+                'last_updated': time.time()
+            }
+            with open(self.cleanup_registry_path, 'w') as f:
+                json.dump(registry, f, indent=2)
+        except Exception as e:
+            print(f"Warning: Failed to save cleanup registry: {e}")
+    
+    def register_staging_table(self, table_name: str):
+        """Register a staging table for cleanup."""
+        self.active_staging_tables.add(table_name)
+        self._save_registry()
+        print(f"Registered staging table for cleanup: {table_name}")
+    
+    def unregister_staging_table(self, table_name: str):
+        """Unregister a staging table after successful cleanup."""
+        self.active_staging_tables.discard(table_name)
+        self._save_registry()
+    
+    def cleanup_staging_tables(self, spark_session=None):
+        """Clean up all registered staging tables."""
+        if spark_session is None:
+            from databricks.sdk.runtime import spark
+            spark_session = spark
+        
+        cleaned_count = 0
+        failed_count = 0
+        
+        for table_name in list(self.active_staging_tables):
+            try:
+                spark_session.sql(f"DROP TABLE IF EXISTS {table_name}")
+                self.unregister_staging_table(table_name)
+                cleaned_count += 1
+                print(f"Cleaned up staging table: {table_name}")
+            except Exception as e:
+                failed_count += 1
+                print(f"Failed to cleanup staging table {table_name}: {e}")
+        
+        print(f"Staging cleanup complete: {cleaned_count} cleaned, {failed_count} failed")
+        return cleaned_count, failed_count
     """
     Handles checkpointing for complex DAG pipelines.
     Saves and restores pipeline state to enable resumability.
+    
+    Uses persistent storage (DBFS) instead of ephemeral /tmp for reliability.
     """
     
-    def __init__(self, checkpoint_dir: str = "/tmp/kimball_checkpoints"):
+    def __init__(self, checkpoint_dir: str = None):
+        # Use DBFS for persistent storage instead of /tmp
+        # Allow override via environment variable for testing
+        if checkpoint_dir is None:
+            checkpoint_dir = os.getenv("KIMBALL_CHECKPOINT_DIR", "/dbfs/kimball_checkpoints")
+        
         self.checkpoint_dir = checkpoint_dir
         os.makedirs(checkpoint_dir, exist_ok=True)
         
@@ -211,9 +283,10 @@ class Orchestrator:
         self.skeleton_generator = SkeletonGenerator()
         self.table_creator = TableCreator()
         
-        # Initialize observability features
+        # Initialize observability and resilience features
         self.metrics_collector = QueryMetricsCollector() if enable_metrics else None
         self.checkpoint_manager = PipelineCheckpoint(checkpoint_dir)
+        self.cleanup_manager = StagingCleanupManager()
 
     def _add_system_columns(self, df, scd_type: int, surrogate_key: str, surrogate_key_strategy: str):
         """
@@ -244,6 +317,18 @@ class Orchestrator:
 
         return result_df
 
+    def cleanup_orphaned_staging_tables(self):
+        """
+        Clean up any orphaned staging tables from previous crashed runs.
+        Should be called at the beginning of pipeline execution.
+        """
+        print("Checking for orphaned staging tables from previous runs...")
+        cleaned, failed = self.cleanup_manager.cleanup_staging_tables()
+        if cleaned > 0:
+            print(f"Cleaned up {cleaned} orphaned staging tables")
+        if failed > 0:
+            print(f"Warning: {failed} staging tables could not be cleaned up")
+
     def run(self, max_retries: int = 0):
         """
         Execute the ETL pipeline with batch lifecycle tracking.
@@ -256,6 +341,10 @@ class Orchestrator:
             dict: Summary of the pipeline run including rows_read and rows_written.
         """
         print(f"Starting pipeline for {self.config.table_name}")
+        
+        # Clean up any orphaned staging tables from crashed runs
+        self.cleanup_orphaned_staging_tables()
+        
         batch_id = str(uuid.uuid4())
         
         # Start metrics collection
@@ -436,6 +525,9 @@ class Orchestrator:
                 try:
                     print(f"Staging data to {staging_table}...")
                     transformed_df.write.format("delta").mode("overwrite").saveAsTable(staging_table)
+                    
+                    # Register staging table for cleanup (crash resilience)
+                    self.cleanup_manager.register_staging_table(staging_table)
 
                     # Column pruning: Select only columns that exist in target schema
                     target_schema = spark.table(self.config.table_name).schema
@@ -465,6 +557,8 @@ class Orchestrator:
                 finally:
                     # Clean up staging table - ensure this runs even if merge fails
                     spark.sql(f"DROP TABLE IF EXISTS {staging_table}")
+                    # Unregister from cleanup manager after successful cleanup
+                    self.cleanup_manager.unregister_staging_table(staging_table)
 
                 # 5. Optimize Table (if configured)
                 if self.config.optimize_after_merge:
