@@ -229,6 +229,24 @@ Standard SCD2 columns:
 - **Hash** - xxhash64 of natural keys (deterministic)
 - **Sequence** - Row number + max key (use with caution)
 
+### Performance & Optimization Options
+
+```yaml
+# Optional: Enable expensive checkpoint() for large DAG truncation (default: false)
+enable_lineage_truncation: true  # Use checkpoint() instead of localCheckpoint()
+
+# Optional: Liquid Clustering for better query performance
+cluster_by: [date_col, region_col]  # Columns for Z-order clustering
+
+# Optional: Run OPTIMIZE after MERGE operations
+optimize_after_merge: true
+```
+
+**Performance Notes:**
+- `enable_lineage_truncation: true` uses `checkpoint()` which writes to disk but truncates the Spark lineage graph. Only enable for pipelines with 100+ stages.
+- `cluster_by` enables Delta Lake Liquid Clustering for optimal query performance.
+- `optimize_after_merge` runs `OPTIMIZE` after each MERGE to compact small files.
+
 ## Examples
 
 See the `examples/` directory for complete working examples:

@@ -43,6 +43,7 @@ class TableConfig:
     optimize_after_merge: bool = False  # Run OPTIMIZE after MERGE
     merge_keys: List[str] = None  # For facts: columns used in MERGE condition (degenerate dimensions)
     foreign_keys: List[ForeignKeyConfig] = None  # Kimball: explicit FK declarations for fact tables
+    enable_lineage_truncation: bool = False  # Enable checkpoint() for large DAG truncation (expensive)
 
 class ConfigLoader:
     """

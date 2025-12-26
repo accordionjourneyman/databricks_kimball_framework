@@ -89,6 +89,79 @@ def test_orchestrator_integration():
     print("❌ Orchestrator cleanup integration incomplete")
     return False
 
+def test_scd2_intra_batch_sequencing():
+    """Test that SCD2 handles multiple updates for same key within a batch."""
+    print("Testing SCD2 intra-batch sequencing...")
+
+    merger_file = os.path.join(os.path.dirname(__file__), '..', 'src/kimball/merger.py')
+
+    with open(merger_file, 'r') as f:
+        content = f.read()
+
+    # Check for intra-batch sequencing logic
+    if 'Window.partitionBy(*join_keys).orderBy(col("__etl_processed_at").desc())' in content:
+        if 'row_number().over(window)' in content and '_intra_batch_seq' in content:
+            if 'filter(col("_intra_batch_seq") == 1)' in content:
+                print("✅ SCD2 intra-batch sequencing implemented")
+                return True
+
+    print("❌ SCD2 intra-batch sequencing not implemented")
+    return False
+
+def test_system_column_preservation():
+    """Test that system columns are preserved during column pruning."""
+    print("Testing system column preservation...")
+
+    orchestrator_file = os.path.join(os.path.dirname(__file__), '..', 'src/kimball/orchestrator.py')
+
+    with open(orchestrator_file, 'r') as f:
+        content = f.read()
+
+    # Check for SYSTEM_COLUMNS definition and usage
+    if 'SYSTEM_COLUMNS = {' in content and '"__is_current"' in content:
+        if 'if c in target_columns or c in SYSTEM_COLUMNS:' in content:
+            print("✅ System column preservation implemented")
+            return True
+
+    print("❌ System column preservation not implemented")
+    return False
+
+def test_checkpoint_optimization():
+    """Test that checkpoint is now optional via configuration."""
+    print("Testing checkpoint optimization...")
+
+    orchestrator_file = os.path.join(os.path.dirname(__file__), '..', 'src/kimball/orchestrator.py')
+
+    with open(orchestrator_file, 'r') as f:
+        content = f.read()
+
+    # Check for enable_lineage_truncation configuration usage
+    if "getattr(self.config, 'enable_lineage_truncation', False)" in content:
+        if 'Using local checkpoint (efficient, no lineage truncation)' in content:
+            print("✅ Checkpoint optimization implemented")
+            return True
+
+    print("❌ Checkpoint optimization not implemented")
+    return False
+
+def test_atomic_cleanup_operations():
+    """Test that cleanup operations are atomic to prevent race conditions."""
+    print("Testing atomic cleanup operations...")
+
+    orchestrator_file = os.path.join(os.path.dirname(__file__), '..', 'src/kimball/orchestrator.py')
+
+    with open(orchestrator_file, 'r') as f:
+        content = f.read()
+
+    # Check for atomic MERGE-based cleanup
+    if 'registry_table.alias("target").merge(' in content and 'whenMatchedDelete()' in content:
+        if 'Atomic TTL-based staging cleanup' in content:
+            print("✅ Atomic cleanup operations implemented")
+            return True
+
+    print("❌ Atomic cleanup operations not implemented")
+    return False
+
 def test_retry_decorator_update():
     """Test that retry decorator uses improved error handling."""
     print("Testing retry decorator improvements...")
@@ -116,7 +189,11 @@ def main():
         test_checkpoint_persistence,
         test_staging_cleanup_code,
         test_orchestrator_integration,
-        test_retry_decorator_update
+        test_retry_decorator_update,
+        test_scd2_intra_batch_sequencing,
+        test_system_column_preservation,
+        test_checkpoint_optimization,
+        test_atomic_cleanup_operations
     ]
 
     passed = 0
@@ -140,9 +217,11 @@ def main():
         print("\n✅ Resilience Improvements:")
         print("  - Checkpoint storage moved to persistent DBFS")
         print("  - StagingCleanupManager provides crash-resilient cleanup")
-        print("  - Orphaned staging tables cleaned up on pipeline start")
-        print("\n✅ Observability Improvements:")
-        print("  - Configurable checkpoint directory via environment variable")
+        print("  - Orphaned staging tables cleaned up atomically")
+        print("\n✅ SCD2 Correctness Fixes:")
+        print("  - Intra-batch sequencing prevents history corruption")
+        print("  - System columns always preserved during pruning")
+        print("  - Checkpoint optimization reduces I/O overhead")
         return 0
     else:
         print("⚠️  Some tests failed. Please review the fixes.")

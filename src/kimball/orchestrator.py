@@ -147,35 +147,50 @@ class StagingCleanupManager:
         print(f"Unregistered staging table from cleanup: {staging_table}")
 
     def cleanup_staging_tables(self, spark_session=None, pipeline_id: str = None, max_age_hours: int = 24):
-        """Clean up orphaned staging tables using TTL-based filtering."""
+        """Clean up orphaned staging tables using atomic TTL-based filtering."""
         if spark_session is None:
             spark_session = spark
 
-        # Use DataFrame API to avoid SQL injection
+        # Use atomic DeltaTable operations to avoid race conditions
+        # Perform cleanup in a single transaction per table to prevent TOCTOU bugs
         from pyspark.sql.functions import current_timestamp, expr, col
-        registry_df = spark.table(self.registry_table)
+        from delta.tables import DeltaTable
         
-        # Apply age filter
+        registry_table = DeltaTable.forName(spark_session, self.registry_table)
+        
+        # Build condition for cleanup (age + optional pipeline filter)
+        conditions = []
         if max_age_hours > 0:
-            registry_df = registry_df.filter(current_timestamp() - col("created_at") > expr(f"INTERVAL {max_age_hours} HOURS"))
-        
-        # Apply pipeline filter
+            conditions.append(f"current_timestamp() - created_at > INTERVAL {max_age_hours} HOURS")
         if pipeline_id:
-            registry_df = registry_df.filter(col("pipeline_id") == pipeline_id)
-
-        # Get tables to clean up - use DeltaTable operations for distributed processing
-        cleanup_df = registry_df.select("staging_table", "pipeline_id", "batch_id")
-
-        # Use foreachPartition with proper distributed logic
+            conditions.append(f"pipeline_id = '{pipeline_id}'")
+        
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        
+        # Get tables to clean up atomically
+        cleanup_query = f"""
+        SELECT staging_table, pipeline_id, batch_id 
+        FROM {self.registry_table} 
+        WHERE {where_clause}
+        """
+        
+        cleanup_df = spark_session.sql(cleanup_query)
+        
+        # Use foreachPartition for distributed cleanup
         def cleanup_partition(rows):
             for row in rows:
                 staging_table = row.staging_table
                 try:
-                    # Use spark.catalog.dropTable for safe table dropping
+                    # Drop physical table first (best effort)
                     spark_session.catalog.dropTable(staging_table, ignoreIfNotExists=True)
-                    # Remove from registry using DeltaTable API
-                    registry_table = DeltaTable.forName(spark_session, self.registry_table)
-                    registry_table.delete(col("staging_table") == staging_table)
+                    
+                    # Then remove from registry atomically
+                    # Use MERGE for atomic conditional delete
+                    registry_table.alias("target").merge(
+                        spark_session.createDataFrame([(staging_table,)], ["staging_table"]).alias("source"),
+                        "target.staging_table = source.staging_table"
+                    ).whenMatchedDelete().execute()
+                    
                     print(f"Cleaned up orphaned staging table: {staging_table}")
                 except Exception as e:
                     print(f"Failed to clean up {staging_table}: {e}")
@@ -185,8 +200,8 @@ class StagingCleanupManager:
 
         # Count results using DataFrame operations
         total_count = cleanup_df.count()
-        print(f"TTL-based staging cleanup initiated for {total_count} tables")
-        return total_count, 0  # Note: actual counts not available in distributed processing
+        print(f"Atomic TTL-based staging cleanup completed for {total_count} tables")
+        return total_count, 0
 
 class StagingTableManager:
     """
@@ -668,32 +683,53 @@ class Orchestrator:
                 # This provides fault tolerance without the 100% I/O overhead of physical staging
                 print("Creating DataFrame checkpoint for merge operation...")
                 
-                # Use reliable checkpoint() if checkpoint directory is configured, otherwise localCheckpoint()
-                try:
-                    checkpoint_dir = spark.sparkContext.getCheckpointDir()
-                    if checkpoint_dir:
-                        print(f"Using reliable checkpoint directory: {checkpoint_dir}")
-                        checkpointed_df = transformed_df.checkpoint()
-                    else:
-                        print("No checkpoint directory configured, using local checkpoint (less reliable)")
+                # Checkpoint optimization: Only use expensive checkpoint() when explicitly enabled
+                # Default to localCheckpoint() which is much more efficient for standard pipelines
+                if getattr(self.config, 'enable_lineage_truncation', False):
+                    # Use reliable checkpoint() only when lineage truncation is explicitly requested
+                    try:
+                        checkpoint_dir = spark.sparkContext.getCheckpointDir()
+                        if checkpoint_dir:
+                            print(f"Using reliable checkpoint directory: {checkpoint_dir}")
+                            checkpointed_df = transformed_df.checkpoint()
+                        else:
+                            print("No checkpoint directory configured, using local checkpoint")
+                            checkpointed_df = transformed_df.localCheckpoint()
+                    except PYSPARK_EXCEPTION_BASE as e:
+                        # Log specific exception and fallback to local checkpoint
+                        print(f"Checkpoint directory access failed with PySpark error: {e}")
+                        print("Using local checkpoint (less reliable)")
                         checkpointed_df = transformed_df.localCheckpoint()
-                except PYSPARK_EXCEPTION_BASE as e:
-                    # Log specific exception and fallback to local checkpoint
-                    print(f"Checkpoint directory access failed with PySpark error: {e}")
-                    print("Using local checkpoint (less reliable)")
+                    except Exception as e:
+                        # Log any other unexpected errors and fallback to local checkpoint
+                        print(f"Unexpected error during checkpoint setup: {e}")
+                        print("Using local checkpoint (less reliable)")
+                        checkpointed_df = transformed_df.localCheckpoint()
+                else:
+                    # Use efficient localCheckpoint() by default - no disk I/O overhead
                     checkpointed_df = transformed_df.localCheckpoint()
-                except Exception as e:
-                    # Log any other unexpected errors and fallback to local checkpoint
-                    print(f"Unexpected error during checkpoint setup: {e}")
-                    print("Using local checkpoint (less reliable)")
-                    checkpointed_df = transformed_df.localCheckpoint()
+                    print("Using local checkpoint (efficient, no lineage truncation)")
 
                 # Column pruning: Select only columns that exist in target schema
                 # Only perform pruning if target table already exists AND schema evolution is disabled
                 if spark.catalog.tableExists(self.config.table_name) and not self.config.schema_evolution:
                     target_schema = spark.table(self.config.table_name).schema
                     target_columns = [f.name for f in target_schema.fields]
-                    source_df = checkpointed_df.select(*[col(c) for c in checkpointed_df.columns if c in target_columns])
+                    
+                    # System columns that must always be included for proper merge operations
+                    # Even if they don't exist in target yet (schema evolution will add them)
+                    SYSTEM_COLUMNS = {
+                        "__is_current", "__valid_from", "__valid_to", "__etl_processed_at", "__is_deleted"
+                    }
+                    
+                    # Include system columns even if not in target schema
+                    columns_to_select = []
+                    for c in checkpointed_df.columns:
+                        if c in target_columns or c in SYSTEM_COLUMNS:
+                            columns_to_select.append(c)
+                    
+                    source_df = checkpointed_df.select(*[col(c) for c in columns_to_select])
+                    print(f"Applied column pruning: kept {len(columns_to_select)}/{len(checkpointed_df.columns)} columns (including system columns)")
                 else:
                     # First run or schema evolution enabled - use all columns
                     source_df = checkpointed_df

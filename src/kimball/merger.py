@@ -191,6 +191,20 @@ class DeltaMerger:
         # 1. Compute Hashdiff on Source
         source_df = source_df.withColumn("hashdiff", compute_hashdiff(track_history_columns))
         
+        # 1.5. Handle Intra-Batch Sequencing (SCD2 Multi-Update Fix)
+        # If multiple updates for same natural key exist in source batch,
+        # only process the latest one to avoid merge conflicts
+        if join_keys and "__etl_processed_at" in source_df.columns:
+            from pyspark.sql.functions import row_number
+            from pyspark.sql.window import Window
+            
+            # Rank records by effective date within each natural key group
+            window = Window.partitionBy(*join_keys).orderBy(col("__etl_processed_at").desc())
+            source_df = source_df.withColumn("_intra_batch_seq", row_number().over(window)) \
+                                .filter(col("_intra_batch_seq") == 1) \
+                                .drop("_intra_batch_seq")
+            print(f"Applied intra-batch sequencing for SCD2 - removed duplicate keys within batch")
+        
         # 2. Prepare Staged Source for Merge
         # We need to identify:
         # - Rows to Close (Update): Match on Keys + is_current + Hashdiff Changed

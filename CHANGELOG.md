@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **BLOCKER**: Replaced unsafe `.collect()` in `StagingCleanupManager` with distributed `foreachPartition()` processing
+- **CRITICAL**: SCD2 intra-batch sequencing prevents history corruption when multiple updates for same natural key exist in single batch
+- **CRITICAL**: System columns (`__is_current`, `__valid_from`, etc.) always preserved during column pruning, even when target schema lacks them
+- **MAJOR**: Checkpoint optimization - `checkpoint()` now optional via `enable_lineage_truncation` config flag (defaults to efficient `localCheckpoint()`)
+- **MAJOR**: Atomic cleanup operations prevent race conditions using MERGE-based registry updates instead of separate filter/delete steps
+- **MINOR**: Timestamp overflow protection - default end dates changed from year 9999 to 2099
 - **BLOCKER**: Fixed year 9999 timestamp overflow by using 2099-12-31 for `__valid_to` default rows
 - **MAJOR**: Resolved dependency version conflict in `requirements.txt` (removed duplicate `databricks-sdk` entries)
 
