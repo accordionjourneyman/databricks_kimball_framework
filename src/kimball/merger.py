@@ -382,7 +382,7 @@ class DeltaMerger:
         """
         val = 'true' if enabled else 'false'
         # Use ALTER TABLE to set the table property
-        sql = f"ALTER TABLE {table_name} SET TBLPROPERTIES ('delta.schema.autoMerge.enabled' = '{val}')"
+        sql = f"ALTER TABLE `{table_name}` SET TBLPROPERTIES ('delta.schema.autoMerge.enabled' = '{val}')"
         spark.sql(sql)
 
     def ensure_scd2_defaults(self, target_table_name, schema, surrogate_key, default_values=None):
@@ -600,9 +600,9 @@ class DeltaMerger:
             # If cluster_by is specified, ensure the table is configured for Liquid Clustering
             # Note: This assumes the table was created with CLUSTER BY clause
             # We just run OPTIMIZE, which will use the existing clustering spec
-            spark.sql(f"OPTIMIZE {table_name}")
+            spark.sql(f"OPTIMIZE `{table_name}`")
             print(f"Optimized {table_name} using Liquid Clustering on {cluster_by}")
         else:
             # Standard OPTIMIZE without clustering
-            spark.sql(f"OPTIMIZE {table_name}")
+            spark.sql(f"OPTIMIZE `{table_name}`")
             print(f"Optimized {table_name}")

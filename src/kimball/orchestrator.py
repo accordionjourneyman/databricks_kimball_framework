@@ -165,7 +165,8 @@ class StagingCleanupManager:
         for row in cleanup_df.collect():
             staging_table = row.staging_table
             try:
-                spark_session.sql(f"DROP TABLE IF EXISTS {staging_table}")
+                # Use spark.catalog.dropTable for safe table dropping
+                spark_session.catalog.dropTable(staging_table, ignoreIfNotExists=True)
                 self.unregister_staging_table(staging_table)
                 cleaned_count += 1
                 print(f"Cleaned up orphaned staging table: {staging_table}")
@@ -593,7 +594,20 @@ class Orchestrator:
                 # Use DataFrame checkpointing instead of physical staging to minimize lock time
                 # This provides fault tolerance without the 100% I/O overhead of physical staging
                 print("Creating DataFrame checkpoint for merge operation...")
-                checkpointed_df = transformed_df.localCheckpoint()
+                
+                # Use reliable checkpoint() if checkpoint directory is configured, otherwise localCheckpoint()
+                try:
+                    checkpoint_dir = spark.sparkContext.getCheckpointDir()
+                    if checkpoint_dir:
+                        print(f"Using reliable checkpoint directory: {checkpoint_dir}")
+                        checkpointed_df = transformed_df.checkpoint()
+                    else:
+                        print("No checkpoint directory configured, using local checkpoint (less reliable)")
+                        checkpointed_df = transformed_df.localCheckpoint()
+                except:
+                    # Fallback to local checkpoint if checkpoint directory access fails
+                    print("Checkpoint directory access failed, using local checkpoint (less reliable)")
+                    checkpointed_df = transformed_df.localCheckpoint()
 
                 # Column pruning: Select only columns that exist in target schema
                 # Only perform pruning if target table already exists AND schema evolution is disabled

@@ -58,7 +58,7 @@ class TableCreator:
         columns_sql = ",\n  ".join(columns)
         
         create_sql = f"""
-        CREATE TABLE {table_name} (
+        CREATE TABLE `{table_name}` (
           {columns_sql}
         )
         USING DELTA
@@ -111,7 +111,7 @@ class TableCreator:
         """
         # Apply surrogate key NOT NULL constraint
         if surrogate_key_col:
-            alter_sql = f"ALTER TABLE {table_name} ADD CONSTRAINT sk_not_null CHECK ({surrogate_key_col} IS NOT NULL)"
+            alter_sql = f"ALTER TABLE `{table_name}` ADD CONSTRAINT sk_not_null CHECK (`{surrogate_key_col}` IS NOT NULL)"
             try:
                 spark.sql(alter_sql)
                 print(f"Applied surrogate key NOT NULL constraint")
@@ -120,7 +120,7 @@ class TableCreator:
         
         # Apply is_current boolean constraint for SCD2 tables
         if schema_df and "__is_current" in [f.name for f in schema_df.schema.fields]:
-            alter_sql = f"ALTER TABLE {table_name} ADD CONSTRAINT is_current_check CHECK (__is_current IN (true, false))"
+            alter_sql = f"ALTER TABLE `{table_name}` ADD CONSTRAINT is_current_check CHECK (__is_current IN (true, false))"
             try:
                 spark.sql(alter_sql)
                 print(f"Applied is_current boolean constraint")
@@ -138,7 +138,7 @@ class TableCreator:
         # Apply NOT NULL constraints for natural keys
         natural_keys = config.get('natural_keys', [])
         for key in natural_keys:
-            alter_sql = f"ALTER TABLE {table_name} ALTER COLUMN {key} SET NOT NULL"
+            alter_sql = f"ALTER TABLE `{table_name}` ALTER COLUMN `{key}` SET NOT NULL"
             try:
                 spark.sql(alter_sql)
                 print(f"Applied NOT NULL constraint to {key}")
@@ -151,7 +151,7 @@ class TableCreator:
             constraint_name = constraint.get('name')
             constraint_expr = constraint.get('expression')
             if constraint_name and constraint_expr:
-                alter_sql = f"ALTER TABLE {table_name} ADD CONSTRAINT {constraint_name} CHECK ({constraint_expr})"
+                alter_sql = f"ALTER TABLE `{table_name}` ADD CONSTRAINT `{constraint_name}` CHECK ({constraint_expr})"
                 try:
                     spark.sql(alter_sql)
                     print(f"Applied constraint {constraint_name}")
@@ -170,7 +170,7 @@ class TableCreator:
         Enables Predictive Optimization for a Delta table.
         This allows Databricks to automatically optimize table layout and performance.
         """
-        alter_sql = f"ALTER TABLE {table_name} SET TBLPROPERTIES ('delta.enablePredictiveOptimization' = 'true')"
+        alter_sql = f"ALTER TABLE `{table_name}` SET TBLPROPERTIES ('delta.enablePredictiveOptimization' = 'true')"
         spark.sql(alter_sql)
         print(f"Predictive Optimization enabled for {table_name}")
 
@@ -179,6 +179,6 @@ class TableCreator:
         Enables Deletion Vectors for a Delta table.
         This improves performance for MERGE operations with many updates/deletes.
         """
-        alter_sql = f"ALTER TABLE {table_name} SET TBLPROPERTIES ('delta.enableDeletionVectors' = 'true')"
+        alter_sql = f"ALTER TABLE `{table_name}` SET TBLPROPERTIES ('delta.enableDeletionVectors' = 'true')"
         spark.sql(alter_sql)
         print(f"Deletion Vectors enabled for {table_name}")
