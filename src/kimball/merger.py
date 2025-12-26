@@ -33,7 +33,7 @@ def retry_on_concurrent_exception(max_retries=3, backoff_base=2):
             for attempt in range(max_retries + 1):
                 try:
                     return func(*args, **kwargs)
-                except Exception as e:
+                except PYSPARK_EXCEPTION_BASE as e:
                     # Check for concurrent write exceptions in modern Databricks Runtime
                     error_str = str(e)
                     is_concurrent = any(x in error_str for x in ["ConcurrentAppendException", "WriteConflictException"])

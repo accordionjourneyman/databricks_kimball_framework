@@ -80,24 +80,6 @@ class QueryMetricsCollector:
             'operations': self.metrics,
             'avg_operation_time_ms': total_time / operation_count if operation_count > 0 else 0
         }
-        if not self.metrics:
-            return {}
-            
-        total_time = sum(m.get('execution_time_ms', 0) for m in self.metrics.values())
-        total_bytes_read = sum(m.get('bytes_read', 0) for m in self.metrics.values())
-        total_bytes_written = sum(m.get('bytes_written', 0) for m in self.metrics.values())
-        total_rows_read = sum(m.get('rows_read', 0) for m in self.metrics.values())
-        total_rows_written = sum(m.get('rows_written', 0) for m in self.metrics.values())
-        
-        return {
-            'total_queries': len(self.metrics),
-            'total_execution_time_ms': total_time,
-            'total_bytes_read': total_bytes_read,
-            'total_bytes_written': total_bytes_written,
-            'total_rows_read': total_rows_read,
-            'total_rows_written': total_rows_written,
-            'avg_query_time_ms': total_time / len(self.metrics) if self.metrics else 0
-        }
 
 class StagingCleanupManager:
     """
@@ -108,7 +90,7 @@ class StagingCleanupManager:
     def __init__(self, cleanup_registry_path: str = None):
         # Use configurable path for cleanup registry
         if cleanup_registry_path is None:
-            cleanup_registry_path = os.getenv("KIMBALL_CLEANUP_REGISTRY", "dbfs:/kimball/staging_cleanup.json")
+            cleanup_registry_path = os.getenv("KIMBALL_CLEANUP_REGISTRY", "/dbfs/kimball/staging_cleanup.json")
         
         self.cleanup_registry_path = cleanup_registry_path
         self.active_staging_tables = set()
@@ -182,7 +164,7 @@ class PipelineCheckpoint:
         # Use configurable persistent storage instead of hardcoded /dbfs
         # Allow override via environment variable for different environments
         if checkpoint_dir is None:
-            checkpoint_dir = os.getenv("KIMBALL_CHECKPOINT_DIR", "dbfs:/kimball/checkpoints")
+            checkpoint_dir = os.getenv("KIMBALL_CHECKPOINT_DIR", "/dbfs/kimball/checkpoints")
 
         self.checkpoint_dir = checkpoint_dir
         os.makedirs(checkpoint_dir, exist_ok=True)
@@ -554,9 +536,14 @@ class Orchestrator:
                     self.cleanup_manager.register_staging_table(staging_table)
 
                     # Column pruning: Select only columns that exist in target schema
-                    target_schema = spark.table(self.config.table_name).schema
-                    target_columns = [f.name for f in target_schema.fields]
-                    staging_df = spark.table(staging_table).select(*[col(c) for c in spark.table(staging_table).columns if c in target_columns])
+                    # Only perform pruning if target table already exists
+                    if spark.catalog.tableExists(self.config.table_name):
+                        target_schema = spark.table(self.config.table_name).schema
+                        target_columns = [f.name for f in target_schema.fields]
+                        staging_df = spark.table(staging_table).select(*[col(c) for c in spark.table(staging_table).columns if c in target_columns])
+                    else:
+                        # First run - no target table exists yet, use all staging columns
+                        staging_df = spark.table(staging_table)
 
                     print(f"Merging from {staging_table} into {self.config.table_name}...")
 

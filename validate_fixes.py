@@ -41,9 +41,9 @@ def test_checkpoint_persistence():
     with open(orchestrator_file, 'r') as f:
         content = f.read()
 
-    # Check that default is now DBFS instead of /tmp
+    # Check that default is now /dbfs instead of dbfs:
     if 'checkpoint_dir: str = None' in content and 'KIMBALL_CHECKPOINT_DIR' in content:
-        if 'dbfs:/kimball/checkpoints' in content:
+        if '/dbfs/kimball/checkpoints' in content:
             print("✅ Checkpoint uses persistent DBFS storage by default")
             return True
 
