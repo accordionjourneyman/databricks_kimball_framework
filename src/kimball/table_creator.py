@@ -9,6 +9,7 @@ class TableCreator:
     def create_table_with_clustering(self, 
                                      table_name: str, 
                                      schema_df, 
+                                     config: dict = None,
                                      cluster_by: List[str] = None,
                                      partition_by: List[str] = None,
                                      surrogate_key_col: str = None,
@@ -19,7 +20,8 @@ class TableCreator:
         Args:
             table_name: Full table name (catalog.schema.table)
             schema_df: DataFrame with the desired schema
-            cluster_by: Columns for Liquid Clustering
+            config: Table configuration from YAML
+            cluster_by: Columns for Liquid Clustering (deprecated, use config)
             partition_by: Columns for partitioning (optional, usually not needed with clustering)
             surrogate_key_col: Name of the surrogate key column (if any)
             surrogate_key_strategy: Strategy for SK generation ('identity', 'hash', 'sequence')
@@ -27,6 +29,14 @@ class TableCreator:
         if spark.catalog.tableExists(table_name):
             print(f"Table {table_name} already exists. Skipping creation.")
             return
+        
+        # Check config for liquid clustering
+        if config and 'liquid_clustering' in config:
+            cluster_by = config['liquid_clustering']
+            partition_by = None  # Don't use partitioning with liquid clustering
+            print(f"Using Liquid Clustering from config: {cluster_by}")
+        elif cluster_by:
+            print(f"Using provided cluster_by: {cluster_by}")
         
         # Build CREATE TABLE statement
         # We'll use the DataFrame schema to infer column definitions
@@ -57,15 +67,14 @@ class TableCreator:
         if cluster_by:
             cluster_cols = ", ".join(cluster_by)
             create_sql += f"\nCLUSTER BY ({cluster_cols})"
-        
-        if partition_by:
+        elif partition_by:
             partition_cols = ", ".join(partition_by)
             create_sql += f"\nPARTITIONED BY ({partition_cols})"
         
         # Enable Change Data Feed by default
         create_sql += "\nTBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"
 
-        # Add Delta Constraints for data integrity
+        # Add basic Delta Constraints
         constraints = []
         if surrogate_key_col:
             constraints.append(f"CONSTRAINT sk_not_null CHECK ({surrogate_key_col} IS NOT NULL)")
@@ -82,3 +91,63 @@ class TableCreator:
             print(f"  - Liquid Clustering on {cluster_by}")
         spark.sql(create_sql)
         print(f"Table {table_name} created successfully.")
+        
+        # Apply additional constraints from config
+        if config:
+            self.apply_delta_constraints(table_name, config)
+
+    def apply_delta_constraints(self, table_name: str, config: dict):
+        """
+        Apply Delta constraints based on YAML configuration.
+        
+        Args:
+            table_name: Full table name
+            config: Table configuration from YAML
+        """
+        # Apply NOT NULL constraints for natural keys
+        natural_keys = config.get('natural_keys', [])
+        for key in natural_keys:
+            alter_sql = f"ALTER TABLE {table_name} ALTER COLUMN {key} SET NOT NULL"
+            try:
+                spark.sql(alter_sql)
+                print(f"Applied NOT NULL constraint to {key}")
+            except Exception as e:
+                print(f"Failed to apply NOT NULL to {key}: {e}")
+        
+        # Apply business domain constraints
+        constraints = config.get('constraints', [])
+        for constraint in constraints:
+            constraint_name = constraint.get('name')
+            constraint_expr = constraint.get('expression')
+            if constraint_name and constraint_expr:
+                alter_sql = f"ALTER TABLE {table_name} ADD CONSTRAINT {constraint_name} CHECK ({constraint_expr})"
+                try:
+                    spark.sql(alter_sql)
+                    print(f"Applied constraint {constraint_name}")
+                except Exception as e:
+                    print(f"Failed to apply constraint {constraint_name}: {e}")
+
+    def enable_schema_auto_merge(self):
+        """
+        Enable schema auto-merge for the current session.
+        """
+        spark.conf.set("spark.databricks.delta.schema.autoMerge.enabled", "true")
+        print("Enabled schema auto-merge for current session")
+
+    def enable_predictive_optimization(self, table_name: str):
+        """
+        Enables Predictive Optimization for a Delta table.
+        This allows Databricks to automatically optimize table layout and performance.
+        """
+        alter_sql = f"ALTER TABLE {table_name} SET TBLPROPERTIES ('delta.enablePredictiveOptimization' = 'true')"
+        spark.sql(alter_sql)
+        print(f"Predictive Optimization enabled for {table_name}")
+
+    def enable_deletion_vectors(self, table_name: str):
+        """
+        Enables Deletion Vectors for a Delta table.
+        This improves performance for MERGE operations with many updates/deletes.
+        """
+        alter_sql = f"ALTER TABLE {table_name} SET TBLPROPERTIES ('delta.enableDeletionVectors' = 'true')"
+        spark.sql(alter_sql)
+        print(f"Deletion Vectors enabled for {table_name}")

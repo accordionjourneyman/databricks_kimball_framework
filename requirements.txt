@@ -8,5 +8,6 @@ black
 isort
 mypy
 databricks-connect==14.0.0
+databricks-sdk>=0.20.0
 python-dotenv
 requests

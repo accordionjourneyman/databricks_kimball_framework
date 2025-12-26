@@ -12,6 +12,126 @@ from kimball.skeleton_generator import SkeletonGenerator
 from kimball.table_creator import TableCreator
 from kimball.errors import RetriableError, NonRetriableError, KimballError
 from databricks.sdk.runtime import spark
+from pyspark.sql import SparkSession
+from typing import Dict, Any, Optional
+import json
+
+class QueryMetricsCollector:
+    """
+    Collects QueryExecution metrics for observability.
+    Captures execution time, bytes read/written, and other performance metrics.
+    """
+    
+    def __init__(self):
+        self.metrics = {}
+        self.query_listener = None
+        
+    def start_collection(self):
+        """Start collecting query execution metrics."""
+        from pyspark.sql.utils import AnalysisException
+        
+        class MetricsListener:
+            def __init__(self, collector):
+                self.collector = collector
+                
+            def onQueryExecutionEnd(self, queryExecution):
+                """Capture metrics when query execution ends."""
+                try:
+                    metrics = {
+                        'query_id': queryExecution.id(),
+                        'execution_time_ms': queryExecution.timeTakenMs(),
+                        'bytes_read': getattr(queryExecution, 'bytesRead', lambda: 0)(),
+                        'bytes_written': getattr(queryExecution, 'bytesWritten', lambda: 0)(),
+                        'rows_read': getattr(queryExecution, 'rowsRead', lambda: 0)(),
+                        'rows_written': getattr(queryExecution, 'rowsWritten', lambda: 0)(),
+                        'query_text': queryExecution.queryText()[:500],  # Truncate long queries
+                        'timestamp': time.time()
+                    }
+                    self.collector.metrics[queryExecution.id()] = metrics
+                except Exception as e:
+                    print(f"Failed to collect metrics for query {queryExecution.id()}: {e}")
+        
+        self.query_listener = MetricsListener(self)
+        spark.sparkContext.addSparkListener(self.query_listener)
+        
+    def stop_collection(self):
+        """Stop collecting metrics and return collected data."""
+        if self.query_listener:
+            try:
+                spark.sparkContext.removeSparkListener(self.query_listener)
+            except:
+                pass  # Listener might already be removed
+        return self.metrics
+    
+    def get_summary(self) -> Dict[str, Any]:
+        """Get summary of collected metrics."""
+        if not self.metrics:
+            return {}
+            
+        total_time = sum(m.get('execution_time_ms', 0) for m in self.metrics.values())
+        total_bytes_read = sum(m.get('bytes_read', 0) for m in self.metrics.values())
+        total_bytes_written = sum(m.get('bytes_written', 0) for m in self.metrics.values())
+        total_rows_read = sum(m.get('rows_read', 0) for m in self.metrics.values())
+        total_rows_written = sum(m.get('rows_written', 0) for m in self.metrics.values())
+        
+        return {
+            'total_queries': len(self.metrics),
+            'total_execution_time_ms': total_time,
+            'total_bytes_read': total_bytes_read,
+            'total_bytes_written': total_bytes_written,
+            'total_rows_read': total_rows_read,
+            'total_rows_written': total_rows_written,
+            'avg_query_time_ms': total_time / len(self.metrics) if self.metrics else 0
+        }
+
+class PipelineCheckpoint:
+    """
+    Handles checkpointing for complex DAG pipelines.
+    Saves and restores pipeline state to enable resumability.
+    """
+    
+    def __init__(self, checkpoint_dir: str = "/tmp/kimball_checkpoints"):
+        self.checkpoint_dir = checkpoint_dir
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        
+    def save_checkpoint(self, pipeline_id: str, stage: str, state: Dict[str, Any]):
+        """Save pipeline state at a specific stage."""
+        checkpoint_path = os.path.join(self.checkpoint_dir, f"{pipeline_id}_{stage}.json")
+        checkpoint_data = {
+            'pipeline_id': pipeline_id,
+            'stage': stage,
+            'timestamp': time.time(),
+            'state': state
+        }
+        
+        with open(checkpoint_path, 'w') as f:
+            json.dump(checkpoint_data, f, indent=2)
+            
+        print(f"Checkpoint saved: {checkpoint_path}")
+        
+    def load_checkpoint(self, pipeline_id: str, stage: str) -> Optional[Dict[str, Any]]:
+        """Load pipeline state from a checkpoint."""
+        checkpoint_path = os.path.join(self.checkpoint_dir, f"{pipeline_id}_{stage}.json")
+        
+        if not os.path.exists(checkpoint_path):
+            return None
+            
+        try:
+            with open(checkpoint_path, 'r') as f:
+                data = json.load(f)
+            print(f"Checkpoint loaded: {checkpoint_path}")
+            return data.get('state')
+        except Exception as e:
+            print(f"Failed to load checkpoint {checkpoint_path}: {e}")
+            return None
+            
+    def clear_checkpoint(self, pipeline_id: str, stage: str):
+        """Clear a checkpoint file."""
+        checkpoint_path = os.path.join(self.checkpoint_dir, f"{pipeline_id}_{stage}.json")
+        
+        if os.path.exists(checkpoint_path):
+            os.remove(checkpoint_path)
+            print(f"Checkpoint cleared: {checkpoint_path}")
 
 class Orchestrator:
     """
@@ -37,6 +157,8 @@ class Orchestrator:
         etl_schema: str = None,
         # Deprecated parameter - for backward compatibility
         watermark_database: str = None,
+        enable_metrics: bool = True,
+        checkpoint_dir: str = "/tmp/kimball_checkpoints"
     ):
         """
         Args:
@@ -45,6 +167,8 @@ class Orchestrator:
                         If not provided, uses KIMBALL_ETL_SCHEMA environment variable.
                         Falls back to target table's database if neither is set.
             watermark_database: **Deprecated** - Use etl_schema instead.
+            enable_metrics: Whether to collect QueryExecution metrics.
+            checkpoint_dir: Directory for pipeline checkpoints.
         """
         self.config_loader = ConfigLoader()
         self.config = self.config_loader.load_config(config_path)
@@ -86,6 +210,10 @@ class Orchestrator:
         self.merger = DeltaMerger()
         self.skeleton_generator = SkeletonGenerator()
         self.table_creator = TableCreator()
+        
+        # Initialize observability features
+        self.metrics_collector = QueryMetricsCollector() if enable_metrics else None
+        self.checkpoint_manager = PipelineCheckpoint(checkpoint_dir)
 
     def _add_system_columns(self, df, scd_type: int, surrogate_key: str, surrogate_key_strategy: str):
         """
@@ -129,6 +257,10 @@ class Orchestrator:
         """
         print(f"Starting pipeline for {self.config.table_name}")
         batch_id = str(uuid.uuid4())
+        
+        # Start metrics collection
+        if self.metrics_collector:
+            self.metrics_collector.start_collection()
         
         source_versions = {}
         active_dfs = {}
@@ -246,12 +378,13 @@ class Orchestrator:
                     if sk_fill_map:
                         print(f"Filling NULL foreign keys with defaults: {sk_fill_map}")
                         transformed_df = transformed_df.fillna(sk_fill_map)
-            else:
-                # Fallback: If only 1 source, just use it. Else error.
-                if len(self.config.sources) == 1:
-                    transformed_df = active_dfs[self.config.sources[0].name]
-                else:
-                    raise ValueError("transformation_sql is required for multi-source pipelines")
+            # Checkpoint: Transformation complete
+            checkpoint_state = {
+                'stage': 'transformation_complete', 
+                'total_rows_read': total_rows_read,
+                'active_sources': list(active_dfs.keys())
+            }
+            self.checkpoint_manager.save_checkpoint(batch_id, 'transformation_complete', checkpoint_state)
 
             # 4. Stage-then-Merge for concurrency resilience
             # Check if we have data to merge
@@ -300,37 +433,38 @@ class Orchestrator:
 
                 # Stage the transformed data to minimize lock time
                 staging_table = f"{self.config.table_name}_staging_{batch_id}"
-                print(f"Staging data to {staging_table}...")
-                transformed_df.write.format("delta").mode("overwrite").saveAsTable(staging_table)
+                try:
+                    print(f"Staging data to {staging_table}...")
+                    transformed_df.write.format("delta").mode("overwrite").saveAsTable(staging_table)
 
-                # Column pruning: Select only columns that exist in target schema
-                target_schema = spark.table(self.config.table_name).schema
-                target_columns = [f.name for f in target_schema.fields]
-                staging_df = spark.table(staging_table).select(*[col(c) for c in spark.table(staging_table).columns if c in target_columns])
+                    # Column pruning: Select only columns that exist in target schema
+                    target_schema = spark.table(self.config.table_name).schema
+                    target_columns = [f.name for f in target_schema.fields]
+                    staging_df = spark.table(staging_table).select(*[col(c) for c in spark.table(staging_table).columns if c in target_columns])
 
-                print(f"Merging from {staging_table} into {self.config.table_name}...")
+                    print(f"Merging from {staging_table} into {self.config.table_name}...")
 
-                # Kimball: Dimensions use natural_keys for merge; Facts use merge_keys (degenerate dimensions)
-                if self.config.table_type == 'fact':
-                    join_keys = self.config.merge_keys or []
-                else:
-                    join_keys = self.config.natural_keys or []
+                    # Kimball: Dimensions use natural_keys for merge; Facts use merge_keys (degenerate dimensions)
+                    if self.config.table_type == 'fact':
+                        join_keys = self.config.merge_keys or []
+                    else:
+                        join_keys = self.config.natural_keys or []
 
-                self.merger.merge(
-                    target_table_name=self.config.table_name,
-                    source_df=staging_df,
-                    join_keys=join_keys, 
-                    delete_strategy=self.config.delete_strategy,
-                    batch_id=batch_id,
-                    scd_type=self.config.scd_type,
-                    track_history_columns=self.config.track_history_columns,
-                    surrogate_key_col=self.config.surrogate_key,
-                    surrogate_key_strategy=self.config.surrogate_key_strategy,
-                    schema_evolution=self.config.schema_evolution
-                )
-
-                # Clean up staging table
-                spark.sql(f"DROP TABLE {staging_table}")
+                    self.merger.merge(
+                        target_table_name=self.config.table_name,
+                        source_df=staging_df,
+                        join_keys=join_keys, 
+                        delete_strategy=self.config.delete_strategy,
+                        batch_id=batch_id,
+                        scd_type=self.config.scd_type,
+                        track_history_columns=self.config.track_history_columns,
+                        surrogate_key_col=self.config.surrogate_key,
+                        surrogate_key_strategy=self.config.surrogate_key_strategy,
+                        schema_evolution=self.config.schema_evolution
+                    )
+                finally:
+                    # Clean up staging table - ensure this runs even if merge fails
+                    spark.sql(f"DROP TABLE IF EXISTS {staging_table}")
 
                 # 5. Optimize Table (if configured)
                 if self.config.optimize_after_merge:
@@ -359,15 +493,31 @@ class Orchestrator:
             
             print(f"Pipeline completed successfully. Read: {total_rows_read}, Written: {total_rows_written}")
             
+            # Collect final metrics
+            metrics_summary = {}
+            if self.metrics_collector:
+                self.metrics_collector.stop_collection()
+                metrics_summary = self.metrics_collector.get_summary()
+                print(f"Query Metrics: {metrics_summary}")
+            
+            # Clear checkpoints on success
+            self.checkpoint_manager.clear_checkpoint(batch_id, 'sources_loaded')
+            self.checkpoint_manager.clear_checkpoint(batch_id, 'transformation_complete')
+            
             return {
                 "status": "SUCCESS",
                 "batch_id": batch_id,
                 "target_table": self.config.table_name,
                 "rows_read": total_rows_read,
                 "rows_written": total_rows_written,
+                "metrics": metrics_summary
             }
 
         except Exception as e:
+            # Stop metrics collection on error
+            if self.metrics_collector:
+                self.metrics_collector.stop_collection()
+                
             # Mark all batches as failed
             error_msg = f"{type(e).__name__}: {str(e)}"
             print(f"Pipeline failed: {error_msg}")
