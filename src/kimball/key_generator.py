@@ -72,9 +72,21 @@ class SequenceKeyGenerator(KeyGenerator):
     """
     Generates sequential integers using row_number() over a window.
     Produces dense, sequential surrogate keys as expected in Kimball methodology.
-    Note: Requires collecting data to a single partition, may not scale for very large datasets.
+    
+    ⚠️  CRITICAL SCALABILITY WARNING ⚠️
+    This implementation uses row_number().over(Window.orderBy(lit(1))) which forces 
+    the entire dataset to be shuffled to a single partition. This is a well-known 
+    performance killer that will cause OOM (Out of Memory) errors for large datasets.
+    
+    For Kimball surrogates at scale, use one of these alternatives instead:
+    - HashKeyGenerator: Deterministic keys based on natural keys
+    - UniqueKeyGenerator: Unique keys with possible gaps (scales well)
+    - IdentityKeyGenerator: Delta Lake IDENTITY columns (handles sequencing at storage layer)
+    
+    Only use this generator for small datasets or when strict sequentiality is absolutely required.
     """
     def generate_keys(self, df: DataFrame, key_col_name: str, existing_max_key: int = 0) -> DataFrame:
+        # ⚠️  SCALABILITY WARNING: This forces all data to a single partition!
         # Use row_number for sequential generation
         # This requires sorting/ordering, so we use a dummy ordering
         window = Window.orderBy(lit(1))  # Dummy ordering since we just want sequential numbers

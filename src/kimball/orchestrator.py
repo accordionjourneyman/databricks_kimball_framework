@@ -108,7 +108,7 @@ class StagingCleanupManager:
     def __init__(self, cleanup_registry_path: str = None):
         # Use configurable path for cleanup registry
         if cleanup_registry_path is None:
-            cleanup_registry_path = os.getenv("KIMBALL_CLEANUP_REGISTRY", "/tmp/kimball_staging_cleanup.json")
+            cleanup_registry_path = os.getenv("KIMBALL_CLEANUP_REGISTRY", "dbfs:/kimball/staging_cleanup.json")
         
         self.cleanup_registry_path = cleanup_registry_path
         self.active_staging_tables = set()
@@ -182,7 +182,7 @@ class PipelineCheckpoint:
         # Use configurable persistent storage instead of hardcoded /dbfs
         # Allow override via environment variable for different environments
         if checkpoint_dir is None:
-            checkpoint_dir = os.getenv("KIMBALL_CHECKPOINT_DIR", "/tmp/kimball_checkpoints")
+            checkpoint_dir = os.getenv("KIMBALL_CHECKPOINT_DIR", "dbfs:/kimball/checkpoints")
 
         self.checkpoint_dir = checkpoint_dir
         os.makedirs(checkpoint_dir, exist_ok=True)
@@ -542,7 +542,10 @@ class Orchestrator:
                         )
 
                 # Stage the transformed data to minimize lock time
-                staging_table = f"{self.config.table_name}_staging_{batch_id}"
+                # Handle multi-part table names (catalog.schema.table) properly
+                parts = self.config.table_name.split(".")
+                parts[-1] = f"{parts[-1]}_staging_{batch_id.replace('-', '_')}"
+                staging_table = ".".join(parts)
                 try:
                     print(f"Staging data to {staging_table}...")
                     transformed_df.write.format("delta").mode("overwrite").saveAsTable(staging_table)
