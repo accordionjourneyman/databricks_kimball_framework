@@ -70,24 +70,29 @@ class UniqueKeyGenerator(KeyGenerator):
 
 class SequenceKeyGenerator(KeyGenerator):
     """
-    Generates sequential integers using row_number() over a window.
-    Produces dense, sequential surrogate keys as expected in Kimball methodology.
-    
+    DEPRECATED: This implementation is unsafe for production use at scale.
+
     ⚠️  CRITICAL SCALABILITY WARNING ⚠️
-    This implementation uses row_number().over(Window.orderBy(lit(1))) which forces 
-    the entire dataset to be shuffled to a single partition. This is a well-known 
+    This implementation uses row_number().over(Window.orderBy(lit(1))) which forces
+    the entire dataset to be shuffled to a single partition. This is a well-known
     performance killer that will cause OOM (Out of Memory) errors for large datasets.
-    
-    For Kimball surrogates at scale, use one of these alternatives instead:
-    - HashKeyGenerator: Deterministic keys based on natural keys
-    - UniqueKeyGenerator: Unique keys with possible gaps (scales well)
-    - IdentityKeyGenerator: Delta Lake IDENTITY columns (handles sequencing at storage layer)
-    
-    Only use this generator for small datasets or when strict sequentiality is absolutely required.
+
+    For Kimball surrogates at scale, use IdentityKeyGenerator which handles sequencing
+    at the Delta storage layer with proper distributed performance.
+
+    This class is deprecated and will be removed in a future version.
     """
     def generate_keys(self, df: DataFrame, key_col_name: str, existing_max_key: int = 0) -> DataFrame:
-        # ⚠️  SCALABILITY WARNING: This forces all data to a single partition!
-        # Use row_number for sequential generation
-        # This requires sorting/ordering, so we use a dummy ordering
-        window = Window.orderBy(lit(1))  # Dummy ordering since we just want sequential numbers
+        # DEPRECATED: Do not use in production
+        import warnings
+        warnings.warn(
+            "SequenceKeyGenerator is deprecated and unsafe for production use. "
+            "Use IdentityKeyGenerator for scalable surrogate key generation.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+
+        # This implementation is fundamentally broken for scale
+        # Forces all data to single partition = OOM guaranteed
+        window = Window.orderBy(lit(1))
         return df.withColumn(key_col_name, row_number().over(window) + lit(existing_max_key))

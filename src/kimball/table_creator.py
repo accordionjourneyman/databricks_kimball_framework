@@ -92,6 +92,18 @@ class TableCreator:
         spark.sql(create_sql)
         print(f"Table {table_name} created successfully.")
         
+        # Enable Delta optimizations after table creation
+        try:
+            self.enable_predictive_optimization(table_name)
+        except Exception as e:
+            print(f"Warning: Could not enable Predictive Optimization: {e}")
+        
+        # Enable Deletion Vectors for tables that will use MERGE operations
+        try:
+            self.enable_deletion_vectors(table_name)
+        except Exception as e:
+            print(f"Warning: Could not enable Deletion Vectors: {e}")
+        
         # Apply additional constraints from config
         if config:
             self.apply_delta_constraints(table_name, config)

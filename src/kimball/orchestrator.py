@@ -83,72 +83,79 @@ class QueryMetricsCollector:
 
 class StagingCleanupManager:
     """
-    Manages cleanup of staging tables with crash resilience.
-    Registers staging tables in persistent storage and provides cleanup methods.
+    Manages cleanup of staging tables with crash resilience using Delta table registry.
+    Provides ACID-compliant registry to prevent race conditions in multi-pipeline environments.
     """
-    
-    def __init__(self, cleanup_registry_path: str = None):
-        # Use configurable path for cleanup registry
-        if cleanup_registry_path is None:
-            cleanup_registry_path = os.getenv("KIMBALL_CLEANUP_REGISTRY", "/dbfs/kimball/staging_cleanup.json")
-        
-        self.cleanup_registry_path = cleanup_registry_path
-        self.active_staging_tables = set()
-        self._load_registry()
-    
-    def _load_registry(self):
-        """Load existing cleanup registry."""
-        try:
-            if os.path.exists(self.cleanup_registry_path):
-                with open(self.cleanup_registry_path, 'r') as f:
-                    registry = json.load(f)
-                    self.active_staging_tables = set(registry.get('active_tables', []))
-        except Exception as e:
-            print(f"Warning: Failed to load cleanup registry: {e}")
-            self.active_staging_tables = set()
-    
-    def _save_registry(self):
-        """Save cleanup registry to persistent storage."""
-        try:
-            registry = {
-                'active_tables': list(self.active_staging_tables),
-                'last_updated': time.time()
-            }
-            with open(self.cleanup_registry_path, 'w') as f:
-                json.dump(registry, f, indent=2)
-        except Exception as e:
-            print(f"Warning: Failed to save cleanup registry: {e}")
-    
-    def register_staging_table(self, table_name: str):
-        """Register a staging table for cleanup."""
-        self.active_staging_tables.add(table_name)
-        self._save_registry()
-        print(f"Registered staging table for cleanup: {table_name}")
-    
-    def unregister_staging_table(self, table_name: str):
+
+    def __init__(self, registry_table: str = None):
+        # Use Delta table for registry instead of JSON file to prevent race conditions
+        if registry_table is None:
+            registry_table = os.getenv("KIMBALL_CLEANUP_REGISTRY_TABLE", "default.kimball_staging_registry")
+
+        self.registry_table = registry_table
+        self._ensure_registry_table()
+
+    def _ensure_registry_table(self):
+        """Ensure the registry Delta table exists."""
+        if not spark.catalog.tableExists(self.registry_table):
+            # Create registry table with proper schema
+            spark.sql(f"""
+                CREATE TABLE {self.registry_table} (
+                    pipeline_id STRING,
+                    staging_table STRING,
+                    created_at TIMESTAMP,
+                    batch_id STRING
+                )
+                USING DELTA
+                TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
+            """)
+            print(f"Created staging cleanup registry table: {self.registry_table}")
+
+    def register_staging_table(self, staging_table: str, pipeline_id: str = None, batch_id: str = None):
+        """Register a staging table for cleanup using Delta table."""
+        from pyspark.sql.functions import current_timestamp
+
+        # Use MERGE for atomic registration (handles concurrent writes)
+        spark.sql(f"""
+            MERGE INTO {self.registry_table} target
+            USING (SELECT '{pipeline_id or 'unknown'}' as pipeline_id,
+                          '{staging_table}' as staging_table,
+                          current_timestamp() as created_at,
+                          '{batch_id or 'unknown'}' as batch_id) source
+            ON target.staging_table = source.staging_table
+            WHEN NOT MATCHED THEN INSERT *
+        """)
+
+        print(f"Registered staging table for cleanup: {staging_table}")
+
+    def unregister_staging_table(self, staging_table: str):
         """Unregister a staging table after successful cleanup."""
-        self.active_staging_tables.discard(table_name)
-        self._save_registry()
-    
-    def cleanup_staging_tables(self, spark_session=None):
-        """Clean up all registered staging tables."""
+        spark.sql(f"DELETE FROM {self.registry_table} WHERE staging_table = '{staging_table}'")
+        print(f"Unregistered staging table from cleanup: {staging_table}")
+
+    def cleanup_staging_tables(self, spark_session=None, pipeline_id: str = None):
+        """Clean up all registered staging tables, optionally filtered by pipeline."""
         if spark_session is None:
-            from databricks.sdk.runtime import spark
             spark_session = spark
-        
+
+        # Get tables to clean up
+        where_clause = f"WHERE pipeline_id = '{pipeline_id}'" if pipeline_id else ""
+        registry_df = spark.sql(f"SELECT staging_table FROM {self.registry_table} {where_clause}")
+
         cleaned_count = 0
         failed_count = 0
-        
-        for table_name in list(self.active_staging_tables):
+
+        for row in registry_df.collect():
+            staging_table = row.staging_table
             try:
-                spark_session.sql(f"DROP TABLE IF EXISTS {table_name}")
-                self.unregister_staging_table(table_name)
+                spark_session.sql(f"DROP TABLE IF EXISTS {staging_table}")
+                self.unregister_staging_table(staging_table)
                 cleaned_count += 1
-                print(f"Cleaned up staging table: {table_name}")
+                print(f"Cleaned up staging table: {staging_table}")
             except Exception as e:
                 failed_count += 1
-                print(f"Failed to cleanup staging table {table_name}: {e}")
-        
+                print(f"Failed to clean up {staging_table}: {e}")
+
         print(f"Staging cleanup complete: {cleaned_count} cleaned, {failed_count} failed")
         return cleaned_count, failed_count
 
@@ -523,53 +530,41 @@ class Orchestrator:
                             self.config.surrogate_key_strategy
                         )
 
-                # Stage the transformed data to minimize lock time
-                # Handle multi-part table names (catalog.schema.table) properly
-                parts = self.config.table_name.split(".")
-                parts[-1] = f"{parts[-1]}_staging_{batch_id.replace('-', '_')}"
-                staging_table = ".".join(parts)
-                try:
-                    print(f"Staging data to {staging_table}...")
-                    transformed_df.write.format("delta").mode("overwrite").saveAsTable(staging_table)
-                    
-                    # Register staging table for cleanup (crash resilience)
-                    self.cleanup_manager.register_staging_table(staging_table)
+                # Use DataFrame checkpointing instead of physical staging to minimize lock time
+                # This provides fault tolerance without the 100% I/O overhead of physical staging
+                print("Creating DataFrame checkpoint for merge operation...")
+                checkpointed_df = transformed_df.localCheckpoint()
 
-                    # Column pruning: Select only columns that exist in target schema
-                    # Only perform pruning if target table already exists
-                    if spark.catalog.tableExists(self.config.table_name):
-                        target_schema = spark.table(self.config.table_name).schema
-                        target_columns = [f.name for f in target_schema.fields]
-                        staging_df = spark.table(staging_table).select(*[col(c) for c in spark.table(staging_table).columns if c in target_columns])
-                    else:
-                        # First run - no target table exists yet, use all staging columns
-                        staging_df = spark.table(staging_table)
+                # Column pruning: Select only columns that exist in target schema
+                # Only perform pruning if target table already exists
+                if spark.catalog.tableExists(self.config.table_name):
+                    target_schema = spark.table(self.config.table_name).schema
+                    target_columns = [f.name for f in target_schema.fields]
+                    source_df = checkpointed_df.select(*[col(c) for c in checkpointed_df.columns if c in target_columns])
+                else:
+                    # First run - no target table exists yet, use all columns
+                    source_df = checkpointed_df
 
-                    print(f"Merging from {staging_table} into {self.config.table_name}...")
+                print(f"Merging directly from checkpointed DataFrame into {self.config.table_name}...")
 
-                    # Kimball: Dimensions use natural_keys for merge; Facts use merge_keys (degenerate dimensions)
-                    if self.config.table_type == 'fact':
-                        join_keys = self.config.merge_keys or []
-                    else:
-                        join_keys = self.config.natural_keys or []
+                # Kimball: Dimensions use natural_keys for merge; Facts use merge_keys (degenerate dimensions)
+                if self.config.table_type == 'fact':
+                    join_keys = self.config.merge_keys or []
+                else:
+                    join_keys = self.config.natural_keys or []
 
-                    self.merger.merge(
-                        target_table_name=self.config.table_name,
-                        source_df=staging_df,
-                        join_keys=join_keys, 
-                        delete_strategy=self.config.delete_strategy,
-                        batch_id=batch_id,
-                        scd_type=self.config.scd_type,
-                        track_history_columns=self.config.track_history_columns,
-                        surrogate_key_col=self.config.surrogate_key,
-                        surrogate_key_strategy=self.config.surrogate_key_strategy,
-                        schema_evolution=self.config.schema_evolution
-                    )
-                finally:
-                    # Clean up staging table - ensure this runs even if merge fails
-                    spark.sql(f"DROP TABLE IF EXISTS {staging_table}")
-                    # Unregister from cleanup manager after successful cleanup
-                    self.cleanup_manager.unregister_staging_table(staging_table)
+                self.merger.merge(
+                    target_table_name=self.config.table_name,
+                    source_df=source_df,
+                    join_keys=join_keys, 
+                    delete_strategy=self.config.delete_strategy,
+                    batch_id=batch_id,
+                    scd_type=self.config.scd_type,
+                    track_history_columns=self.config.track_history_columns,
+                    surrogate_key_col=self.config.surrogate_key,
+                    surrogate_key_strategy=self.config.surrogate_key_strategy,
+                    schema_evolution=self.config.schema_evolution
+                )
 
                 # 5. Optimize Table (if configured)
                 if self.config.optimize_after_merge:

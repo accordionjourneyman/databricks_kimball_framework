@@ -75,13 +75,6 @@ class DeltaMerger:
         if batch_id:
             enriched_df = enriched_df.withColumn("__etl_batch_id", lit(batch_id))
 
-        # Enable Predictive Optimization for automated maintenance
-        try:
-            spark.sql(f"ALTER TABLE {target_table_name} SET TBLPROPERTIES ('delta.predictiveOptimization.managed' = 'true')")
-        except Exception:
-            # Ignore if property already set or not supported
-            pass
-
         if scd_type == 2:
             self._merge_scd2(target_table_name, enriched_df, join_keys, track_history_columns, surrogate_key_col, surrogate_key_strategy, schema_evolution)
         else:
@@ -181,12 +174,6 @@ class DeltaMerger:
         """
         if not track_history_columns:
             raise ValueError("track_history_columns must be provided for SCD Type 2")
-        
-        # Enable Deletion Vectors for efficient soft deletes
-        try:
-            spark.sql(f"ALTER TABLE {target_table_name} SET TBLPROPERTIES ('delta.enableDeletionVectors' = 'true')")
-        except Exception:
-            pass
         
         # For Databricks Runtime we enable table-level auto-merge so MERGE can evolve schema.
         if schema_evolution:
