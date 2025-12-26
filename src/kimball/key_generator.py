@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import col, xxhash64, lit, concat_ws, row_number
+from pyspark.sql.functions import col, xxhash64, lit, concat_ws, row_number, monotonically_increasing_id
 from pyspark.sql.window import Window
 from databricks.sdk.runtime import spark
 
@@ -57,13 +57,25 @@ class HashKeyGenerator(KeyGenerator):
         # However, to be safe and consistent with typical hash key practices:
         return df.withColumn(key_col_name, xxhash64(*[col(c) for c in self.natural_keys]))
 
-class SequenceKeyGenerator(KeyGenerator):
+class UniqueKeyGenerator(KeyGenerator):
     """
-    Generates sequential integers using distributed generation.
-    WARNING: This is not concurrency-safe without external locking or a dedicated sequence generator service.
-    Uses monotonically_increasing_id for parallel generation (may have gaps).
+    Generates unique identifiers using monotonically_increasing_id.
+    Produces unique values across partitions but may have gaps.
+    Suitable for cases where uniqueness is required but sequentiality is not.
     """
     def generate_keys(self, df: DataFrame, key_col_name: str, existing_max_key: int = 0) -> DataFrame:
         # Use monotonically_increasing_id for distributed, parallel key generation
         # Adds offset for existing max key, may have gaps but scales across executors
         return df.withColumn(key_col_name, monotonically_increasing_id() + lit(existing_max_key + 1))
+
+class SequenceKeyGenerator(KeyGenerator):
+    """
+    Generates sequential integers using row_number() over a window.
+    Produces dense, sequential surrogate keys as expected in Kimball methodology.
+    Note: Requires collecting data to a single partition, may not scale for very large datasets.
+    """
+    def generate_keys(self, df: DataFrame, key_col_name: str, existing_max_key: int = 0) -> DataFrame:
+        # Use row_number for sequential generation
+        # This requires sorting/ordering, so we use a dummy ordering
+        window = Window.orderBy(lit(1))  # Dummy ordering since we just want sequential numbers
+        return df.withColumn(key_col_name, row_number().over(window) + lit(existing_max_key))

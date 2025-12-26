@@ -18,53 +18,68 @@ import json
 
 class QueryMetricsCollector:
     """
-    Collects QueryExecution metrics for observability.
-    Captures execution time, bytes read/written, and other performance metrics.
+    Collects basic query execution metrics for observability.
+    Uses DataFrame operations and timing instead of Spark listeners.
     """
-    
+
     def __init__(self):
-        self.metrics = {}
-        self.query_listener = None
-        
+        self.metrics = []
+        self.start_time = None
+
     def start_collection(self):
         """Start collecting query execution metrics."""
-        from pyspark.sql.utils import AnalysisException
-        
-        class MetricsListener:
-            def __init__(self, collector):
-                self.collector = collector
-                
-            def onQueryExecutionEnd(self, queryExecution):
-                """Capture metrics when query execution ends."""
+        self.start_time = time.time()
+        self.metrics = []
+
+    def add_operation_metric(self, operation_name: str, df=None, **kwargs):
+        """Add a metric for a specific operation."""
+        try:
+            metric = {
+                'operation': operation_name,
+                'timestamp': time.time(),
+                'duration_ms': kwargs.get('duration_ms', 0),
+            }
+
+            # Add DataFrame metrics if available
+            if df is not None:
                 try:
-                    metrics = {
-                        'query_id': queryExecution.id(),
-                        'execution_time_ms': queryExecution.timeTakenMs(),
-                        'bytes_read': getattr(queryExecution, 'bytesRead', lambda: 0)(),
-                        'bytes_written': getattr(queryExecution, 'bytesWritten', lambda: 0)(),
-                        'rows_read': getattr(queryExecution, 'rowsRead', lambda: 0)(),
-                        'rows_written': getattr(queryExecution, 'rowsWritten', lambda: 0)(),
-                        'query_text': queryExecution.queryText()[:500],  # Truncate long queries
-                        'timestamp': time.time()
-                    }
-                    self.collector.metrics[queryExecution.id()] = metrics
-                except Exception as e:
-                    print(f"Failed to collect metrics for query {queryExecution.id()}: {e}")
-        
-        self.query_listener = MetricsListener(self)
-        spark.sparkContext.addSparkListener(self.query_listener)
-        
+                    # Get basic stats without collecting data
+                    if hasattr(df, '_jdf'):
+                        # Try to get some basic metrics from the logical plan
+                        metric['has_logical_plan'] = True
+                    else:
+                        metric['has_logical_plan'] = False
+                except:
+                    metric['has_logical_plan'] = False
+
+            # Add any additional metrics passed
+            metric.update(kwargs)
+            self.metrics.append(metric)
+
+        except Exception as e:
+            print(f"Failed to collect metric for {operation_name}: {e}")
+
     def stop_collection(self):
         """Stop collecting metrics and return collected data."""
-        if self.query_listener:
-            try:
-                spark.sparkContext.removeSparkListener(self.query_listener)
-            except:
-                pass  # Listener might already be removed
+        if self.start_time:
+            total_duration = time.time() - self.start_time
+            self.add_operation_metric('total_pipeline', duration_ms=total_duration * 1000)
         return self.metrics
-    
+
     def get_summary(self) -> Dict[str, Any]:
         """Get summary of collected metrics."""
+        if not self.metrics:
+            return {}
+
+        total_time = sum(m.get('duration_ms', 0) for m in self.metrics)
+        operation_count = len([m for m in self.metrics if m.get('operation') != 'total_pipeline'])
+
+        return {
+            'total_operations': operation_count,
+            'total_execution_time_ms': total_time,
+            'operations': self.metrics,
+            'avg_operation_time_ms': total_time / operation_count if operation_count > 0 else 0
+        }
         if not self.metrics:
             return {}
             
@@ -90,7 +105,11 @@ class StagingCleanupManager:
     Registers staging tables in persistent storage and provides cleanup methods.
     """
     
-    def __init__(self, cleanup_registry_path: str = "/dbfs/kimball_staging_cleanup.json"):
+    def __init__(self, cleanup_registry_path: str = None):
+        # Use configurable path for cleanup registry
+        if cleanup_registry_path is None:
+            cleanup_registry_path = os.getenv("KIMBALL_CLEANUP_REGISTRY", "/tmp/kimball_staging_cleanup.json")
+        
         self.cleanup_registry_path = cleanup_registry_path
         self.active_staging_tables = set()
         self._load_registry()
@@ -150,6 +169,8 @@ class StagingCleanupManager:
         
         print(f"Staging cleanup complete: {cleaned_count} cleaned, {failed_count} failed")
         return cleaned_count, failed_count
+
+class PipelineCheckpoint:
     """
     Handles checkpointing for complex DAG pipelines.
     Saves and restores pipeline state to enable resumability.
@@ -158,11 +179,11 @@ class StagingCleanupManager:
     """
     
     def __init__(self, checkpoint_dir: str = None):
-        # Use DBFS for persistent storage instead of /tmp
-        # Allow override via environment variable for testing
+        # Use configurable persistent storage instead of hardcoded /dbfs
+        # Allow override via environment variable for different environments
         if checkpoint_dir is None:
-            checkpoint_dir = os.getenv("KIMBALL_CHECKPOINT_DIR", "/dbfs/kimball_checkpoints")
-        
+            checkpoint_dir = os.getenv("KIMBALL_CHECKPOINT_DIR", "/tmp/kimball_checkpoints")
+
         self.checkpoint_dir = checkpoint_dir
         os.makedirs(checkpoint_dir, exist_ok=True)
         
