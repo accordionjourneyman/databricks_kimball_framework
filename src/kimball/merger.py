@@ -324,7 +324,7 @@ class DeltaMerger:
         insert_values.update({
             "__is_current": "true",
             "__valid_from": "CASE WHEN source.__merge_action = 'INSERT_NEW' THEN cast('1900-01-01 00:00:00' as timestamp) ELSE source.__etl_processed_at END",
-            "__valid_to": "cast('2099-12-31 23:59:59' as timestamp)",
+            "__valid_to": "cast('9999-12-31 23:59:59' as timestamp)",
             "__etl_processed_at": "current_timestamp()",
             "__is_deleted": "false"
         })
@@ -389,13 +389,6 @@ class DeltaMerger:
 
         delta_table = DeltaTable.forName(spark, target_table_name)
         
-        # Check if -1 exists
-        # We use a quick check
-        existing_defaults_df = delta_table.toDF().filter(col(surrogate_key).isin([-1, -2, -3])).select(surrogate_key).agg(collect_set(surrogate_key)).first()
-        existing_keys = existing_defaults_df[0] if existing_defaults_df else set()
-        
-        rows_to_insert = []
-        
         # Define the standard defaults
         # -1: Unknown
         # -2: Not Applicable
@@ -407,13 +400,14 @@ class DeltaMerger:
             -3: "Error"
         }
         
+        rows_to_insert = []
+        
         for key, label in standard_defaults.items():
-            if key not in existing_keys:
-                # Construct row
-                row = {surrogate_key: key}
-                
-                # Fill other columns
-                for field in schema.fields:
+            # Construct row
+            row = {surrogate_key: key}
+            
+            # Fill other columns
+            for field in schema.fields:
                     col_name = field.name
                     if col_name == surrogate_key:
                         continue
@@ -424,7 +418,7 @@ class DeltaMerger:
                     elif col_name == "__valid_from":
                         row[col_name] = datetime(1900, 1, 1, 0, 0, 0)  # Standard start
                     elif col_name == "__valid_to":
-                        row[col_name] = datetime(2099, 12, 31, 23, 59, 59)  # Standard end for default rows
+                        row[col_name] = datetime(9999, 12, 31, 23, 59, 59)  # Standard end for default rows
                     elif col_name.startswith("__"):
                         # Other system cols: provide a fallback if the target field is non-nullable
                         if not field.nullable:
@@ -462,28 +456,17 @@ class DeltaMerger:
                             else:
                                 row[col_name] = None
                 
-                rows_to_insert.append(row)
+            rows_to_insert.append(row)
         
         if rows_to_insert:
             print(f"Seeding {len(rows_to_insert)} default rows into {target_table_name}...")
-            df = spark.createDataFrame(rows_to_insert, schema=schema)
+            df = spark.createDataFrame(rows_to_insert, schema)
             
-            # For IDENTITY columns, use OVERRIDING SYSTEM VALUE to allow explicit key values
-            if surrogate_key_strategy == "identity":
-                # Insert with OVERRIDING SYSTEM VALUE
-                df.createOrReplaceTempView("temp_defaults")
-                column_names = [f.name for f in df.schema.fields]
-                columns_str = ", ".join(f"`{col}`" for col in column_names)
-                spark.sql(f"""
-                INSERT OVERRIDING SYSTEM VALUE INTO `{target_table_name}` ({columns_str})
-                SELECT {columns_str} FROM temp_defaults
-                """)
-            else:
-                # Standard MERGE for non-identity keys
-                (delta_table.alias("target")
-                    .merge(df.alias("source"), f"target.{surrogate_key} = source.{surrogate_key}")
-                    .whenNotMatchedInsertAll()
-                    .execute())
+            # Use atomic MERGE operation to prevent duplicates in concurrent environments
+            delta_table.alias("target").merge(
+                df.alias("source"),
+                f"target.{surrogate_key} = source.{surrogate_key}"
+            ).whenNotMatchedInsertAll().execute()
 
     def ensure_scd1_defaults(self, target_table_name, schema, surrogate_key, default_values=None, surrogate_key_strategy="identity"):
         """
@@ -501,10 +484,6 @@ class DeltaMerger:
 
         delta_table = DeltaTable.forName(spark, target_table_name)
         
-        # Check if defaults already exist
-        existing_defaults_df = delta_table.toDF().filter(col(surrogate_key).isin([-1, -2, -3])).select(surrogate_key).agg(collect_set(surrogate_key)).first()
-        existing_keys = existing_defaults_df[0] if existing_defaults_df else set()
-        
         rows_to_insert = []
         
         standard_defaults = {
@@ -514,10 +493,9 @@ class DeltaMerger:
         }
         
         for key, label in standard_defaults.items():
-            if key not in existing_keys:
-                row = {surrogate_key: key}
-                
-                for field in schema.fields:
+            row = {surrogate_key: key}
+            
+            for field in schema.fields:
                     col_name = field.name
                     if col_name == surrogate_key:
                         continue
@@ -555,28 +533,17 @@ class DeltaMerger:
                             else:
                                 row[col_name] = None
                 
-                rows_to_insert.append(row)
+            rows_to_insert.append(row)
         
         if rows_to_insert:
             print(f"Seeding {len(rows_to_insert)} default rows into {target_table_name}...")
-            df = spark.createDataFrame(rows_to_insert, schema=schema)
+            df = spark.createDataFrame(rows_to_insert, schema)
             
-            # For IDENTITY columns, use OVERRIDING SYSTEM VALUE to allow explicit key values
-            if surrogate_key_strategy == "identity":
-                # Insert with OVERRIDING SYSTEM VALUE
-                df.createOrReplaceTempView("temp_defaults")
-                column_names = [f.name for f in df.schema.fields]
-                columns_str = ", ".join(f"`{col}`" for col in column_names)
-                spark.sql(f"""
-                INSERT OVERRIDING SYSTEM VALUE INTO `{target_table_name}` ({columns_str})
-                SELECT {columns_str} FROM temp_defaults
-                """)
-            else:
-                # Standard MERGE for non-identity keys
-                (delta_table.alias("target")
-                    .merge(df.alias("source"), f"target.{surrogate_key} = source.{surrogate_key}")
-                    .whenNotMatchedInsertAll()
-                    .execute())
+            # Use atomic MERGE operation to prevent duplicates in concurrent environments
+            delta_table.alias("target").merge(
+                df.alias("source"),
+                f"target.{surrogate_key} = source.{surrogate_key}"
+            ).whenNotMatchedInsertAll().execute()
 
     def optimize_table(self, table_name: str, cluster_by: List[str] = None):
         """

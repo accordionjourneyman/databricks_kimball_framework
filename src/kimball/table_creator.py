@@ -31,8 +31,8 @@ class TableCreator:
             return
         
         # Check config for liquid clustering
-        if config and 'liquid_clustering' in config:
-            cluster_by = config['liquid_clustering']
+        if config and 'cluster_by' in config:
+            cluster_by = config['cluster_by']
             partition_by = None  # Don't use partitioning with liquid clustering
             print(f"Using Liquid Clustering from config: {cluster_by}")
         elif cluster_by:

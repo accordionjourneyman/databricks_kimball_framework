@@ -106,33 +106,35 @@ class StagingCleanupManager:
     def _ensure_registry_table(self):
         """Ensure the registry Delta table exists."""
         if not spark.catalog.tableExists(self.registry_table):
-            # Create registry table with proper schema
-            spark.sql(f"""
-                CREATE TABLE `{self.registry_table}` (
-                    pipeline_id STRING,
-                    staging_table STRING,
-                    created_at TIMESTAMP,
-                    batch_id STRING
-                )
-                USING DELTA
-                TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
-            """)
+            # Create registry table with proper schema using DataFrame API
+            from pyspark.sql.types import StringType, TimestampType
+            schema = StructType([
+                StructField("pipeline_id", StringType(), True),
+                StructField("staging_table", StringType(), True),
+                StructField("created_at", TimestampType(), True),
+                StructField("batch_id", StringType(), True)
+            ])
+            empty_df = spark.createDataFrame([], schema)
+            empty_df.write.format("delta").saveAsTable(self.registry_table)
             print(f"Created staging cleanup registry table: {self.registry_table}")
 
     def register_staging_table(self, staging_table: str, pipeline_id: str = None, batch_id: str = None):
         """Register a staging table for cleanup using Delta table."""
         from pyspark.sql.functions import current_timestamp
-
-        # Use MERGE for atomic registration (handles concurrent writes)
-        spark.sql(f"""
-            MERGE INTO `{self.registry_table}` target
-            USING (SELECT '{pipeline_id or 'unknown'}' as pipeline_id,
-                          '{staging_table}' as staging_table,
-                          current_timestamp() as created_at,
-                          '{batch_id or 'unknown'}' as batch_id) source
-            ON target.staging_table = source.staging_table
-            WHEN NOT MATCHED THEN INSERT *
-        """)
+        from delta.tables import DeltaTable
+        
+        # Create DataFrame for the new entry
+        new_entry = spark.createDataFrame(
+            [(pipeline_id or 'unknown', staging_table, batch_id or 'unknown')],
+            ["pipeline_id", "staging_table", "batch_id"]
+        ).withColumn("created_at", current_timestamp())
+        
+        # Use DeltaTable API for atomic registration
+        registry_table = DeltaTable.forName(spark, self.registry_table)
+        registry_table.alias("target").merge(
+            new_entry.alias("source"),
+            "target.staging_table = source.staging_table"
+        ).whenNotMatchedInsertAll().execute()
 
         print(f"Registered staging table for cleanup: {staging_table}")
 
@@ -228,38 +230,43 @@ class PipelineCheckpoint:
     def _ensure_checkpoint_table(self):
         """Ensure the checkpoint Delta table exists."""
         if not spark.catalog.tableExists(self.checkpoint_table):
-            # Create checkpoint table with proper schema
-            spark.sql(f"""
-                CREATE TABLE `{self.checkpoint_table}` (
-                    pipeline_id STRING,
-                    stage STRING,
-                    timestamp TIMESTAMP,
-                    state STRING
-                )
-                USING DELTA
-                TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
-                PARTITIONED BY (pipeline_id)
-            """)
+            # Create checkpoint table with proper schema using DataFrame API
+            from pyspark.sql.types import StringType, TimestampType
+            schema = StructType([
+                StructField("pipeline_id", StringType(), True),
+                StructField("stage", StringType(), True),
+                StructField("timestamp", TimestampType(), True),
+                StructField("state", StringType(), True)
+            ])
+            empty_df = spark.createDataFrame([], schema)
+            empty_df.write.format("delta").partitionBy("pipeline_id").saveAsTable(self.checkpoint_table)
             print(f"Created pipeline checkpoint table: {self.checkpoint_table}")
 
     def save_checkpoint(self, pipeline_id: str, stage: str, state: Dict[str, Any]):
         """Save pipeline state at a specific stage using atomic Delta operations."""
         import json
+        from pyspark.sql.functions import current_timestamp
+        from delta.tables import DeltaTable
+        
         state_json = json.dumps(state)
 
-        # Use MERGE for atomic checkpoint updates
-        spark.sql(f"""
-            MERGE INTO `{self.checkpoint_table}` target
-            USING (SELECT '{pipeline_id}' as pipeline_id,
-                          '{stage}' as stage,
-                          current_timestamp() as timestamp,
-                          '{state_json}' as state) source
-            ON target.pipeline_id = source.pipeline_id AND target.stage = source.stage
-            WHEN MATCHED THEN UPDATE SET
-                timestamp = source.timestamp,
-                state = source.state
-            WHEN NOT MATCHED THEN INSERT *
-        """)
+        # Create DataFrame for the checkpoint entry
+        checkpoint_entry = spark.createDataFrame(
+            [(pipeline_id, stage, state_json)],
+            ["pipeline_id", "stage", "state"]
+        ).withColumn("timestamp", current_timestamp())
+
+        # Use DeltaTable API for atomic checkpoint updates
+        checkpoint_table = DeltaTable.forName(spark, self.checkpoint_table)
+        checkpoint_table.alias("target").merge(
+            checkpoint_entry.alias("source"),
+            "target.pipeline_id = source.pipeline_id AND target.stage = source.stage"
+        ).whenMatchedUpdate(
+            set={
+                "timestamp": "source.timestamp",
+                "state": "source.state"
+            }
+        ).whenNotMatchedInsertAll().execute()
 
         print(f"Checkpoint saved: {pipeline_id} -> {stage}")
 
@@ -267,12 +274,11 @@ class PipelineCheckpoint:
         """Load pipeline state from Delta table checkpoint."""
         import json
 
-        result_df = spark.sql(f"""
-            SELECT state FROM `{self.checkpoint_table}`
-            WHERE pipeline_id = '{pipeline_id}' AND stage = '{stage}'
-            ORDER BY timestamp DESC
-            LIMIT 1
-        """)
+        # Use DataFrame API to safely query checkpoint
+        checkpoint_df = spark.table(self.checkpoint_table)
+        result_df = checkpoint_df.filter(
+            (col("pipeline_id") == pipeline_id) & (col("stage") == stage)
+        ).orderBy(col("timestamp").desc()).limit(1)
 
         if result_df.count() == 0:
             return None
@@ -288,13 +294,15 @@ class PipelineCheckpoint:
 
     def clear_checkpoint(self, pipeline_id: str, stage: str):
         """Clear a checkpoint from Delta table."""
-        deleted_count = spark.sql(f"""
-            DELETE FROM {self.checkpoint_table}
-            WHERE pipeline_id = '{pipeline_id}' AND stage = '{stage}'
-        """).count()
-
-        if deleted_count > 0:
-            print(f"Checkpoint cleared: {pipeline_id} -> {stage}")
+        from delta.tables import DeltaTable
+        
+        # Use DeltaTable API to safely delete checkpoint
+        checkpoint_table = DeltaTable.forName(spark, self.checkpoint_table)
+        checkpoint_table.delete(
+            (col("pipeline_id") == pipeline_id) & (col("stage") == stage)
+        )
+        
+        print(f"Checkpoint cleared: {pipeline_id} -> {stage}")
 
     def list_checkpoints(self, pipeline_id: str = None) -> DataFrame:
         """List all checkpoints, optionally filtered by pipeline_id."""
