@@ -43,7 +43,7 @@ def test_checkpoint_persistence():
 
     # Check that default is now DBFS instead of /tmp
     if 'checkpoint_dir: str = None' in content and 'KIMBALL_CHECKPOINT_DIR' in content:
-        if '/dbfs/kimball_checkpoints' in content:
+        if 'dbfs:/kimball/checkpoints' in content:
             print("✅ Checkpoint uses persistent DBFS storage by default")
             return True
 
