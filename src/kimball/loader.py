@@ -67,5 +67,6 @@ class DataLoader:
         Useful for updating the watermark after a successful load.
         """
         dt = DeltaTable.forName(spark, table_name)
-        return dt.history(1).select("version").first()["version"]
+        row = dt.history(1).select("version").first()
+        return row["version"] if row else 0
 

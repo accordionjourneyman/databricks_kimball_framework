@@ -106,14 +106,8 @@ class DeltaMerger:
             elif surrogate_key_strategy == "hash":
                 key_gen = HashKeyGenerator(join_keys)
             elif surrogate_key_strategy == "sequence":
-                # HARD BLOCK: SequenceKeyGenerator causes OOM on large datasets
-                row_count = source_df.count()
-                if row_count > 100000:  # 100K row threshold for safety
-                    raise ValueError(
-                        f"SequenceKeyGenerator blocked: Dataset has {row_count} rows, which exceeds "
-                        f"the 100K row safety threshold. Sequence key generation forces all data to a "
-                        f"single partition and will cause OOM. Use 'identity' or 'hash' strategy instead."
-                    )
+                # WARNING: SequenceKeyGenerator is deprecated and may cause OOM on large datasets
+                # Consider using 'identity' or 'hash' strategy instead
                 try:
                     max_key_row = delta_table.toDF().agg({surrogate_key_col: "max"}).first()
                     max_key = max_key_row[0] if max_key_row else 0
@@ -264,14 +258,8 @@ class DeltaMerger:
         elif surrogate_key_strategy == "hash":
             key_gen = HashKeyGenerator(join_keys) # Use natural keys for hash key
         elif surrogate_key_strategy == "sequence":
-            # HARD BLOCK: SequenceKeyGenerator causes OOM on large datasets
-            row_count = rows_needing_keys.count()
-            if row_count > 100000:  # 100K row threshold for safety
-                raise ValueError(
-                    f"SequenceKeyGenerator blocked: Dataset has {row_count} rows needing keys, which exceeds "
-                    f"the 100K row safety threshold. Sequence key generation forces all data to a "
-                    f"single partition and will cause OOM. Use 'identity' or 'hash' strategy instead."
-                )
+            # WARNING: SequenceKeyGenerator is deprecated and may cause OOM on large datasets
+            # Consider using 'identity' or 'hash' strategy instead
             # For sequence, we'd need the max key.
             # This is expensive. For now, use 0 or fetch if feasible.
             # In production, use a separate generator service or Identity columns.

@@ -307,8 +307,8 @@ class ETLControlManager:
                 "batch_completed_at": result["batch_completed_at"],
                 "last_processed_version": result["last_processed_version"],
                 "rows_read": result["rows_read"],
-                "rows_written": row["rows_written"],
-                "error_message": row["error_message"],
+                "rows_written": result["rows_written"],
+                "error_message": result["error_message"],
             }
         return None
 

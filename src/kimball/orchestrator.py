@@ -15,6 +15,14 @@ from databricks.sdk.runtime import spark
 from pyspark.sql import SparkSession
 from typing import Dict, Any, Optional
 import json
+try:
+    # Databricks Runtime 13+ - errors moved to pyspark.errors
+    from pyspark.errors import PySparkException
+    PYSPARK_EXCEPTION_BASE = PySparkException
+except ImportError:
+    # Fallback for older Databricks Runtime versions
+    import pyspark.sql.utils
+    PYSPARK_EXCEPTION_BASE = pyspark.sql.utils.AnalysisException
 
 class QueryMetricsCollector:
     """
@@ -100,7 +108,7 @@ class StagingCleanupManager:
         if not spark.catalog.tableExists(self.registry_table):
             # Create registry table with proper schema
             spark.sql(f"""
-                CREATE TABLE {self.registry_table} (
+                CREATE TABLE `{self.registry_table}` (
                     pipeline_id STRING,
                     staging_table STRING,
                     created_at TIMESTAMP,
@@ -117,7 +125,7 @@ class StagingCleanupManager:
 
         # Use MERGE for atomic registration (handles concurrent writes)
         spark.sql(f"""
-            MERGE INTO {self.registry_table} target
+            MERGE INTO `{self.registry_table}` target
             USING (SELECT '{pipeline_id or 'unknown'}' as pipeline_id,
                           '{staging_table}' as staging_table,
                           current_timestamp() as created_at,
@@ -130,7 +138,7 @@ class StagingCleanupManager:
 
     def unregister_staging_table(self, staging_table: str):
         """Unregister a staging table after successful cleanup."""
-        spark.sql(f"DELETE FROM {self.registry_table} WHERE staging_table = '{staging_table}'")
+        spark.sql(f"DELETE FROM `{self.registry_table}` WHERE staging_table = '{staging_table}'")
         print(f"Unregistered staging table from cleanup: {staging_table}")
 
     def cleanup_staging_tables(self, spark_session=None, pipeline_id: str = None, max_age_hours: int = 24):
@@ -155,7 +163,7 @@ class StagingCleanupManager:
 
         # Get tables to clean up
         cleanup_df = spark.sql(f"""
-            SELECT staging_table FROM {self.registry_table}
+            SELECT staging_table FROM `{self.registry_table}`
             WHERE {where_clause}
         """)
 
@@ -177,6 +185,35 @@ class StagingCleanupManager:
         print(f"TTL-based staging cleanup complete: {cleaned_count} cleaned, {failed_count} failed")
         return cleaned_count, failed_count
 
+class StagingTableManager:
+    """
+    Context manager for staging tables that ensures cleanup regardless of execution outcome.
+    Prevents workspace pollution from failed ETL operations.
+    """
+
+    def __init__(self, cleanup_manager: StagingCleanupManager):
+        self.cleanup_manager = cleanup_manager
+        self.staging_tables = []
+
+    def register_staging_table(self, staging_table: str, pipeline_id: str = None, batch_id: str = None):
+        """Register a staging table for management and cleanup."""
+        self.staging_tables.append(staging_table)
+        self.cleanup_manager.register_staging_table(staging_table, pipeline_id, batch_id)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Ensure staging tables are cleaned up even if an exception occurs."""
+        for staging_table in self.staging_tables:
+            try:
+                # Use spark.catalog.dropTable for safe cleanup
+                spark.catalog.dropTable(staging_table, ignoreIfNotExists=True)
+                self.cleanup_manager.unregister_staging_table(staging_table)
+                print(f"Cleaned up staging table during exception recovery: {staging_table}")
+            except Exception as e:
+                print(f"Warning: Failed to clean up staging table {staging_table}: {e}")
+
 class PipelineCheckpoint:
     """
     Handles checkpointing for complex DAG pipelines using Delta table for ACID compliance.
@@ -196,7 +233,7 @@ class PipelineCheckpoint:
         if not spark.catalog.tableExists(self.checkpoint_table):
             # Create checkpoint table with proper schema
             spark.sql(f"""
-                CREATE TABLE {self.checkpoint_table} (
+                CREATE TABLE `{self.checkpoint_table}` (
                     pipeline_id STRING,
                     stage STRING,
                     timestamp TIMESTAMP,
@@ -215,7 +252,7 @@ class PipelineCheckpoint:
 
         # Use MERGE for atomic checkpoint updates
         spark.sql(f"""
-            MERGE INTO {self.checkpoint_table} target
+            MERGE INTO `{self.checkpoint_table}` target
             USING (SELECT '{pipeline_id}' as pipeline_id,
                           '{stage}' as stage,
                           current_timestamp() as timestamp,
@@ -234,7 +271,7 @@ class PipelineCheckpoint:
         import json
 
         result_df = spark.sql(f"""
-            SELECT state FROM {self.checkpoint_table}
+            SELECT state FROM `{self.checkpoint_table}`
             WHERE pipeline_id = '{pipeline_id}' AND stage = '{stage}'
             ORDER BY timestamp DESC
             LIMIT 1
@@ -349,6 +386,7 @@ class Orchestrator:
         self.metrics_collector = QueryMetricsCollector() if enable_metrics else None
         self.checkpoint_manager = PipelineCheckpoint(checkpoint_table)
         self.cleanup_manager = StagingCleanupManager()
+        self.staging_table_manager = StagingTableManager(self.cleanup_manager)
 
     def _add_system_columns(self, df, scd_type: int, surrogate_key: str, surrogate_key_strategy: str):
         """
@@ -604,9 +642,15 @@ class Orchestrator:
                     else:
                         print("No checkpoint directory configured, using local checkpoint (less reliable)")
                         checkpointed_df = transformed_df.localCheckpoint()
-                except:
-                    # Fallback to local checkpoint if checkpoint directory access fails
-                    print("Checkpoint directory access failed, using local checkpoint (less reliable)")
+                except PYSPARK_EXCEPTION_BASE as e:
+                    # Log specific exception and fallback to local checkpoint
+                    print(f"Checkpoint directory access failed with PySpark error: {e}")
+                    print("Using local checkpoint (less reliable)")
+                    checkpointed_df = transformed_df.localCheckpoint()
+                except Exception as e:
+                    # Log any other unexpected errors and fallback to local checkpoint
+                    print(f"Unexpected error during checkpoint setup: {e}")
+                    print("Using local checkpoint (less reliable)")
                     checkpointed_df = transformed_df.localCheckpoint()
 
                 # Column pruning: Select only columns that exist in target schema
