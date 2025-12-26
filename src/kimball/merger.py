@@ -324,7 +324,7 @@ class DeltaMerger:
         insert_values.update({
             "__is_current": "true",
             "__valid_from": "CASE WHEN source.__merge_action = 'INSERT_NEW' THEN cast('1900-01-01 00:00:00' as timestamp) ELSE source.__etl_processed_at END",
-            "__valid_to": "cast('9999-12-31 23:59:59' as timestamp)",
+            "__valid_to": "cast('2099-12-31 23:59:59' as timestamp)",
             "__etl_processed_at": "current_timestamp()",
             "__is_deleted": "false"
         })
@@ -418,7 +418,7 @@ class DeltaMerger:
                     elif col_name == "__valid_from":
                         row[col_name] = datetime(1900, 1, 1, 0, 0, 0)  # Standard start
                     elif col_name == "__valid_to":
-                        row[col_name] = datetime(9999, 12, 31, 23, 59, 59)  # Standard end for default rows
+                        row[col_name] = datetime(2099, 12, 31, 23, 59, 59)  # Standard end for default rows
                     elif col_name.startswith("__"):
                         # Other system cols: provide a fallback if the target field is non-nullable
                         if not field.nullable:

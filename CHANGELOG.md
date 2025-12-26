@@ -7,9 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+- **REMOVED**: `UniqueKeyGenerator` class - violated deterministic surrogate key requirements, used unsafe `monotonically_increasing_id()`
+- **DEPRECATED**: `SequenceKeyGenerator` remains deprecated but available for migration period
+
 ### Added
 - **YAML Configuration Schema Validation**: Added JSON Schema validation for YAML configs to catch configuration errors early with descriptive error messages
 - **Enhanced Configuration Robustness**: Automatic validation of required fields, data types, enum values, and Kimball-specific business rules
+- **Environment Variables**: Added `KIMBALL_CLEANUP_REGISTRY_TABLE` and `KIMBALL_CHECKPOINT_TABLE` for staging cleanup and pipeline checkpoints
+
+### Fixed
+- **BLOCKER**: Replaced unsafe `.collect()` in `StagingCleanupManager` with distributed `foreachPartition()` processing
+- **BLOCKER**: Fixed year 9999 timestamp overflow by using 2099-12-31 for `__valid_to` default rows
+- **MAJOR**: Resolved dependency version conflict in `requirements.txt` (removed duplicate `databricks-sdk` entries)
 
 ### Planned
 - Early Arriving Facts support for referential integrity handling

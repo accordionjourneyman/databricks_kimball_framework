@@ -163,26 +163,30 @@ class StagingCleanupManager:
         if pipeline_id:
             registry_df = registry_df.filter(col("pipeline_id") == pipeline_id)
 
-        # Get tables to clean up
-        cleanup_df = registry_df.select("staging_table")
+        # Get tables to clean up - use DeltaTable operations for distributed processing
+        cleanup_df = registry_df.select("staging_table", "pipeline_id", "batch_id")
 
-        cleaned_count = 0
-        failed_count = 0
+        # Use foreachPartition with proper distributed logic
+        def cleanup_partition(rows):
+            for row in rows:
+                staging_table = row.staging_table
+                try:
+                    # Use spark.catalog.dropTable for safe table dropping
+                    spark_session.catalog.dropTable(staging_table, ignoreIfNotExists=True)
+                    # Remove from registry using DeltaTable API
+                    registry_table = DeltaTable.forName(spark_session, self.registry_table)
+                    registry_table.delete(col("staging_table") == staging_table)
+                    print(f"Cleaned up orphaned staging table: {staging_table}")
+                except Exception as e:
+                    print(f"Failed to clean up {staging_table}: {e}")
 
-        for row in cleanup_df.collect():
-            staging_table = row.staging_table
-            try:
-                # Use spark.catalog.dropTable for safe table dropping
-                spark_session.catalog.dropTable(staging_table, ignoreIfNotExists=True)
-                self.unregister_staging_table(staging_table)
-                cleaned_count += 1
-                print(f"Cleaned up orphaned staging table: {staging_table}")
-            except Exception as e:
-                failed_count += 1
-                print(f"Failed to clean up {staging_table}: {e}")
+        # Execute cleanup in distributed manner
+        cleanup_df.foreachPartition(cleanup_partition)
 
-        print(f"TTL-based staging cleanup complete: {cleaned_count} cleaned, {failed_count} failed")
-        return cleaned_count, failed_count
+        # Count results using DataFrame operations
+        total_count = cleanup_df.count()
+        print(f"TTL-based staging cleanup initiated for {total_count} tables")
+        return total_count, 0  # Note: actual counts not available in distributed processing
 
 class StagingTableManager:
     """

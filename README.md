@@ -87,6 +87,8 @@ orchestrator.run()
 import os
 os.environ["KIMBALL_ETL_SCHEMA"] = "prod_gold"  # ETL control table location
 os.environ["KIMBALL_CHECKPOINT_ROOT"] = "dbfs:/kimball/checkpoints/"  # DataFrame checkpoints
+os.environ["KIMBALL_CLEANUP_REGISTRY_TABLE"] = "prod_gold.kimball_staging_registry"  # Staging cleanup registry
+os.environ["KIMBALL_CHECKPOINT_TABLE"] = "prod_gold.kimball_pipeline_checkpoints"  # Pipeline checkpoints
 ```
 
 ## Architecture
@@ -149,7 +151,7 @@ keys:
 ```yaml
 table_type: dimension
 scd_type: 2
-surrogate_key_strategy: hash # or: identity, sequence
+surrogate_key_strategy: hash # identity (recommended), hash
 track_history_columns: [name, category, price]
 ```
 

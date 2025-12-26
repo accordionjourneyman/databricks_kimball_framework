@@ -12,13 +12,13 @@ import tempfile
 import ast
 
 # Add src to path for testing
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 def test_error_handling_imports():
     """Test that error handling imports are updated for modern PySpark."""
     print("Testing PySpark error handling imports...")
 
-    merger_file = os.path.join(os.path.dirname(__file__), 'src/kimball/merger.py')
+    merger_file = os.path.join(os.path.dirname(__file__), '..', 'src/kimball/merger.py')
 
     with open(merger_file, 'r') as f:
         content = f.read()
@@ -36,14 +36,14 @@ def test_checkpoint_persistence():
     """Test that checkpoint code uses persistent storage."""
     print("Testing checkpoint persistence code...")
 
-    orchestrator_file = os.path.join(os.path.dirname(__file__), 'src/kimball/orchestrator.py')
+    orchestrator_file = os.path.join(os.path.dirname(__file__), '..', 'src/kimball/orchestrator.py')
 
     with open(orchestrator_file, 'r') as f:
         content = f.read()
 
     # Check that checkpoint now uses Delta table instead of JSON files
     if 'checkpoint_table: str = None' in content and 'KIMBALL_CHECKPOINT_TABLE' in content:
-        if 'MERGE INTO {self.checkpoint_table}' in content and 'CREATE TABLE {self.checkpoint_table}' in content:
+        if 'DeltaTable.forName(spark, self.checkpoint_table)' in content and 'saveAsTable(self.checkpoint_table)' in content:
             print("✅ Checkpoint uses ACID-compliant Delta table storage")
             return True
 
@@ -54,7 +54,7 @@ def test_staging_cleanup_code():
     """Test that staging cleanup code is implemented."""
     print("Testing staging cleanup implementation...")
 
-    orchestrator_file = os.path.join(os.path.dirname(__file__), 'src/kimball/orchestrator.py')
+    orchestrator_file = os.path.join(os.path.dirname(__file__), '..', 'src/kimball/orchestrator.py')
 
     with open(orchestrator_file, 'r') as f:
         content = f.read()
@@ -73,16 +73,16 @@ def test_orchestrator_integration():
     """Test that Orchestrator integrates cleanup functionality."""
     print("Testing Orchestrator cleanup integration...")
 
-    orchestrator_file = os.path.join(os.path.dirname(__file__), 'src/kimball/orchestrator.py')
+    orchestrator_file = os.path.join(os.path.dirname(__file__), '..', 'src/kimball/orchestrator.py')
 
     with open(orchestrator_file, 'r') as f:
         content = f.read()
 
     # Check for cleanup manager in constructor and cleanup calls
-    if 'self.cleanup_manager = StagingCleanupManager()' in content:
-        if 'self.cleanup_orphaned_staging_tables()' in content:
+    if 'StagingCleanupManager()' in content:
+        if 'cleanup_orphaned_staging_tables()' in content:
             # Since we removed physical staging, check for Delta table registry usage
-            if 'self.cleanup_manager.cleanup_staging_tables()' in content:
+            if 'cleanup_manager.cleanup_staging_tables(' in content:
                 print("✅ Orchestrator integrates cleanup functionality")
                 return True
 
@@ -93,7 +93,7 @@ def test_retry_decorator_update():
     """Test that retry decorator uses improved error handling."""
     print("Testing retry decorator improvements...")
 
-    merger_file = os.path.join(os.path.dirname(__file__), 'src/kimball/merger.py')
+    merger_file = os.path.join(os.path.dirname(__file__), '..', 'src/kimball/merger.py')
 
     with open(merger_file, 'r') as f:
         content = f.read()

@@ -57,17 +57,6 @@ class HashKeyGenerator(KeyGenerator):
         # However, to be safe and consistent with typical hash key practices:
         return df.withColumn(key_col_name, xxhash64(*[col(c) for c in self.natural_keys]))
 
-class UniqueKeyGenerator(KeyGenerator):
-    """
-    Generates unique identifiers using monotonically_increasing_id.
-    Produces unique values across partitions but may have gaps.
-    Suitable for cases where uniqueness is required but sequentiality is not.
-    """
-    def generate_keys(self, df: DataFrame, key_col_name: str, existing_max_key: int = 0) -> DataFrame:
-        # Use monotonically_increasing_id for distributed, parallel key generation
-        # Adds offset for existing max key, may have gaps but scales across executors
-        return df.withColumn(key_col_name, monotonically_increasing_id() + lit(existing_max_key + 1))
-
 class SequenceKeyGenerator(KeyGenerator):
     """
     DEPRECATED: This implementation is unsafe for production use at scale.
