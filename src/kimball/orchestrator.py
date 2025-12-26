@@ -161,59 +161,93 @@ class StagingCleanupManager:
 
 class PipelineCheckpoint:
     """
-    Handles checkpointing for complex DAG pipelines.
-    Saves and restores pipeline state to enable resumability.
-    
-    Uses persistent storage (DBFS) instead of ephemeral /tmp for reliability.
+    Handles checkpointing for complex DAG pipelines using Delta table for ACID compliance.
+    Saves and restores pipeline state to enable resumability with atomic guarantees.
     """
-    
-    def __init__(self, checkpoint_dir: str = None):
-        # Use configurable persistent storage instead of hardcoded /dbfs
-        # Allow override via environment variable for different environments
-        if checkpoint_dir is None:
-            checkpoint_dir = os.getenv("KIMBALL_CHECKPOINT_DIR", "/dbfs/kimball/checkpoints")
 
-        self.checkpoint_dir = checkpoint_dir
-        os.makedirs(checkpoint_dir, exist_ok=True)
-        
+    def __init__(self, checkpoint_table: str = None):
+        # Use Delta table for atomic checkpoint storage
+        if checkpoint_table is None:
+            checkpoint_table = os.getenv("KIMBALL_CHECKPOINT_TABLE", "default.kimball_pipeline_checkpoints")
+
+        self.checkpoint_table = checkpoint_table
+        self._ensure_checkpoint_table()
+
+    def _ensure_checkpoint_table(self):
+        """Ensure the checkpoint Delta table exists."""
+        if not spark.catalog.tableExists(self.checkpoint_table):
+            # Create checkpoint table with proper schema
+            spark.sql(f"""
+                CREATE TABLE {self.checkpoint_table} (
+                    pipeline_id STRING,
+                    stage STRING,
+                    timestamp TIMESTAMP,
+                    state STRING
+                )
+                USING DELTA
+                TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
+                PARTITIONED BY (pipeline_id)
+            """)
+            print(f"Created pipeline checkpoint table: {self.checkpoint_table}")
+
     def save_checkpoint(self, pipeline_id: str, stage: str, state: Dict[str, Any]):
-        """Save pipeline state at a specific stage."""
-        checkpoint_path = os.path.join(self.checkpoint_dir, f"{pipeline_id}_{stage}.json")
-        checkpoint_data = {
-            'pipeline_id': pipeline_id,
-            'stage': stage,
-            'timestamp': time.time(),
-            'state': state
-        }
-        
-        with open(checkpoint_path, 'w') as f:
-            json.dump(checkpoint_data, f, indent=2)
-            
-        print(f"Checkpoint saved: {checkpoint_path}")
-        
+        """Save pipeline state at a specific stage using atomic Delta operations."""
+        import json
+        state_json = json.dumps(state)
+
+        # Use MERGE for atomic checkpoint updates
+        spark.sql(f"""
+            MERGE INTO {self.checkpoint_table} target
+            USING (SELECT '{pipeline_id}' as pipeline_id,
+                          '{stage}' as stage,
+                          current_timestamp() as timestamp,
+                          '{state_json}' as state) source
+            ON target.pipeline_id = source.pipeline_id AND target.stage = source.stage
+            WHEN MATCHED THEN UPDATE SET
+                timestamp = source.timestamp,
+                state = source.state
+            WHEN NOT MATCHED THEN INSERT *
+        """)
+
+        print(f"Checkpoint saved: {pipeline_id} -> {stage}")
+
     def load_checkpoint(self, pipeline_id: str, stage: str) -> Optional[Dict[str, Any]]:
-        """Load pipeline state from a checkpoint."""
-        checkpoint_path = os.path.join(self.checkpoint_dir, f"{pipeline_id}_{stage}.json")
-        
-        if not os.path.exists(checkpoint_path):
+        """Load pipeline state from Delta table checkpoint."""
+        import json
+
+        result_df = spark.sql(f"""
+            SELECT state FROM {self.checkpoint_table}
+            WHERE pipeline_id = '{pipeline_id}' AND stage = '{stage}'
+            ORDER BY timestamp DESC
+            LIMIT 1
+        """)
+
+        if result_df.count() == 0:
             return None
-            
+
         try:
-            with open(checkpoint_path, 'r') as f:
-                data = json.load(f)
-            print(f"Checkpoint loaded: {checkpoint_path}")
-            return data.get('state')
+            state_json = result_df.first()['state']
+            state = json.loads(state_json)
+            print(f"Checkpoint loaded: {pipeline_id} -> {stage}")
+            return state
         except Exception as e:
-            print(f"Failed to load checkpoint {checkpoint_path}: {e}")
+            print(f"Failed to load checkpoint {pipeline_id}:{stage}: {e}")
             return None
-            
+
     def clear_checkpoint(self, pipeline_id: str, stage: str):
-        """Clear a checkpoint file."""
-        checkpoint_path = os.path.join(self.checkpoint_dir, f"{pipeline_id}_{stage}.json")
-        
-        if os.path.exists(checkpoint_path):
-            os.remove(checkpoint_path)
-            print(f"Checkpoint cleared: {checkpoint_path}")
+        """Clear a checkpoint from Delta table."""
+        deleted_count = spark.sql(f"""
+            DELETE FROM {self.checkpoint_table}
+            WHERE pipeline_id = '{pipeline_id}' AND stage = '{stage}'
+        """).count()
+
+        if deleted_count > 0:
+            print(f"Checkpoint cleared: {pipeline_id} -> {stage}")
+
+    def list_checkpoints(self, pipeline_id: str = None) -> DataFrame:
+        """List all checkpoints, optionally filtered by pipeline_id."""
+        where_clause = f"WHERE pipeline_id = '{pipeline_id}'" if pipeline_id else ""
+        return spark.sql(f"SELECT * FROM {self.checkpoint_table} {where_clause} ORDER BY pipeline_id, stage, timestamp DESC")
 
 class Orchestrator:
     """
@@ -240,7 +274,7 @@ class Orchestrator:
         # Deprecated parameter - for backward compatibility
         watermark_database: str = None,
         enable_metrics: bool = True,
-        checkpoint_dir: str = "/tmp/kimball_checkpoints"
+        checkpoint_table: str = None
     ):
         """
         Args:
@@ -250,7 +284,7 @@ class Orchestrator:
                         Falls back to target table's database if neither is set.
             watermark_database: **Deprecated** - Use etl_schema instead.
             enable_metrics: Whether to collect QueryExecution metrics.
-            checkpoint_dir: Directory for pipeline checkpoints.
+            checkpoint_table: Delta table for pipeline checkpoints (default: default.kimball_pipeline_checkpoints).
         """
         self.config_loader = ConfigLoader()
         self.config = self.config_loader.load_config(config_path)
@@ -295,7 +329,7 @@ class Orchestrator:
         
         # Initialize observability and resilience features
         self.metrics_collector = QueryMetricsCollector() if enable_metrics else None
-        self.checkpoint_manager = PipelineCheckpoint(checkpoint_dir)
+        self.checkpoint_manager = PipelineCheckpoint(checkpoint_table)
         self.cleanup_manager = StagingCleanupManager()
 
     def _add_system_columns(self, df, scd_type: int, surrogate_key: str, surrogate_key_strategy: str):

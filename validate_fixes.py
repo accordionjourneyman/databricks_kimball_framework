@@ -41,10 +41,10 @@ def test_checkpoint_persistence():
     with open(orchestrator_file, 'r') as f:
         content = f.read()
 
-    # Check that default is now /dbfs instead of dbfs:
-    if 'checkpoint_dir: str = None' in content and 'KIMBALL_CHECKPOINT_DIR' in content:
-        if '/dbfs/kimball/checkpoints' in content:
-            print("✅ Checkpoint uses persistent DBFS storage by default")
+    # Check that checkpoint now uses Delta table instead of JSON files
+    if 'checkpoint_table: str = None' in content and 'KIMBALL_CHECKPOINT_TABLE' in content:
+        if 'MERGE INTO {self.checkpoint_table}' in content and 'CREATE TABLE {self.checkpoint_table}' in content:
+            print("✅ Checkpoint uses ACID-compliant Delta table storage")
             return True
 
     print("❌ Checkpoint still uses non-persistent storage")
@@ -81,7 +81,8 @@ def test_orchestrator_integration():
     # Check for cleanup manager in constructor and cleanup calls
     if 'self.cleanup_manager = StagingCleanupManager()' in content:
         if 'self.cleanup_orphaned_staging_tables()' in content:
-            if 'self.cleanup_manager.register_staging_table(staging_table)' in content:
+            # Since we removed physical staging, check for Delta table registry usage
+            if 'self.cleanup_manager.cleanup_staging_tables()' in content:
                 print("✅ Orchestrator integrates cleanup functionality")
                 return True
 
