@@ -162,22 +162,33 @@ host = (
     .get()
 )
 
-# Try to get http_path - works differently on clusters vs serverless
+
+# Get http_path - dbt-databricks can connect to BOTH:
+# 1. SQL Warehouse: /sql/1.0/warehouses/<warehouse_id>
+# 2. All-Purpose Cluster: /sql/protocolv1/o/<org_id>/<cluster_id>
 try:
-    # Try cluster ID first
+    org_id = (
+        dbutils.notebook.entry_point.getDbutils()
+        .notebook()
+        .getContext()
+        .tags()
+        .get("orgId")
+        .get()
+    )
     cluster_id = spark.conf.get("spark.databricks.clusterUsageTags.clusterId", None)
+
     if cluster_id:
-        http_path = f"/sql/1.0/warehouses/{cluster_id}"
+        # All-Purpose Cluster
+        http_path = f"/sql/protocolv1/o/{org_id}/{cluster_id}"
+        print(f"✓ Using All-Purpose Cluster: {cluster_id}")
     else:
-        # Serverless - try to get from context
-        http_path = spark.conf.get("spark.databricks.warehouse.id", "")
-        if http_path:
-            http_path = f"/sql/1.0/warehouses/{http_path}"
-        else:
-            # Fallback: use cluster ID directly from Spark conf
-            http_path = "/sql/protocolv1/o/0/default"  # Default serverless path
-except Exception:
+        # Serverless Compute - try to get associated SQL Warehouse
+        # Or fall back to default
+        http_path = f"/sql/protocolv1/o/{org_id}/default"
+        print("✓ Using Serverless Compute")
+except Exception as e:
     http_path = "/sql/protocolv1/o/0/default"
+    print(f"⚠️ Could not detect http_path: {e}")
 
 # Try to get token from secrets, fallback to PAT environment
 try:
