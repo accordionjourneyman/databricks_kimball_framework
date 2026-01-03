@@ -162,33 +162,62 @@ host = (
     .get()
 )
 
+# Get http_path - auto-detect SQL Warehouse using Databricks SDK
+http_path = None
 
-# Get http_path - dbt-databricks can connect to BOTH:
-# 1. SQL Warehouse: /sql/1.0/warehouses/<warehouse_id>
-# 2. All-Purpose Cluster: /sql/protocolv1/o/<org_id>/<cluster_id>
+# Option 1: Try to auto-detect a running SQL Warehouse
 try:
-    org_id = (
-        dbutils.notebook.entry_point.getDbutils()
-        .notebook()
-        .getContext()
-        .tags()
-        .get("orgId")
-        .get()
-    )
-    cluster_id = spark.conf.get("spark.databricks.clusterUsageTags.clusterId", None)
+    from databricks.sdk import WorkspaceClient
 
-    if cluster_id:
-        # All-Purpose Cluster
-        http_path = f"/sql/protocolv1/o/{org_id}/{cluster_id}"
-        print(f"✓ Using All-Purpose Cluster: {cluster_id}")
+    w = WorkspaceClient()
+    warehouses = list(w.warehouses.list())
+
+    # Find a running warehouse
+    running = [wh for wh in warehouses if wh.state and wh.state.value == "RUNNING"]
+    if running:
+        http_path = f"/sql/1.0/warehouses/{running[0].id}"
+        print(f"✓ Auto-detected SQL Warehouse: {running[0].name} ({running[0].id})")
+    elif warehouses:
+        # Use first available (may need to start it)
+        http_path = f"/sql/1.0/warehouses/{warehouses[0].id}"
+        print(f"✓ Found SQL Warehouse (may need to start): {warehouses[0].name}")
     else:
-        # Serverless Compute - try to get associated SQL Warehouse
-        # Or fall back to default
-        http_path = f"/sql/protocolv1/o/{org_id}/default"
-        print("✓ Using Serverless Compute")
+        print("⚠️ No SQL Warehouses found in workspace")
 except Exception as e:
-    http_path = "/sql/protocolv1/o/0/default"
-    print(f"⚠️ Could not detect http_path: {e}")
+    print(f"⚠️ Could not auto-detect warehouses: {e}")
+
+# Option 2: Check for cluster (All-Purpose)
+if not http_path:
+    try:
+        cluster_id = spark.conf.get("spark.databricks.clusterUsageTags.clusterId", None)
+        if cluster_id:
+            org_id = spark.conf.get(
+                "spark.databricks.clusterUsageTags.clusterOwnerOrgId", "0"
+            )
+            http_path = f"/sql/protocolv1/o/{org_id}/{cluster_id}"
+            print(f"✓ Using All-Purpose Cluster: {cluster_id}")
+    except Exception:
+        pass
+
+# Option 3: Manual fallback
+if not http_path:
+    print("=" * 70)
+    print("⚠️  SQL WAREHOUSE REQUIRED")
+    print("=" * 70)
+    print("Could not auto-detect a SQL Warehouse or cluster.")
+    print("")
+    print("Please set your SQL Warehouse ID below:")
+    print(
+        '  sql_warehouse_id = "your-warehouse-id"  # Find in SQL Warehouses → Connection Details'
+    )
+    print("")
+    # ========================================================
+    # MANUAL CONFIG: Uncomment and set your SQL Warehouse ID
+    # sql_warehouse_id = "your-warehouse-id"
+    # http_path = f"/sql/1.0/warehouses/{sql_warehouse_id}"
+    # ========================================================
+    print("=" * 70)
+    raise Exception("No SQL Warehouse configured - see instructions above")
 
 # Try to get token from secrets, fallback to PAT environment
 try:
