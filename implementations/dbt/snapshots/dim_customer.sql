@@ -30,6 +30,7 @@ SELECT
     updated_at,
     current_timestamp() as __etl_processed_at
 
-FROM {{ ref('stg_customers') }}
+-- Use source directly (not staging view) since snapshot runs before models
+FROM {{ source('silver', 'customers') }}
 
 {% endsnapshot %}
