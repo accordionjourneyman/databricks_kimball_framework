@@ -1,24 +1,6 @@
 -- Watermark/Version Utility Macros for dbt Kimball Framework
 -- Main ETL control is handled via on-run-start/on-run-end hooks in etl_control.sql
-
-{# ================================================================
-   GET LATEST VERSION
-   Returns latest Delta version for a source table (for CDF tracking)
-   ================================================================ #}
-
-{% macro get_latest_version(source_table) %}
-    {% set version_sql %}
-    SELECT MAX(version) FROM (DESCRIBE HISTORY {{ source_table }})
-    {% endset %}
-    
-    {% set result = run_query(version_sql) %}
-    {% if execute %}
-        {{ return(result.columns[0].values()[0]) }}
-    {% else %}
-        {{ return(0) }}
-    {% endif %}
-{% endmacro %}
-
+-- CDF utilities are in load_cdf.sql
 
 {# ================================================================
    GET TABLE VERSION HISTORY
