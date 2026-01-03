@@ -1,28 +1,40 @@
-import uuid
-import time
+import json
 import os
+import time
+import uuid
 import warnings
-from pyspark.sql.types import StructType, StructField, StringType, BooleanType, TimestampType, LongType
-from pyspark.sql.functions import lit, current_timestamp
-from kimball.config import ConfigLoader, TableConfig
-from kimball.watermark import ETLControlManager, get_etl_schema
+from typing import Any
+
+from databricks.sdk.runtime import spark
+from pyspark.sql import DataFrame
+from pyspark.sql.functions import col, current_timestamp, desc, lit
+from pyspark.sql.types import (
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+    TimestampType,
+)
+
+from kimball.config import ConfigLoader
+from kimball.errors import NonRetriableError, RetriableError
 from kimball.loader import DataLoader
 from kimball.merger import DeltaMerger
 from kimball.skeleton_generator import SkeletonGenerator
 from kimball.table_creator import TableCreator
-from kimball.errors import RetriableError, NonRetriableError, KimballError
-from databricks.sdk.runtime import spark
-from pyspark.sql import SparkSession
-from typing import Dict, Any, Optional
-import json
+from kimball.watermark import ETLControlManager, get_etl_schema
+
 try:
     # Databricks Runtime 13+ - errors moved to pyspark.errors
     from pyspark.errors import PySparkException
+
     PYSPARK_EXCEPTION_BASE = PySparkException
 except ImportError:
     # Fallback for older Databricks Runtime versions
     import pyspark.sql.utils
+
     PYSPARK_EXCEPTION_BASE = pyspark.sql.utils.AnalysisException
+
 
 class QueryMetricsCollector:
     """
@@ -43,22 +55,22 @@ class QueryMetricsCollector:
         """Add a metric for a specific operation."""
         try:
             metric = {
-                'operation': operation_name,
-                'timestamp': time.time(),
-                'duration_ms': kwargs.get('duration_ms', 0),
+                "operation": operation_name,
+                "timestamp": time.time(),
+                "duration_ms": kwargs.get("duration_ms", 0),
             }
 
             # Add DataFrame metrics if available
             if df is not None:
                 try:
                     # Get basic stats without collecting data
-                    if hasattr(df, '_jdf'):
+                    if hasattr(df, "_jdf"):
                         # Try to get some basic metrics from the logical plan
-                        metric['has_logical_plan'] = True
+                        metric["has_logical_plan"] = True
                     else:
-                        metric['has_logical_plan'] = False
-                except:
-                    metric['has_logical_plan'] = False
+                        metric["has_logical_plan"] = False
+                except Exception:
+                    metric["has_logical_plan"] = False
 
             # Add any additional metrics passed
             metric.update(kwargs)
@@ -71,23 +83,34 @@ class QueryMetricsCollector:
         """Stop collecting metrics and return collected data."""
         if self.start_time:
             total_duration = time.time() - self.start_time
-            self.add_operation_metric('total_pipeline', duration_ms=total_duration * 1000)
+            self.add_operation_metric(
+                "total_pipeline", duration_ms=total_duration * 1000
+            )
         return self.metrics
 
-    def get_summary(self) -> Dict[str, Any]:
+    def get_summary(self) -> dict[str, Any]:
         """Get summary of collected metrics."""
         if not self.metrics:
             return {}
 
-        total_time = sum(m.get('duration_ms', 0) for m in self.metrics)
-        operation_count = len([m for m in self.metrics if m.get('operation') != 'total_pipeline'])
+        total_time = sum(m.get("duration_ms", 0) for m in self.metrics)
+        operation_count = len(
+            [m for m in self.metrics if m.get("operation") != "total_pipeline"]
+        )
 
         return {
-            'total_operations': operation_count,
-            'total_execution_time_ms': total_time,
-            'operations': self.metrics,
-            'avg_operation_time_ms': total_time / operation_count if operation_count > 0 else 0
+            "total_operations": operation_count,
+            "total_execution_time_ms": total_time,
+            "operations": self.metrics,
+            "avg_operation_time_ms": total_time / operation_count
+            if operation_count > 0
+            else 0,
         }
+
+
+# Session-level flag to avoid repeated cleanup scans per table
+_staging_cleanup_done_this_session = False
+
 
 class StagingCleanupManager:
     """
@@ -95,10 +118,12 @@ class StagingCleanupManager:
     Provides ACID-compliant registry to prevent race conditions in multi-pipeline environments.
     """
 
-    def __init__(self, registry_table: str = None):
+    def __init__(self, registry_table: str | None = None):
         # Use Delta table for registry instead of JSON file to prevent race conditions
         if registry_table is None:
-            registry_table = os.getenv("KIMBALL_CLEANUP_REGISTRY_TABLE", "default.kimball_staging_registry")
+            registry_table = os.getenv(
+                "KIMBALL_CLEANUP_REGISTRY_TABLE", "default.kimball_staging_registry"
+            )
 
         self.registry_table = registry_table
         self._ensure_registry_table()
@@ -108,32 +133,39 @@ class StagingCleanupManager:
         if not spark.catalog.tableExists(self.registry_table):
             # Create registry table with proper schema using DataFrame API
             from pyspark.sql.types import StringType, TimestampType
-            schema = StructType([
-                StructField("pipeline_id", StringType(), True),
-                StructField("staging_table", StringType(), True),
-                StructField("created_at", TimestampType(), True),
-                StructField("batch_id", StringType(), True)
-            ])
+
+            schema = StructType(
+                [
+                    StructField("pipeline_id", StringType(), True),
+                    StructField("staging_table", StringType(), True),
+                    StructField("created_at", TimestampType(), True),
+                    StructField("batch_id", StringType(), True),
+                ]
+            )
             empty_df = spark.createDataFrame([], schema)
             empty_df.write.format("delta").saveAsTable(self.registry_table)
             print(f"Created staging cleanup registry table: {self.registry_table}")
 
-    def register_staging_table(self, staging_table: str, pipeline_id: str = None, batch_id: str = None):
+    def register_staging_table(
+        self,
+        staging_table: str,
+        pipeline_id: str | None = None,
+        batch_id: str | None = None,
+    ):
         """Register a staging table for cleanup using Delta table."""
-        from pyspark.sql.functions import current_timestamp
         from delta.tables import DeltaTable
-        
+        from pyspark.sql.functions import current_timestamp
+
         # Create DataFrame for the new entry
         new_entry = spark.createDataFrame(
-            [(pipeline_id or 'unknown', staging_table, batch_id or 'unknown')],
-            ["pipeline_id", "staging_table", "batch_id"]
+            [(pipeline_id or "unknown", staging_table, batch_id or "unknown")],
+            ["pipeline_id", "staging_table", "batch_id"],
         ).withColumn("created_at", current_timestamp())
-        
+
         # Use DeltaTable API for atomic registration
         registry_table = DeltaTable.forName(spark, self.registry_table)
         registry_table.alias("target").merge(
-            new_entry.alias("source"),
-            "target.staging_table = source.staging_table"
+            new_entry.alias("source"), "target.staging_table = source.staging_table"
         ).whenNotMatchedInsertAll().execute()
 
         print(f"Registered staging table for cleanup: {staging_table}")
@@ -142,55 +174,66 @@ class StagingCleanupManager:
         """Unregister a staging table after successful cleanup."""
         # Use DeltaTable API to avoid SQL injection
         from delta.tables import DeltaTable
+
         registry_table = DeltaTable.forName(spark, self.registry_table)
         registry_table.delete(col("staging_table") == staging_table)
         print(f"Unregistered staging table from cleanup: {staging_table}")
 
-    def cleanup_staging_tables(self, spark_session=None, pipeline_id: str = None, max_age_hours: int = 24):
+    def cleanup_staging_tables(
+        self,
+        spark_session=None,
+        pipeline_id: str | None = None,
+        max_age_hours: int = 24,
+    ):
         """Clean up orphaned staging tables using atomic TTL-based filtering."""
         if spark_session is None:
             spark_session = spark
 
         # Use atomic DeltaTable operations to avoid race conditions
         # Perform cleanup in a single transaction per table to prevent TOCTOU bugs
-        from pyspark.sql.functions import current_timestamp, expr, col
         from delta.tables import DeltaTable
-        
+
         registry_table = DeltaTable.forName(spark_session, self.registry_table)
-        
+
         # Build condition for cleanup (age + optional pipeline filter)
         conditions = []
         if max_age_hours > 0:
-            conditions.append(f"current_timestamp() - created_at > INTERVAL {max_age_hours} HOURS")
+            conditions.append(
+                f"current_timestamp() - created_at > INTERVAL {max_age_hours} HOURS"
+            )
         if pipeline_id:
             conditions.append(f"pipeline_id = '{pipeline_id}'")
-        
+
         where_clause = " AND ".join(conditions) if conditions else "1=1"
-        
+
         # Get tables to clean up atomically
         cleanup_query = f"""
-        SELECT staging_table, pipeline_id, batch_id 
-        FROM {self.registry_table} 
+        SELECT staging_table, pipeline_id, batch_id
+        FROM {self.registry_table}
         WHERE {where_clause}
         """
-        
+
         cleanup_df = spark_session.sql(cleanup_query)
-        
+
         # Use foreachPartition for distributed cleanup
         def cleanup_partition(rows):
             for row in rows:
                 staging_table = row.staging_table
                 try:
                     # Drop physical table first (best effort)
-                    spark_session.catalog.dropTable(staging_table, ignoreIfNotExists=True)
-                    
+                    spark_session.catalog.dropTable(
+                        staging_table, ignoreIfNotExists=True
+                    )
+
                     # Then remove from registry atomically
                     # Use MERGE for atomic conditional delete
                     registry_table.alias("target").merge(
-                        spark_session.createDataFrame([(staging_table,)], ["staging_table"]).alias("source"),
-                        "target.staging_table = source.staging_table"
+                        spark_session.createDataFrame(
+                            [(staging_table,)], ["staging_table"]
+                        ).alias("source"),
+                        "target.staging_table = source.staging_table",
                     ).whenMatchedDelete().execute()
-                    
+
                     print(f"Cleaned up orphaned staging table: {staging_table}")
                 except Exception as e:
                     print(f"Failed to clean up {staging_table}: {e}")
@@ -203,6 +246,7 @@ class StagingCleanupManager:
         print(f"Atomic TTL-based staging cleanup completed for {total_count} tables")
         return total_count, 0
 
+
 class StagingTableManager:
     """
     Context manager for staging tables that ensures cleanup regardless of execution outcome.
@@ -213,24 +257,34 @@ class StagingTableManager:
         self.cleanup_manager = cleanup_manager
         self.staging_tables = []
 
-    def register_staging_table(self, staging_table: str, pipeline_id: str = None, batch_id: str = None):
+    def register_staging_table(
+        self,
+        staging_table: str,
+        pipeline_id: str | None = None,
+        batch_id: str | None = None,
+    ):
         """Register a staging table for management and cleanup."""
         self.staging_tables.append(staging_table)
-        self.cleanup_manager.register_staging_table(staging_table, pipeline_id, batch_id)
+        self.cleanup_manager.register_staging_table(
+            staging_table, pipeline_id, batch_id
+        )
 
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, _exc_type, _exc_val, _exc_tb):
         """Ensure staging tables are cleaned up even if an exception occurs."""
         for staging_table in self.staging_tables:
             try:
                 # Use spark.catalog.dropTable for safe cleanup
                 spark.catalog.dropTable(staging_table, ignoreIfNotExists=True)
                 self.cleanup_manager.unregister_staging_table(staging_table)
-                print(f"Cleaned up staging table during exception recovery: {staging_table}")
+                print(
+                    f"Cleaned up staging table during exception recovery: {staging_table}"
+                )
             except Exception as e:
                 print(f"Warning: Failed to clean up staging table {staging_table}: {e}")
+
 
 class PipelineCheckpoint:
     """
@@ -238,10 +292,12 @@ class PipelineCheckpoint:
     Saves and restores pipeline state to enable resumability with atomic guarantees.
     """
 
-    def __init__(self, checkpoint_table: str = None):
+    def __init__(self, checkpoint_table: str | None = None):
         # Use Delta table for atomic checkpoint storage
         if checkpoint_table is None:
-            checkpoint_table = os.getenv("KIMBALL_CHECKPOINT_TABLE", "default.kimball_pipeline_checkpoints")
+            checkpoint_table = os.getenv(
+                "KIMBALL_CHECKPOINT_TABLE", "default.kimball_pipeline_checkpoints"
+            )
 
         self.checkpoint_table = checkpoint_table
         self._ensure_checkpoint_table()
@@ -251,59 +307,62 @@ class PipelineCheckpoint:
         if not spark.catalog.tableExists(self.checkpoint_table):
             # Create checkpoint table with proper schema using DataFrame API
             from pyspark.sql.types import StringType, TimestampType
-            schema = StructType([
-                StructField("pipeline_id", StringType(), True),
-                StructField("stage", StringType(), True),
-                StructField("timestamp", TimestampType(), True),
-                StructField("state", StringType(), True)
-            ])
+
+            schema = StructType(
+                [
+                    StructField("pipeline_id", StringType(), True),
+                    StructField("stage", StringType(), True),
+                    StructField("timestamp", TimestampType(), True),
+                    StructField("state", StringType(), True),
+                ]
+            )
             empty_df = spark.createDataFrame([], schema)
-            empty_df.write.format("delta").partitionBy("pipeline_id").saveAsTable(self.checkpoint_table)
+            empty_df.write.format("delta").partitionBy("pipeline_id").saveAsTable(
+                self.checkpoint_table
+            )
             print(f"Created pipeline checkpoint table: {self.checkpoint_table}")
 
-    def save_checkpoint(self, pipeline_id: str, stage: str, state: Dict[str, Any]):
+    def save_checkpoint(self, pipeline_id: str, stage: str, state: dict[str, Any]):
         """Save pipeline state at a specific stage using atomic Delta operations."""
-        import json
-        from pyspark.sql.functions import current_timestamp
         from delta.tables import DeltaTable
-        
+        from pyspark.sql.functions import current_timestamp
+
         state_json = json.dumps(state)
 
         # Create DataFrame for the checkpoint entry
         checkpoint_entry = spark.createDataFrame(
-            [(pipeline_id, stage, state_json)],
-            ["pipeline_id", "stage", "state"]
+            [(pipeline_id, stage, state_json)], ["pipeline_id", "stage", "state"]
         ).withColumn("timestamp", current_timestamp())
 
         # Use DeltaTable API for atomic checkpoint updates
         checkpoint_table = DeltaTable.forName(spark, self.checkpoint_table)
         checkpoint_table.alias("target").merge(
             checkpoint_entry.alias("source"),
-            "target.pipeline_id = source.pipeline_id AND target.stage = source.stage"
+            "target.pipeline_id = source.pipeline_id AND target.stage = source.stage",
         ).whenMatchedUpdate(
-            set={
-                "timestamp": "source.timestamp",
-                "state": "source.state"
-            }
+            set={"timestamp": "source.timestamp", "state": "source.state"}
         ).whenNotMatchedInsertAll().execute()
 
         print(f"Checkpoint saved: {pipeline_id} -> {stage}")
 
-    def load_checkpoint(self, pipeline_id: str, stage: str) -> Optional[Dict[str, Any]]:
+    def load_checkpoint(self, pipeline_id: str, stage: str) -> dict[str, Any] | None:
         """Load pipeline state from Delta table checkpoint."""
-        import json
 
         # Use DataFrame API to safely query checkpoint
         checkpoint_df = spark.table(self.checkpoint_table)
-        result_df = checkpoint_df.filter(
-            (col("pipeline_id") == pipeline_id) & (col("stage") == stage)
-        ).orderBy(col("timestamp").desc()).limit(1)
+        result_df = (
+            checkpoint_df.filter(
+                (col("pipeline_id") == pipeline_id) & (col("stage") == stage)
+            )
+            .orderBy(col("timestamp").desc())
+            .limit(1)
+        )
 
         if result_df.count() == 0:
             return None
 
         try:
-            state_json = result_df.first()['state']
+            state_json = result_df.first()["state"]
             state = json.loads(state_json)
             print(f"Checkpoint loaded: {pipeline_id} -> {stage}")
             return state
@@ -314,22 +373,23 @@ class PipelineCheckpoint:
     def clear_checkpoint(self, pipeline_id: str, stage: str):
         """Clear a checkpoint from Delta table."""
         from delta.tables import DeltaTable
-        
+
         # Use DeltaTable API to safely delete checkpoint
         checkpoint_table = DeltaTable.forName(spark, self.checkpoint_table)
         checkpoint_table.delete(
             (col("pipeline_id") == pipeline_id) & (col("stage") == stage)
         )
-        
+
         print(f"Checkpoint cleared: {pipeline_id} -> {stage}")
 
-    def list_checkpoints(self, pipeline_id: str = None) -> DataFrame:
+    def list_checkpoints(self, pipeline_id: str | None = None) -> DataFrame:
         """List all checkpoints, optionally filtered by pipeline_id."""
         # Use DataFrame API to avoid SQL injection
         checkpoint_df = spark.table(self.checkpoint_table)
         if pipeline_id:
             checkpoint_df = checkpoint_df.filter(col("pipeline_id") == pipeline_id)
         return checkpoint_df.orderBy("pipeline_id", "stage", desc("timestamp"))
+
 
 class Orchestrator:
     """
@@ -341,23 +401,23 @@ class Orchestrator:
     5. Transform
     6. Merge
     7. Commit Watermarks
-    
+
     Configuration:
         Set KIMBALL_ETL_SCHEMA environment variable to configure ETL control table location:
-        
+
             import os
             os.environ["KIMBALL_ETL_SCHEMA"] = "my_catalog.etl_config"
     """
 
     def __init__(
-        self, 
-        config_path: str, 
-        etl_schema: str = None,
+        self,
+        config_path: str,
+        etl_schema: str | None = None,
         # Deprecated parameter - for backward compatibility
-        watermark_database: str = None,
+        watermark_database: str | None = None,
         enable_metrics: bool = True,
-        checkpoint_table: str = None,
-        checkpoint_root: str = None
+        checkpoint_table: str | None = None,
+        checkpoint_root: str | None = None,
     ):
         """
         Args:
@@ -374,19 +434,23 @@ class Orchestrator:
         """
         self.config_loader = ConfigLoader()
         self.config = self.config_loader.load_config(config_path)
-        
-        # Enable Photon and AQE for performance
-        spark.conf.set("spark.sql.adaptive.enabled", "true")
-        spark.conf.set("spark.sql.adaptive.skewJoin.enabled", "true")
-        spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
-        
+
+        # Enable Photon and AQE for performance (best-effort, may not be available on Spark Connect)
+        try:
+            spark.conf.set("spark.sql.adaptive.enabled", "true")
+            spark.conf.set("spark.sql.adaptive.skewJoin.enabled", "true")
+            spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
+        except Exception:
+            # Spark Connect (Databricks Free Edition) does not allow setting these configs
+            pass
+
         # Handle deprecated 'watermark_database' parameter
         if watermark_database is not None:
             warnings.warn(
                 "The 'watermark_database' parameter is deprecated. Use 'etl_schema' instead, "
                 "or set KIMBALL_ETL_SCHEMA environment variable.",
                 DeprecationWarning,
-                stacklevel=2
+                stacklevel=2,
             )
             if etl_schema is None:
                 etl_schema = watermark_database
@@ -394,7 +458,7 @@ class Orchestrator:
         # Resolve ETL schema: explicit param > env var > target table database
         if etl_schema is None:
             etl_schema = get_etl_schema()
-        
+
         if etl_schema is None:
             # Fall back to target table's database
             if "." in self.config.table_name:
@@ -410,26 +474,30 @@ class Orchestrator:
         # Handle checkpoint_root parameter
         if checkpoint_root is None:
             checkpoint_root = os.getenv("KIMBALL_CHECKPOINT_ROOT")
-        
+
         if checkpoint_root:
             print(f"Setting Spark checkpoint directory to: {checkpoint_root}")
             spark.sparkContext.setCheckpointDir(checkpoint_root)
         else:
-            print("Warning: No checkpoint_root provided. Using local checkpointing which is unreliable in production.")
+            print(
+                "Warning: No checkpoint_root provided. Using local checkpointing which is unreliable in production."
+            )
 
         self.etl_control = ETLControlManager(etl_schema=etl_schema)
         self.loader = DataLoader()
         self.merger = DeltaMerger()
         self.skeleton_generator = SkeletonGenerator()
         self.table_creator = TableCreator()
-        
+
         # Initialize observability and resilience features
         self.metrics_collector = QueryMetricsCollector() if enable_metrics else None
         self.checkpoint_manager = PipelineCheckpoint(checkpoint_table)
         self.cleanup_manager = StagingCleanupManager()
         self.staging_table_manager = StagingTableManager(self.cleanup_manager)
 
-    def _add_system_columns(self, df, scd_type: int, surrogate_key: str, surrogate_key_strategy: str):
+    def _add_system_columns(
+        self, df, scd_type: int, surrogate_key: str, surrogate_key_strategy: str
+    ):
         """
         Add system/audit columns to a DataFrame for table creation.
         SCD1: __etl_processed_at, __etl_batch_id, __is_deleted (for soft deletes)
@@ -439,40 +507,47 @@ class Orchestrator:
         result_df = df.withColumn("__etl_processed_at", current_timestamp())
         result_df = result_df.withColumn("__etl_batch_id", lit(None).cast(StringType()))
         result_df = result_df.withColumn("__is_deleted", lit(False))
-        
+
         if scd_type == 2:
             # SCD2 specific columns
             result_df = result_df.withColumn("__is_current", lit(True))
             result_df = result_df.withColumn("__valid_from", current_timestamp())
-            result_df = result_df.withColumn("__valid_to", lit(None).cast(TimestampType()))
+            result_df = result_df.withColumn(
+                "__valid_to", lit(None).cast(TimestampType())
+            )
             result_df = result_df.withColumn("hashdiff", lit(None).cast(StringType()))
-        
+
         # Add surrogate key column according to strategy
         if surrogate_key:
             if surrogate_key_strategy in ("identity", "sequence"):
                 # numeric surrogate key
-                result_df = result_df.withColumn(surrogate_key, lit(None).cast(LongType()))
+                result_df = result_df.withColumn(
+                    surrogate_key, lit(None).cast(LongType())
+                )
             else:
                 # default to string for hash or unknown strategies
-                result_df = result_df.withColumn(surrogate_key, lit(None).cast(StringType()))
+                result_df = result_df.withColumn(
+                    surrogate_key, lit(None).cast(StringType())
+                )
 
         return result_df
 
-    def cleanup_orphaned_staging_tables(self, pipeline_id: str = None, max_age_hours: int = 24):
+    def cleanup_orphaned_staging_tables(
+        self, pipeline_id: str | None = None, max_age_hours: int = 24
+    ):
         """
         Clean up orphaned staging tables from previous crashed runs.
         Only cleans tables that are older than max_age_hours to avoid interfering with concurrent pipelines.
-        
+
         Args:
             pipeline_id: Optional pipeline ID to filter cleanup (for targeted cleanup)
             max_age_hours: Maximum age of staging tables to clean up (default 24 hours)
         """
         print(f"Checking for orphaned staging tables (max age: {max_age_hours}h)...")
-        
+
         # Use TTL-based cleanup to avoid interfering with concurrent pipelines
         cleaned, failed = self.cleanup_manager.cleanup_staging_tables(
-            pipeline_id=pipeline_id, 
-            max_age_hours=max_age_hours
+            pipeline_id=pipeline_id, max_age_hours=max_age_hours
         )
         if cleaned > 0:
             print(f"Cleaned up {cleaned} orphaned staging tables")
@@ -482,30 +557,33 @@ class Orchestrator:
     def run(self, max_retries: int = 0):
         """
         Execute the ETL pipeline with batch lifecycle tracking.
-        
+
         Args:
             max_retries: Maximum number of retries for retriable errors (default: 0, no retry).
                          For production, use Databricks Jobs retry instead.
-        
+
         Returns:
             dict: Summary of the pipeline run including rows_read and rows_written.
         """
         print(f"Starting pipeline for {self.config.table_name}")
-        
-        # Clean up any orphaned staging tables from crashed runs
-        self.cleanup_orphaned_staging_tables()
-        
+
+        # Clean up orphaned staging tables (only once per session to avoid repeated overhead)
+        global _staging_cleanup_done_this_session
+        if not _staging_cleanup_done_this_session:
+            self.cleanup_orphaned_staging_tables()
+            _staging_cleanup_done_this_session = True
+
         batch_id = str(uuid.uuid4())
-        
+
         # Start metrics collection
         if self.metrics_collector:
             self.metrics_collector.start_collection()
-        
+
         source_versions = {}
         active_dfs = {}
         total_rows_read = 0
         total_rows_written = 0
-        
+
         # Start batch tracking for each source
         for source in self.config.sources:
             self.etl_control.batch_start(self.config.table_name, source.name)
@@ -516,39 +594,44 @@ class Orchestrator:
                 # Get latest version for watermark commit later
                 latest_v = self.loader.get_latest_version(source.name)
                 source_versions[source.name] = latest_v
-                
+
                 # Determine Load Strategy
                 if source.cdc_strategy == "full":
                     df = self.loader.load_full_snapshot(source.name)
                 elif source.cdc_strategy == "cdf":
-                    wm = self.etl_control.get_watermark(self.config.table_name, source.name)
+                    wm = self.etl_control.get_watermark(
+                        self.config.table_name, source.name
+                    )
                     if wm is None:
-                        print(f"No watermark for {source.name}. Performing Full Snapshot.")
+                        print(
+                            f"No watermark for {source.name}. Performing Full Snapshot."
+                        )
                         df = self.loader.load_full_snapshot(source.name)
                     else:
                         if wm >= latest_v:
-                            print(f"Source {source.name} already at version {latest_v}. Skipping.")
+                            print(
+                                f"Source {source.name} already at version {latest_v}. Skipping."
+                            )
                             # Mark batch complete with no changes
                             self.etl_control.batch_complete(
-                                self.config.table_name, source.name,
-                                new_version=latest_v, rows_read=0, rows_written=0
+                                self.config.table_name,
+                                source.name,
+                                new_version=latest_v,
+                                rows_read=0,
+                                rows_written=0,
                             )
                             continue
                         print(f"Loading {source.name} from version {wm + 1}")
                         # Pass primary_keys for deduplication to handle multiple updates to same row
                         df = self.loader.load_cdf(
-                            source.name, 
-                            wm + 1,
-                            deduplicate_keys=source.primary_keys
+                            source.name, wm + 1, deduplicate_keys=source.primary_keys
                         )
                 else:
                     raise ValueError(f"Unknown CDC strategy: {source.cdc_strategy}")
 
-                # Track rows read
-                rows_read = df.count()
-                total_rows_read += rows_read
-                print(f"  Loaded {rows_read} rows from {source.name}")
-                
+                # Note: We no longer call df.count() here as it forces eager evaluation.
+                # Row counts will be inferred from merge metrics after the operation completes.
+
                 # Register Temp View
                 df.createOrReplaceTempView(source.alias)
                 active_dfs[source.name] = df
@@ -557,20 +640,20 @@ class Orchestrator:
             if self.config.early_arriving_facts:
                 print("Checking for Early Arriving Facts...")
                 for eaf in self.config.early_arriving_facts:
-                    # We need the fact dataframe. 
-                    # The config doesn't explicitly say which source is the "fact" source, 
+                    # We need the fact dataframe.
+                    # The config doesn't explicitly say which source is the "fact" source,
                     # but usually it's the one driving the pipeline or we can infer from the join key.
                     # However, we need a DataFrame that has the 'fact_join_key'.
                     # We can try to find it in the active_dfs.
-                    
+
                     # For simplicity, we assume the 'fact_join_key' is available in at least one loaded source.
                     # We'll search active_dfs for one that has the column.
                     fact_source_df = None
                     for df in active_dfs.values():
-                        if eaf['fact_join_key'] in df.columns:
+                        if eaf["fact_join_key"] in df.columns:
                             fact_source_df = df
                             break
-                    
+
                     if fact_source_df:
                         # We also need to know the surrogate key strategy of the DIMENSION table.
                         # This is tricky because we only have the config for the FACT table here.
@@ -578,17 +661,23 @@ class Orchestrator:
                         # We might need to load it, or pass it in the eaf config.
                         # For now, let's assume 'hash' or 'identity' based on a new config field or default.
                         # Let's add 'surrogate_key_strategy' and 'surrogate_key_col' to the EAF config in YAML.
-                        
+
                         self.skeleton_generator.generate_skeletons(
                             fact_df=fact_source_df,
-                            dim_table_name=eaf['dimension_table'],
-                            fact_join_key=eaf['fact_join_key'],
-                            dim_join_key=eaf['dimension_join_key'],
-                            surrogate_key_col=eaf.get('surrogate_key_col', 'surrogate_key'),
-                            surrogate_key_strategy=eaf.get('surrogate_key_strategy', 'identity')
+                            dim_table_name=eaf["dimension_table"],
+                            fact_join_key=eaf["fact_join_key"],
+                            dim_join_key=eaf["dimension_join_key"],
+                            surrogate_key_col=eaf.get(
+                                "surrogate_key_col", "surrogate_key"
+                            ),
+                            surrogate_key_strategy=eaf.get(
+                                "surrogate_key_strategy", "identity"
+                            ),
                         )
                     else:
-                        print(f"Warning: Could not find source with column {eaf['fact_join_key']} for skeleton generation.")
+                        print(
+                            f"Warning: Could not find source with column {eaf['fact_join_key']} for skeleton generation."
+                        )
 
             # 3. Transformation
             if self.config.transformation_sql:
@@ -599,20 +688,32 @@ class Orchestrator:
                 if len(self.config.sources) == 1:
                     source_name = self.config.sources[0].name
                     transformed_df = active_dfs[source_name]
-                    print(f"Using source data directly (no transformation): {source_name}")
+                    print(
+                        f"Using source data directly (no transformation): {source_name}"
+                    )
                 else:
-                    raise ValueError("transformation_sql is required for multi-source pipelines")
-                
+                    raise ValueError(
+                        "transformation_sql is required for multi-source pipelines"
+                    )
+
                 # Kimball-proper: Handle NULL foreign keys using explicit FK declarations
                 # This replaces the old naming convention hack (endswith "_sk")
                 if self.config.foreign_keys:
                     from pyspark.sql.types import StringType
-                    sk_fill_map = {}
+
+                    sk_fill_map: dict[str, Any] = {}
                     for fk in self.config.foreign_keys:
                         col_name = fk.column
                         default_val = fk.default_value
                         # Check if column exists in the transformed DataFrame
-                        field = next((f for f in transformed_df.schema.fields if f.name == col_name), None)
+                        field = next(
+                            (
+                                f
+                                for f in transformed_df.schema.fields
+                                if f.name == col_name
+                            ),
+                            None,
+                        )
                         if field:
                             # Use string default for string-typed SKs, numeric otherwise
                             if isinstance(field.dataType, StringType):
@@ -620,18 +721,22 @@ class Orchestrator:
                             else:
                                 sk_fill_map[col_name] = default_val
                         else:
-                            print(f"Warning: Foreign key column '{col_name}' not found in transformed DataFrame")
-                    
+                            print(
+                                f"Warning: Foreign key column '{col_name}' not found in transformed DataFrame"
+                            )
+
                     if sk_fill_map:
                         print(f"Filling NULL foreign keys with defaults: {sk_fill_map}")
                         transformed_df = transformed_df.fillna(sk_fill_map)
             # Checkpoint: Transformation complete
             checkpoint_state = {
-                'stage': 'transformation_complete', 
-                'total_rows_read': total_rows_read,
-                'active_sources': list(active_dfs.keys())
+                "stage": "transformation_complete",
+                "total_rows_read": total_rows_read,
+                "active_sources": list(active_dfs.keys()),
             }
-            self.checkpoint_manager.save_checkpoint(batch_id, 'transformation_complete', checkpoint_state)
+            self.checkpoint_manager.save_checkpoint(
+                batch_id, "transformation_complete", checkpoint_state
+            )
 
             # 4. Stage-then-Merge for concurrency resilience
             # Check if we have data to merge
@@ -649,55 +754,63 @@ class Orchestrator:
                         self.config.surrogate_key,
                         self.config.surrogate_key_strategy,
                     )
-                    
+
                     # Create Delta table with optional Liquid Clustering
                     self.table_creator.create_table_with_clustering(
                         table_name=self.config.table_name,
                         schema_df=schema_df,
-                        cluster_by=self.config.cluster_by,
+                        cluster_by=self.config.cluster_by or [],
                         surrogate_key_col=self.config.surrogate_key,
-                        surrogate_key_strategy=self.config.surrogate_key_strategy
+                        surrogate_key_strategy=self.config.surrogate_key_strategy,
                     )
 
                 # Seed default rows (-1, -2, -3) for DIMENSION tables only (not facts)
-                if self.config.table_type == 'dimension' and spark.catalog.tableExists(self.config.table_name):
+                if self.config.table_type == "dimension" and spark.catalog.tableExists(
+                    self.config.table_name
+                ):
                     target_schema = spark.table(self.config.table_name).schema
                     if self.config.scd_type == 2:
                         self.merger.ensure_scd2_defaults(
-                            self.config.table_name, 
-                            target_schema, 
+                            self.config.table_name,
+                            target_schema,
                             self.config.surrogate_key,
                             self.config.default_rows,
-                            self.config.surrogate_key_strategy
+                            self.config.surrogate_key_strategy,
                         )
                     elif self.config.scd_type == 1 and self.config.surrogate_key:
                         self.merger.ensure_scd1_defaults(
-                            self.config.table_name, 
-                            target_schema, 
+                            self.config.table_name,
+                            target_schema,
                             self.config.surrogate_key,
                             self.config.default_rows,
-                            self.config.surrogate_key_strategy
+                            self.config.surrogate_key_strategy,
                         )
 
                 # Use DataFrame checkpointing instead of physical staging to minimize lock time
                 # This provides fault tolerance without the 100% I/O overhead of physical staging
                 print("Creating DataFrame checkpoint for merge operation...")
-                
+
                 # Checkpoint optimization: Only use expensive checkpoint() when explicitly enabled
                 # Default to localCheckpoint() which is much more efficient for standard pipelines
-                if getattr(self.config, 'enable_lineage_truncation', False):
+                if getattr(self.config, "enable_lineage_truncation", False):
                     # Use reliable checkpoint() only when lineage truncation is explicitly requested
                     try:
                         checkpoint_dir = spark.sparkContext.getCheckpointDir()
                         if checkpoint_dir:
-                            print(f"Using reliable checkpoint directory: {checkpoint_dir}")
+                            print(
+                                f"Using reliable checkpoint directory: {checkpoint_dir}"
+                            )
                             checkpointed_df = transformed_df.checkpoint()
                         else:
-                            print("No checkpoint directory configured, using local checkpoint")
+                            print(
+                                "No checkpoint directory configured, using local checkpoint"
+                            )
                             checkpointed_df = transformed_df.localCheckpoint()
                     except PYSPARK_EXCEPTION_BASE as e:
                         # Log specific exception and fallback to local checkpoint
-                        print(f"Checkpoint directory access failed with PySpark error: {e}")
+                        print(
+                            f"Checkpoint directory access failed with PySpark error: {e}"
+                        )
                         print("Using local checkpoint (less reliable)")
                         checkpointed_df = transformed_df.localCheckpoint()
                     except Exception as e:
@@ -712,32 +825,45 @@ class Orchestrator:
 
                 # Column pruning: Select only columns that exist in target schema
                 # Only perform pruning if target table already exists AND schema evolution is disabled
-                if spark.catalog.tableExists(self.config.table_name) and not self.config.schema_evolution:
+                if (
+                    spark.catalog.tableExists(self.config.table_name)
+                    and not self.config.schema_evolution
+                ):
                     target_schema = spark.table(self.config.table_name).schema
                     target_columns = [f.name for f in target_schema.fields]
-                    
+
                     # System columns that must always be included for proper merge operations
                     # Even if they don't exist in target yet (schema evolution will add them)
                     SYSTEM_COLUMNS = {
-                        "__is_current", "__valid_from", "__valid_to", "__etl_processed_at", "__is_deleted"
+                        "__is_current",
+                        "__valid_from",
+                        "__valid_to",
+                        "__etl_processed_at",
+                        "__is_deleted",
                     }
-                    
+
                     # Include system columns even if not in target schema
                     columns_to_select = []
                     for c in checkpointed_df.columns:
                         if c in target_columns or c in SYSTEM_COLUMNS:
                             columns_to_select.append(c)
-                    
-                    source_df = checkpointed_df.select(*[col(c) for c in columns_to_select])
-                    print(f"Applied column pruning: kept {len(columns_to_select)}/{len(checkpointed_df.columns)} columns (including system columns)")
+
+                    source_df = checkpointed_df.select(
+                        *[col(c) for c in columns_to_select]
+                    )
+                    print(
+                        f"Applied column pruning: kept {len(columns_to_select)}/{len(checkpointed_df.columns)} columns (including system columns)"
+                    )
                 else:
                     # First run or schema evolution enabled - use all columns
                     source_df = checkpointed_df
 
-                print(f"Merging directly from checkpointed DataFrame into {self.config.table_name}...")
+                print(
+                    f"Merging directly from checkpointed DataFrame into {self.config.table_name}..."
+                )
 
                 # Kimball: Dimensions use natural_keys for merge; Facts use merge_keys (degenerate dimensions)
-                if self.config.table_type == 'fact':
+                if self.config.table_type == "fact":
                     join_keys = self.config.merge_keys or []
                 else:
                     join_keys = self.config.natural_keys or []
@@ -745,21 +871,20 @@ class Orchestrator:
                 self.merger.merge(
                     target_table_name=self.config.table_name,
                     source_df=source_df,
-                    join_keys=join_keys, 
+                    join_keys=join_keys,
                     delete_strategy=self.config.delete_strategy,
                     batch_id=batch_id,
                     scd_type=self.config.scd_type,
                     track_history_columns=self.config.track_history_columns,
                     surrogate_key_col=self.config.surrogate_key,
                     surrogate_key_strategy=self.config.surrogate_key_strategy,
-                    schema_evolution=self.config.schema_evolution
+                    schema_evolution=self.config.schema_evolution,
                 )
 
                 # 5. Optimize Table (if configured)
                 if self.config.optimize_after_merge:
                     self.merger.optimize_table(
-                        self.config.table_name,
-                        self.config.cluster_by
+                        self.config.table_name, self.config.cluster_by or []
                     )
 
             # Track rows written (approximate from transformed_df count)
@@ -771,81 +896,83 @@ class Orchestrator:
                 # Calculate per-source rows (approximate: divide by number of sources)
                 per_source_rows = total_rows_read // max(len(source_versions), 1)
                 per_source_written = total_rows_written // max(len(source_versions), 1)
-                
+
                 self.etl_control.batch_complete(
                     target_table=self.config.table_name,
                     source_table=source_name,
                     new_version=version,
                     rows_read=per_source_rows,
-                    rows_written=per_source_written
+                    rows_written=per_source_written,
                 )
-            
-            print(f"Pipeline completed successfully. Read: {total_rows_read}, Written: {total_rows_written}")
-            
+
+            print(
+                f"Pipeline completed successfully. Read: {total_rows_read}, Written: {total_rows_written}"
+            )
+
             # Collect final metrics
             metrics_summary = {}
             if self.metrics_collector:
                 self.metrics_collector.stop_collection()
                 metrics_summary = self.metrics_collector.get_summary()
                 print(f"Query Metrics: {metrics_summary}")
-            
+
             # Clear checkpoints on success
-            self.checkpoint_manager.clear_checkpoint(batch_id, 'sources_loaded')
-            self.checkpoint_manager.clear_checkpoint(batch_id, 'transformation_complete')
-            
+            self.checkpoint_manager.clear_checkpoint(batch_id, "sources_loaded")
+            self.checkpoint_manager.clear_checkpoint(
+                batch_id, "transformation_complete"
+            )
+
             return {
                 "status": "SUCCESS",
                 "batch_id": batch_id,
                 "target_table": self.config.table_name,
                 "rows_read": total_rows_read,
                 "rows_written": total_rows_written,
-                "metrics": metrics_summary
+                "metrics": metrics_summary,
             }
 
         except Exception as e:
             # Stop metrics collection on error
             if self.metrics_collector:
                 self.metrics_collector.stop_collection()
-                
+
             # Mark all batches as failed
             error_msg = f"{type(e).__name__}: {str(e)}"
             print(f"Pipeline failed: {error_msg}")
-            
+
             for source in self.config.sources:
                 try:
                     self.etl_control.batch_fail(
-                        self.config.table_name,
-                        source.name,
-                        error_msg
+                        self.config.table_name, source.name, error_msg
                     )
                 except Exception:
                     pass  # Don't mask original error
-            
+
             # Re-raise based on error type
             if isinstance(e, RetriableError) and max_retries > 0:
                 print(f"Retriable error encountered. Retries remaining: {max_retries}")
                 time.sleep(30)  # Backoff before retry
                 return self.run(max_retries=max_retries - 1)
-            
+
             raise
 
     def run_with_retry(self, max_retries: int = 3, backoff_seconds: int = 30):
         """
         Execute pipeline with smart retry based on error type.
-        
+
         For production workloads, prefer using Databricks Jobs retry instead.
         This method is useful for ad-hoc testing in notebooks.
-        
+
         Args:
             max_retries: Maximum retry attempts for retriable errors (default: 3)
             backoff_seconds: Base wait time between retries (exponential: 30, 60, 120, ...)
-        
+
         Returns:
             dict: Summary of the pipeline run.
         """
         attempt = 0
         last_error = None
-        
+
         while attempt <= max_retries:
             try:
                 return self.run()
@@ -854,7 +981,9 @@ class Orchestrator:
                 last_error = e
                 if attempt <= max_retries:
                     wait_time = backoff_seconds * (2 ** (attempt - 1))
-                    print(f"Retriable error: {e}. Waiting {wait_time}s before retry {attempt}/{max_retries}")
+                    print(
+                        f"Retriable error: {e}. Waiting {wait_time}s before retry {attempt}/{max_retries}"
+                    )
                     time.sleep(wait_time)
                 else:
                     raise
@@ -862,5 +991,7 @@ class Orchestrator:
                 raise  # Don't retry, fail immediately
             except Exception:
                 raise  # Unknown errors don't retry
-        
-        raise last_error
+
+        if last_error:
+            raise last_error
+        raise RuntimeError("Max retries exceeded with unknown error")

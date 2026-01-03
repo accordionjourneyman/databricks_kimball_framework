@@ -3,7 +3,7 @@
 # Add this as the FIRST cell in your Databricks notebooks
 
 # Install the Kimball framework from the uploaded wheel
-%pip install /Workspace/Users/your.email@example.com/wheels/kimball_framework-0.1.1-py3-none-any.whl
+# %pip install /Workspace/Users/your.email@example.com/wheels/kimball_framework-0.1.1-py3-none-any.whl
 
 # Restart Python to use the newly installed package
 dbutils.library.restartPython()
@@ -40,7 +40,7 @@ spark.sql("CREATE DATABASE IF NOT EXISTS demo_gold")
 
 # Clean up previous run
 print("Cleaning up previous demo...")
-for db in ['demo_silver', 'demo_gold']:
+for db in ["demo_silver", "demo_gold"]:
     tables = spark.sql(f"SHOW TABLES IN {db}").collect()
     for table in tables:
         spark.sql(f"DROP TABLE IF EXISTS {db}.{table.tableName}")
@@ -154,29 +154,35 @@ print(f"  - {CONFIG_PATH}/fact_sales.yml")
 
 # COMMAND ----------
 
+
 def ingest_silver(table_name, data, schema, merge_keys):
     """
     Ingests data into a Silver Delta table with CDF enabled.
     """
     full_table_name = f"demo_silver.{table_name}"
-    
+
     df = spark.createDataFrame(data, schema=schema)
-    
+
     if not spark.catalog.tableExists(full_table_name):
         print(f"Creating table {full_table_name}...")
-        (df.write.format("delta")
-           .mode("overwrite")
-           .option("delta.enableChangeDataFeed", "true")
-           .saveAsTable(full_table_name))
+        (
+            df.write.format("delta")
+            .mode("overwrite")
+            .option("delta.enableChangeDataFeed", "true")
+            .saveAsTable(full_table_name)
+        )
     else:
         print(f"Merging into {full_table_name}...")
         delta_table = DeltaTable.forName(spark, full_table_name)
         merge_condition = " AND ".join([f"t.{k} = s.{k}" for k in merge_keys])
-        (delta_table.alias("t")
-           .merge(df.alias("s"), merge_condition)
-           .whenMatchedUpdateAll()
-           .whenNotMatchedInsertAll()
-           .execute())
+        (
+            delta_table.alias("t")
+            .merge(df.alias("s"), merge_condition)
+            .whenMatchedUpdateAll()
+            .whenNotMatchedInsertAll()
+            .execute()
+        )
+
 
 # COMMAND ----------
 
@@ -195,28 +201,45 @@ spark.sql("CREATE DATABASE IF NOT EXISTS demo_gold")
 
 # --- Day 1 Data ---
 customers_data = [
-    (1, "Alice", "Smith", "alice@example.com", "123 Apple St, NY", "2025-01-01T10:00:00"),
-    (2, "Bob", "Jones", "bob@example.com", "456 Banana Blvd, SF", "2025-01-01T10:00:00")
+    (
+        1,
+        "Alice",
+        "Smith",
+        "alice@example.com",
+        "123 Apple St, NY",
+        "2025-01-01T10:00:00",
+    ),
+    (
+        2,
+        "Bob",
+        "Jones",
+        "bob@example.com",
+        "456 Banana Blvd, SF",
+        "2025-01-01T10:00:00",
+    ),
 ]
 customers_schema = "customer_id INT, first_name STRING, last_name STRING, email STRING, address STRING, updated_at STRING"
 
 products_data = [
     (101, "Laptop", "Electronics", 1000.00, "2025-01-01T10:00:00"),
-    (102, "Mouse", "Electronics", 20.00, "2025-01-01T10:00:00")
+    (102, "Mouse", "Electronics", 20.00, "2025-01-01T10:00:00"),
 ]
-products_schema = "product_id INT, name STRING, category STRING, unit_cost DOUBLE, updated_at STRING"
+products_schema = (
+    "product_id INT, name STRING, category STRING, unit_cost DOUBLE, updated_at STRING"
+)
 
 orders_data = [
     (1001, 1, "2025-01-01", "Completed", "2025-01-01T12:00:00"),
-    (1002, 2, "2025-01-01", "Processing", "2025-01-01T13:00:00")
+    (1002, 2, "2025-01-01", "Processing", "2025-01-01T13:00:00"),
 ]
-orders_schema = "order_id INT, customer_id INT, order_date STRING, status STRING, updated_at STRING"
+orders_schema = (
+    "order_id INT, customer_id INT, order_date STRING, status STRING, updated_at STRING"
+)
 
-order_items_data = [
-    (5001, 1001, 101, 1, 1200.00),
-    (5002, 1002, 102, 2, 50.00)
-]
-order_items_schema = "order_item_id INT, order_id INT, product_id INT, quantity INT, sales_amount DOUBLE"
+order_items_data = [(5001, 1001, 101, 1, 1200.00), (5002, 1002, 102, 2, 50.00)]
+order_items_schema = (
+    "order_item_id INT, order_id INT, product_id INT, quantity INT, sales_amount DOUBLE"
+)
 
 # --- Ingest Day 1 ---
 ingest_silver("customers", customers_data, customers_schema, ["customer_id"])
@@ -272,25 +295,46 @@ display(spark.table("demo_gold.fact_sales"))
 
 # --- Day 2 Data ---
 customers_day2 = [
-    (1, "Alice", "Smith", "alice@example.com", "789 Cherry Ln, LA", "2025-01-02T09:00:00"), # Updated
-    (2, "Bob", "Jones", "bob@example.com", "456 Banana Blvd, SF", "2025-01-01T10:00:00"), # Same
-    (3, "Charlie", "Brown", "charlie@example.com", "321 Date Dr, TX", "2025-01-02T10:00:00") # New
+    (
+        1,
+        "Alice",
+        "Smith",
+        "alice@example.com",
+        "789 Cherry Ln, LA",
+        "2025-01-02T09:00:00",
+    ),  # Updated
+    (
+        2,
+        "Bob",
+        "Jones",
+        "bob@example.com",
+        "456 Banana Blvd, SF",
+        "2025-01-01T10:00:00",
+    ),  # Same
+    (
+        3,
+        "Charlie",
+        "Brown",
+        "charlie@example.com",
+        "321 Date Dr, TX",
+        "2025-01-02T10:00:00",
+    ),  # New
 ]
 
 products_day2 = [
-    (101, "Laptop", "Electronics", 900.00, "2025-01-02T09:00:00"), # Updated Cost
-    (102, "Mouse", "Electronics", 20.00, "2025-01-01T10:00:00"), # Same
-    (103, "Keyboard", "Electronics", 50.00, "2025-01-02T10:00:00") # New
+    (101, "Laptop", "Electronics", 900.00, "2025-01-02T09:00:00"),  # Updated Cost
+    (102, "Mouse", "Electronics", 20.00, "2025-01-01T10:00:00"),  # Same
+    (103, "Keyboard", "Electronics", 50.00, "2025-01-02T10:00:00"),  # New
 ]
 
 orders_day2 = [
-    (1003, 1, "2025-01-02", "Processing", "2025-01-02T11:00:00"), # Alice's new order
-    (1004, 3, "2025-01-02", "Shipped", "2025-01-02T14:00:00")      # Charlie's order
+    (1003, 1, "2025-01-02", "Processing", "2025-01-02T11:00:00"),  # Alice's new order
+    (1004, 3, "2025-01-02", "Shipped", "2025-01-02T14:00:00"),  # Charlie's order
 ]
 
 order_items_day2 = [
-    (5003, 1003, 102, 1, 25.00), # Alice buys Mouse
-    (5004, 1004, 103, 1, 60.00)  # Charlie buys Keyboard
+    (5003, 1003, 102, 1, 25.00),  # Alice buys Mouse
+    (5004, 1004, 103, 1, 60.00),  # Charlie buys Keyboard
 ]
 
 # --- Ingest Day 2 ---
@@ -346,9 +390,11 @@ for row in alice_history:
     print(row)
 
 assert len(alice_history) == 2, "Alice should have 2 history rows"
-assert alice_history[0]['__is_current'] == False, "First row should be expired"
-assert alice_history[1]['__is_current'] == True, "Second row should be current"
-assert alice_history[1]['address'] == "789 Cherry Ln, LA", "Current address should be LA"
+assert alice_history[0]["__is_current"] == False, "First row should be expired"
+assert alice_history[1]["__is_current"] == True, "Second row should be current"
+assert alice_history[1]["address"] == "789 Cherry Ln, LA", (
+    "Current address should be LA"
+)
 
 print("\n✅ SCD2 Test Passed")
 
@@ -389,7 +435,11 @@ print("Alice's Sales Links:")
 for row in sales_check:
     print(row)
 
-assert sales_check[0]['linked_customer_address'] == "123 Apple St, NY", "Day 1 order should link to NY address"
-assert sales_check[1]['linked_customer_address'] == "789 Cherry Ln, LA", "Day 2 order should link to LA address"
+assert sales_check[0]["linked_customer_address"] == "123 Apple St, NY", (
+    "Day 1 order should link to NY address"
+)
+assert sales_check[1]["linked_customer_address"] == "789 Cherry Ln, LA", (
+    "Day 2 order should link to LA address"
+)
 
 print("\n✅ Fact Linkage Test Passed")

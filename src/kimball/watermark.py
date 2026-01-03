@@ -14,22 +14,27 @@ Environment Variables:
                         Example: os.environ["KIMBALL_ETL_SCHEMA"] = "my_catalog.etl_config"
 """
 
-from datetime import datetime
-from pyspark.sql.types import StructType, StructField, StringType, LongType, TimestampType
-from pyspark.sql.functions import current_timestamp, col, lit
-from delta.tables import DeltaTable
-from typing import Optional
-from databricks.sdk.runtime import spark
-import uuid
 import os
+import uuid
 import warnings
+from datetime import datetime
 
+from databricks.sdk.runtime import spark
+from delta.tables import DeltaTable
+from pyspark.sql.functions import col
+from pyspark.sql.types import (
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+    TimestampType,
+)
 
 # Environment variable for default ETL schema
 KIMBALL_ETL_SCHEMA_ENV = "KIMBALL_ETL_SCHEMA"
 
 
-def get_etl_schema() -> Optional[str]:
+def get_etl_schema() -> str | None:
     """Get the ETL schema from environment variable."""
     return os.environ.get(KIMBALL_ETL_SCHEMA_ENV)
 
@@ -37,38 +42,38 @@ def get_etl_schema() -> Optional[str]:
 class ETLControlManager:
     """
     Manages ETL control records including watermarks and batch auditing.
-    
+
     This is a Kimball-style ETL control table that tracks:
     - Watermarks: Last processed version for each (target, source) pair
     - Batch lifecycle: When batches start, complete, or fail
     - Metrics: Rows read/written, duration
-    
+
     The table is partitioned by (target_table, source_table) to enable
     zero-contention concurrent writes from parallel pipelines.
-    
+
     Configuration:
         Set the KIMBALL_ETL_SCHEMA environment variable to configure the default schema:
-        
+
             import os
             os.environ["KIMBALL_ETL_SCHEMA"] = "my_catalog.etl_config"
-        
+
         This avoids passing etl_schema to every Orchestrator/PipelineExecutor call.
-    
+
     Usage:
         # Option 1: Use environment variable (recommended)
         import os
         os.environ["KIMBALL_ETL_SCHEMA"] = "gold"
         etl = ETLControlManager()  # Uses KIMBALL_ETL_SCHEMA
-        
+
         # Option 2: Explicit schema
         etl = ETLControlManager(etl_schema="gold")
-        
+
         # Start a batch
         batch_id = etl.batch_start("gold.dim_customer", "silver.customers")
-        
+
         try:
             # ... ETL logic ...
-            etl.batch_complete("gold.dim_customer", "silver.customers", 
+            etl.batch_complete("gold.dim_customer", "silver.customers",
                               new_version=42, rows_read=1000, rows_written=50)
         except Exception as e:
             etl.batch_fail("gold.dim_customer", "silver.customers", str(e))
@@ -79,15 +84,15 @@ class ETLControlManager:
 
     def __init__(
         self,
-        etl_schema: str = None,
+        etl_schema: str | None = None,
         table_name: str = DEFAULT_TABLE_NAME,
         # Deprecated parameter - for backward compatibility
-        database: str = None,
+        database: str | None = None,
     ):
         """
         Args:
             etl_schema: Schema where the control table will be created
-                        (e.g. 'gold', 'my_catalog.etl_config'). 
+                        (e.g. 'gold', 'my_catalog.etl_config').
                         If not provided, uses KIMBALL_ETL_SCHEMA environment variable.
             table_name: Name of the control table (default 'etl_control').
                         If a fully-qualified name (db.table) is provided, `etl_schema`
@@ -99,15 +104,15 @@ class ETLControlManager:
             warnings.warn(
                 "The 'database' parameter is deprecated. Use 'etl_schema' instead.",
                 DeprecationWarning,
-                stacklevel=2
+                stacklevel=2,
             )
             if etl_schema is None:
                 etl_schema = database
-        
+
         # Resolve schema: explicit param > env var > error
         if etl_schema is None:
             etl_schema = get_etl_schema()
-        
+
         # Resolve fully-qualified table name
         if "." in table_name:
             self.fq_table = table_name
@@ -122,7 +127,7 @@ class ETLControlManager:
                 )
             self.schema = etl_schema
             self.fq_table = f"{self.schema}.{table_name}"
-        
+
         # Backward compatibility alias
         self.database = self.schema
 
@@ -134,7 +139,7 @@ class ETLControlManager:
 
     def _ensure_table_exists(self):
         """Create schema and ETL control table if they don't exist.
-        
+
         The table is partitioned by (target_table, source_table) to enable
         zero-contention concurrent writes from parallel pipelines.
         """
@@ -147,7 +152,7 @@ class ETLControlManager:
                     target_table STRING NOT NULL,
                     source_table STRING NOT NULL,
                     last_processed_version LONG,
-                    
+
                     -- Batch audit columns (Kimball-style)
                     batch_id STRING,
                     batch_started_at TIMESTAMP,
@@ -156,7 +161,7 @@ class ETLControlManager:
                     rows_read LONG,
                     rows_written LONG,
                     error_message STRING,
-                    
+
                     updated_at TIMESTAMP NOT NULL
                 )
                 USING DELTA
@@ -168,15 +173,19 @@ class ETLControlManager:
     # Watermark API (backward compatible)
     # ------------------------------------------------------------------
 
-    def get_watermark(self, target_table: str, source_table: str) -> Optional[int]:
+    def get_watermark(self, target_table: str, source_table: str) -> int | None:
         """Retrieve the last processed version for a (target, source) pair.
         Returns None if no watermark exists (first run).
         """
         df = spark.table(self.fq_table)
-        result = df.filter(
-            (col("target_table") == target_table) &
-            (col("source_table") == source_table)
-        ).select("last_processed_version").first()
+        result = (
+            df.filter(
+                (col("target_table") == target_table)
+                & (col("source_table") == source_table)
+            )
+            .select("last_processed_version")
+            .first()
+        )
 
         if result:
             return result["last_processed_version"]
@@ -184,7 +193,7 @@ class ETLControlManager:
 
     def update_watermark(self, target_table: str, source_table: str, version: int):
         """Insert or update the watermark row atomically via Delta MERGE.
-        
+
         Note: Prefer using batch_complete() which updates both watermark and metrics.
         This method is kept for backward compatibility.
         """
@@ -195,7 +204,7 @@ class ETLControlManager:
                 "last_processed_version": version,
                 "batch_status": "SUCCESS",
                 "batch_completed_at": datetime.now(),
-            }
+            },
         )
 
     # ------------------------------------------------------------------
@@ -204,12 +213,12 @@ class ETLControlManager:
 
     def batch_start(self, target_table: str, source_table: str) -> str:
         """Mark the start of a batch for a (target, source) pair.
-        
+
         Returns:
             batch_id: UUID for this batch run (can be used for correlation)
         """
         batch_id = str(uuid.uuid4())
-        
+
         self._upsert_control_record(
             target_table=target_table,
             source_table=source_table,
@@ -221,24 +230,24 @@ class ETLControlManager:
                 "rows_read": None,
                 "rows_written": None,
                 "error_message": None,
-            }
+            },
         )
-        
+
         return batch_id
 
     def batch_complete(
-        self, 
-        target_table: str, 
-        source_table: str, 
+        self,
+        target_table: str,
+        source_table: str,
         new_version: int,
-        rows_read: int = None,
-        rows_written: int = None
+        rows_read: int | None = None,
+        rows_written: int | None = None,
     ):
         """Mark a batch as successfully completed and update watermark.
-        
+
         Args:
             target_table: Target table name
-            source_table: Source table name  
+            source_table: Source table name
             new_version: New watermark version to record
             rows_read: Number of rows read from source (optional)
             rows_written: Number of rows written to target (optional)
@@ -253,19 +262,14 @@ class ETLControlManager:
                 "rows_read": rows_read,
                 "rows_written": rows_written,
                 "error_message": None,
-            }
+            },
         )
 
-    def batch_fail(
-        self, 
-        target_table: str, 
-        source_table: str, 
-        error_message: str
-    ):
+    def batch_fail(self, target_table: str, source_table: str, error_message: str):
         """Mark a batch as failed.
-        
+
         Note: Does NOT update the watermark, so the batch can be retried.
-        
+
         Args:
             target_table: Target table name
             source_table: Source table name
@@ -274,7 +278,7 @@ class ETLControlManager:
         # Truncate error message if too long
         if error_message and len(error_message) > 4000:
             error_message = error_message[:4000] + "... (truncated)"
-            
+
         self._upsert_control_record(
             target_table=target_table,
             source_table=source_table,
@@ -283,20 +287,20 @@ class ETLControlManager:
                 "batch_completed_at": datetime.now(),
                 "batch_status": "FAILED",
                 "error_message": error_message,
-            }
+            },
         )
 
-    def get_batch_status(self, target_table: str, source_table: str) -> Optional[dict]:
+    def get_batch_status(self, target_table: str, source_table: str) -> dict | None:
         """Get the current batch status for a (target, source) pair.
-        
+
         Returns:
             dict with batch_id, batch_status, batch_started_at, etc.
             None if no record exists.
         """
         df = spark.table(self.fq_table)
         result = df.filter(
-            (col("target_table") == target_table) &
-            (col("source_table") == source_table)
+            (col("target_table") == target_table)
+            & (col("source_table") == source_table)
         ).first()
 
         if result:
@@ -317,29 +321,28 @@ class ETLControlManager:
     # ------------------------------------------------------------------
 
     # Schema for the update DataFrame - must match etl_control table schema
-    _UPDATE_SCHEMA = StructType([
-        StructField("target_table", StringType(), False),
-        StructField("source_table", StringType(), False),
-        StructField("last_processed_version", LongType(), True),
-        StructField("batch_id", StringType(), True),
-        StructField("batch_started_at", TimestampType(), True),
-        StructField("batch_completed_at", TimestampType(), True),
-        StructField("batch_status", StringType(), True),
-        StructField("rows_read", LongType(), True),
-        StructField("rows_written", LongType(), True),
-        StructField("error_message", StringType(), True),
-        StructField("updated_at", TimestampType(), False),
-    ])
+    _UPDATE_SCHEMA = StructType(
+        [
+            StructField("target_table", StringType(), False),
+            StructField("source_table", StringType(), False),
+            StructField("last_processed_version", LongType(), True),
+            StructField("batch_id", StringType(), True),
+            StructField("batch_started_at", TimestampType(), True),
+            StructField("batch_completed_at", TimestampType(), True),
+            StructField("batch_status", StringType(), True),
+            StructField("rows_read", LongType(), True),
+            StructField("rows_written", LongType(), True),
+            StructField("error_message", StringType(), True),
+            StructField("updated_at", TimestampType(), False),
+        ]
+    )
 
     def _upsert_control_record(
-        self, 
-        target_table: str, 
-        source_table: str, 
-        updates: dict
+        self, target_table: str, source_table: str, updates: dict
     ):
         """Upsert a control record with the given updates."""
         delta_table = DeltaTable.forName(spark, self.fq_table)
-        
+
         # Build the full record for insert
         full_record = {
             "target_table": target_table,
@@ -354,16 +357,16 @@ class ETLControlManager:
             "error_message": updates.get("error_message"),
             "updated_at": datetime.now(),
         }
-        
+
         # Create DataFrame with explicit schema to avoid type inference issues
         # (Spark Connect fails when all values are None)
         update_df = spark.createDataFrame([full_record], schema=self._UPDATE_SCHEMA)
-        
+
         # Build update set - only update fields that are in the updates dict
         update_set = {"updated_at": "current_timestamp()"}
         for key in updates:
             update_set[key] = f"u.{key}"
-        
+
         # Build insert values
         insert_values = {
             "target_table": "u.target_table",
@@ -374,11 +377,13 @@ class ETLControlManager:
             if key not in ("target_table", "source_table", "updated_at"):
                 insert_values[key] = f"u.{key}"
 
-        (delta_table.alias("w")
-         .merge(
-             update_df.alias("u"),
-             "w.target_table = u.target_table AND w.source_table = u.source_table"
-         )
-         .whenMatchedUpdate(set=update_set)
-         .whenNotMatchedInsert(values=insert_values)
-         .execute())
+        (
+            delta_table.alias("w")
+            .merge(
+                update_df.alias("u"),
+                "w.target_table = u.target_table AND w.source_table = u.source_table",
+            )
+            .whenMatchedUpdate(set=update_set)
+            .whenNotMatchedInsert(values=insert_values)
+            .execute()
+        )

@@ -1,8 +1,10 @@
-import pytest
-from pyspark.sql import SparkSession
-from kimball.orchestrator import Orchestrator
-import tempfile
 import os
+import tempfile
+
+from pyspark.sql import SparkSession
+
+from kimball.orchestrator import Orchestrator
+
 
 def test_schema_evolution_with_new_column(spark: SparkSession):
     """
@@ -36,7 +38,7 @@ transformation_sql: |
 """
 
         # Write initial config
-        with open(config_path, 'w') as f:
+        with open(config_path, "w") as f:
             f.write(initial_config)
 
         # Create source table
@@ -102,7 +104,7 @@ transformation_sql: |
         """)
 
         # Write evolved config
-        with open(config_path, 'w') as f:
+        with open(config_path, "w") as f:
             f.write(evolved_config)
 
         # Run evolved load
@@ -112,7 +114,9 @@ transformation_sql: |
 
         # Verify schema evolution: new column added
         evolved_schema = spark.table("test_db.dim_customer").schema
-        email_field = next((f for f in evolved_schema.fields if f.name == "email"), None)
+        email_field = next(
+            (f for f in evolved_schema.fields if f.name == "email"), None
+        )
         assert email_field is not None
 
         # Verify data integrity: IDENTITY keys preserved

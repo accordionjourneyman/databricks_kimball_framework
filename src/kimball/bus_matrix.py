@@ -1,7 +1,8 @@
-import os
 import glob
-from typing import List, Dict
+import os
+
 from kimball.config import ConfigLoader
+
 
 def generate_bus_matrix(config_dir: str) -> str:
     """
@@ -10,17 +11,19 @@ def generate_bus_matrix(config_dir: str) -> str:
     loader = ConfigLoader()
     facts = []
     all_dimensions = set()
-    
+
     # 1. Parse all configs
-    yaml_files = glob.glob(os.path.join(config_dir, "*.yml")) + glob.glob(os.path.join(config_dir, "*.yaml"))
-    
-    matrix_data = {} # Fact -> Set(Dimensions)
+    yaml_files = glob.glob(os.path.join(config_dir, "*.yml")) + glob.glob(
+        os.path.join(config_dir, "*.yaml")
+    )
+
+    matrix_data = {}  # Fact -> Set(Dimensions)
 
     for f in yaml_files:
         try:
             config = loader.load_config(f)
             # We assume 'fact' tables are the rows
-            if config.table_type == 'fact':
+            if config.table_type == "fact":
                 facts.append(config.table_name)
                 dims = set()
                 for src in config.sources:

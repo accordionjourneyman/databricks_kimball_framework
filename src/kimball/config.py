@@ -1,17 +1,22 @@
-import yaml
 import os
-from typing import Dict, Any, List
 from dataclasses import dataclass
+from typing import Any
+
+import yaml
 from jinja2 import Template
-from jsonschema import validate, ValidationError
+from jsonschema import ValidationError, validate
+
 
 @dataclass
 class SourceConfig:
     name: str
     alias: str
-    join_on: str = None
+    join_on: str | None = None
     cdc_strategy: str = "cdf"  # cdf, full, timestamp
-    primary_keys: List[str] = None  # Keys for CDF deduplication (prevents duplicate row errors)
+    primary_keys: list[str] | None = (
+        None  # Keys for CDF deduplication (prevents duplicate row errors)
+    )
+
 
 @dataclass
 class ForeignKeyConfig:
@@ -19,31 +24,48 @@ class ForeignKeyConfig:
     Kimball-style foreign key declaration for fact tables.
     Explicitly declares which columns are surrogate key references to dimensions.
     """
+
     column: str  # Column name in the fact table (e.g., 'customer_sk')
-    references: str = None  # Optional: dimension table name for documentation/Bus Matrix
-    default_value: int = -1  # Default value for NULL handling (-1=Unknown, -2=N/A, -3=Error)
+    references: str | None = (
+        None  # Optional: dimension table name for documentation/Bus Matrix
+    )
+    default_value: int = (
+        -1
+    )  # Default value for NULL handling (-1=Unknown, -2=N/A, -3=Error)
+
 
 @dataclass
 class TableConfig:
     table_name: str
     table_type: str
     surrogate_key: str
-    natural_keys: List[str]
-    sources: List[SourceConfig]
-    transformation_sql: str = None
+    natural_keys: list[str]
+    sources: list[SourceConfig]
+    transformation_sql: str | None = None
     delete_strategy: str = "hard"
     enable_audit_columns: bool = True
     scd_type: int = 1
-    track_history_columns: List[str] = None
-    default_rows: Dict[str, Any] = None
-    surrogate_key_strategy: str = "identity" # identity (GENERATED ALWAYS AS IDENTITY), hash, sequence
+    track_history_columns: list[str] | None = None
+    default_rows: dict[str, Any] | None = None
+    surrogate_key_strategy: str = (
+        "identity"  # identity (GENERATED ALWAYS AS IDENTITY), hash, sequence
+    )
     schema_evolution: bool = False
-    early_arriving_facts: List[Dict[str, str]] = None # List of {dimension_table: ..., join_key: ...}
-    cluster_by: List[str] = None  # Columns for Liquid Clustering
+    early_arriving_facts: list[dict[str, str]] | None = (
+        None  # List of {dimension_table: ..., join_key: ...}
+    )
+    cluster_by: list[str] | None = None  # Columns for Liquid Clustering
     optimize_after_merge: bool = False  # Run OPTIMIZE after MERGE
-    merge_keys: List[str] = None  # For facts: columns used in MERGE condition (degenerate dimensions)
-    foreign_keys: List[ForeignKeyConfig] = None  # Kimball: explicit FK declarations for fact tables
-    enable_lineage_truncation: bool = False  # Enable checkpoint() for large DAG truncation (expensive)
+    merge_keys: list[str] | None = (
+        None  # For facts: columns used in MERGE condition (degenerate dimensions)
+    )
+    foreign_keys: list[ForeignKeyConfig] | None = (
+        None  # Kimball: explicit FK declarations for fact tables
+    )
+    enable_lineage_truncation: bool = (
+        False  # Enable checkpoint() for large DAG truncation (expensive)
+    )
+
 
 class ConfigLoader:
     """
@@ -57,19 +79,13 @@ class ConfigLoader:
         "required": ["table_name", "table_type", "sources"],
         "properties": {
             "table_name": {"type": "string", "minLength": 1},
-            "table_type": {
-                "type": "string",
-                "enum": ["dimension", "fact"]
-            },
+            "table_type": {"type": "string", "enum": ["dimension", "fact"]},
             "keys": {
                 "type": "object",
                 "properties": {
                     "surrogate_key": {"type": "string"},
-                    "natural_keys": {
-                        "type": "array",
-                        "items": {"type": "string"}
-                    }
-                }
+                    "natural_keys": {"type": "array", "items": {"type": "string"}},
+                },
             },
             "sources": {
                 "type": "array",
@@ -83,33 +99,21 @@ class ConfigLoader:
                         "join_on": {"type": "string"},
                         "cdc_strategy": {
                             "type": "string",
-                            "enum": ["cdf", "full", "timestamp"]
+                            "enum": ["cdf", "full", "timestamp"],
                         },
-                        "primary_keys": {
-                            "type": "array",
-                            "items": {"type": "string"}
-                        }
-                    }
-                }
+                        "primary_keys": {"type": "array", "items": {"type": "string"}},
+                    },
+                },
             },
             "transformation_sql": {"type": "string"},
-            "delete_strategy": {
-                "type": "string",
-                "enum": ["hard", "soft"]
-            },
+            "delete_strategy": {"type": "string", "enum": ["hard", "soft"]},
             "audit_columns": {"type": "boolean"},
-            "scd_type": {
-                "type": "integer",
-                "enum": [1, 2]
-            },
-            "track_history_columns": {
-                "type": "array",
-                "items": {"type": "string"}
-            },
+            "scd_type": {"type": "integer", "enum": [1, 2]},
+            "track_history_columns": {"type": "array", "items": {"type": "string"}},
             "default_rows": {"type": "object"},
             "surrogate_key_strategy": {
                 "type": "string",
-                "enum": ["identity", "hash", "sequence"]
+                "enum": ["identity", "hash", "sequence"],
             },
             "schema_evolution": {"type": "boolean"},
             "early_arriving_facts": {
@@ -121,19 +125,13 @@ class ConfigLoader:
                         "fact_join_key": {"type": "string"},
                         "dimension_join_key": {"type": "string"},
                         "surrogate_key_col": {"type": "string"},
-                        "surrogate_key_strategy": {"type": "string"}
-                    }
-                }
+                        "surrogate_key_strategy": {"type": "string"},
+                    },
+                },
             },
-            "cluster_by": {
-                "type": "array",
-                "items": {"type": "string"}
-            },
+            "cluster_by": {"type": "array", "items": {"type": "string"}},
             "optimize_after_merge": {"type": "boolean"},
-            "merge_keys": {
-                "type": "array",
-                "items": {"type": "string"}
-            },
+            "merge_keys": {"type": "array", "items": {"type": "string"}},
             "foreign_keys": {
                 "type": "array",
                 "items": {
@@ -142,10 +140,10 @@ class ConfigLoader:
                     "properties": {
                         "column": {"type": "string"},
                         "references": {"type": "string"},
-                        "default_value": {"type": "integer"}
-                    }
-                }
-            }
+                        "default_value": {"type": "integer"},
+                    },
+                },
+            },
         },
         "allOf": [
             {
@@ -153,16 +151,14 @@ class ConfigLoader:
                 "then": {
                     "required": ["keys"],
                     "properties": {
-                        "keys": {
-                            "required": ["surrogate_key", "natural_keys"]
-                        }
-                    }
-                }
+                        "keys": {"required": ["surrogate_key", "natural_keys"]}
+                    },
+                },
             }
-        ]
+        ],
     }
 
-    def __init__(self, env_vars: Dict[str, str] = None):
+    def __init__(self, env_vars: dict[str, str] | None = None):
         self.env_vars = env_vars or os.environ.copy()
 
     def load_config(self, file_path: str) -> TableConfig:
@@ -170,7 +166,7 @@ class ConfigLoader:
         Reads a YAML file, renders it with Jinja2 using env_vars, validates against JSON Schema,
         and parses it into a TableConfig object.
         """
-        with open(file_path, 'r') as f:
+        with open(file_path) as f:
             raw_content = f.read()
 
         # Render Jinja2 template
@@ -184,11 +180,13 @@ class ConfigLoader:
         try:
             validate(instance=config_dict, schema=self.CONFIG_SCHEMA)
         except ValidationError as e:
-            raise ValueError(f"Configuration validation error in {file_path}: {e.message}")
+            raise ValueError(
+                f"Configuration validation error in {file_path}: {e.message}"
+            ) from e
 
         return self._parse_dict(config_dict)
 
-    def _parse_dict(self, config: Dict[str, Any]) -> TableConfig:
+    def _parse_dict(self, config: dict[str, Any]) -> TableConfig:
         """Converts validated dictionary to TableConfig with Kimball-specific business logic."""
         try:
             sources = [
@@ -197,8 +195,9 @@ class ConfigLoader:
                     alias=s.get("alias", s["name"].split(".")[-1]),
                     join_on=s.get("join_on"),
                     cdc_strategy=s.get("cdc_strategy", "cdf"),
-                    primary_keys=s.get("primary_keys")
-                ) for s in config.get("sources", [])
+                    primary_keys=s.get("primary_keys"),
+                )
+                for s in config.get("sources", [])
             ]
 
             table_type = config.get("table_type", "fact")
@@ -220,8 +219,9 @@ class ConfigLoader:
                 ForeignKeyConfig(
                     column=fk["column"],
                     references=fk.get("references"),
-                    default_value=fk.get("default_value", -1)
-                ) for fk in foreign_keys_raw
+                    default_value=fk.get("default_value", -1),
+                )
+                for fk in foreign_keys_raw
             ]
 
             return TableConfig(
@@ -242,7 +242,7 @@ class ConfigLoader:
                 cluster_by=config.get("cluster_by"),
                 optimize_after_merge=config.get("optimize_after_merge", False),
                 merge_keys=merge_keys,
-                foreign_keys=foreign_keys if foreign_keys else None
+                foreign_keys=foreign_keys if foreign_keys else None,
             )
         except KeyError as e:
-            raise ValueError(f"Missing required configuration field: {e}")
+            raise ValueError(f"Missing required configuration field: {e}") from e

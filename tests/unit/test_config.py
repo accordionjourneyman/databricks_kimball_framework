@@ -1,6 +1,7 @@
 import pytest
-import os
-from kimball.config import ConfigLoader, TableConfig
+
+from kimball.config import ConfigLoader
+
 
 def test_load_config_valid_fact(tmp_path):
     # Kimball: Facts do NOT have surrogate keys - they use merge_keys (degenerate dimensions)

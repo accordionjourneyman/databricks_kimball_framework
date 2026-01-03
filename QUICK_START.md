@@ -3,6 +3,7 @@
 ## Step 1: Build the Wheel (Already Done! ✓)
 
 Your wheel has been built:
+
 ```
 dist/kimball_framework-0.1.0-py3-none-any.whl
 ```
@@ -75,18 +76,22 @@ Now the framework is available in ALL notebooks on that cluster!
 ## Troubleshooting
 
 ### "Module not found" error
+
 - Make sure you ran the `%pip install` cell
 - Make sure you restarted the Python kernel (`dbutils.library.restartPython()`)
 
 ### "Wheel not found" error
+
 - Check the DBFS path is correct
 - Verify the file was uploaded successfully
 
 ### Need to update the framework?
+
 1. Make your code changes locally
-2. Rebuild: `.venv\Scripts\python -m build`
-3. Upload the new wheel (it will have the same name)
-4. Restart the cluster or re-run the `%pip install` cell
+2. Validate: `python scripts/validate_fixes.py`
+3. Rebuild: `.venv\Scripts\python -m build`
+4. Upload the new wheel (it will have the same name)
+5. Restart the cluster or re-run the `%pip install` cell
 
 ---
 
