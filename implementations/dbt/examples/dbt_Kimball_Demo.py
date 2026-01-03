@@ -184,10 +184,21 @@ try:
     token = dbutils.secrets.get(scope="dbt", key="token")
 except Exception:
     # Try environment variable or prompt user
-    token = os.environ.get("DATABRICKS_TOKEN", "YOUR_TOKEN_HERE")
-    print(
-        "⚠️ No dbt secret found. Set secret or replace YOUR_TOKEN_HERE in profiles.yml"
-    )
+    token = os.environ.get("DATABRICKS_TOKEN", "")
+    if not token:
+        print("=" * 70)
+        print("⚠️  dbt SECRET REQUIRED")
+        print("=" * 70)
+        print("The dbt-databricks adapter requires a Personal Access Token (PAT).")
+        print("")
+        print("To create the secret:")
+        print("  1. Generate a PAT: Databricks → Settings → Developer → Access Tokens")
+        print("  2. Create secret scope: databricks secrets create-scope dbt")
+        print("  3. Store the token: databricks secrets put-secret dbt token")
+        print("")
+        print("Or set DATABRICKS_TOKEN environment variable.")
+        print("=" * 70)
+        raise Exception("Missing dbt token - see instructions above")
 
 # Create profiles.yml
 profiles_content = f"""
