@@ -309,10 +309,17 @@ class DeltaMerger:
         # We use the "Union" approach to handle both update and insert in one MERGE.
         # Source rows are duplicated for the "Update" and "Insert" actions if they are changes.
 
-        # To do this efficiently, we join source with target to find changes.
-        # Note: For very large tables, consider using a window function on source or other optimizations.
+        # OPTIMIZATION: Semi-join filter to avoid full target table scan
+        # Instead of loading ALL current rows, only load rows matching source keys
+        # This is critical for large dimensions with small incremental batches
+        from pyspark.sql.functions import broadcast
 
-        target_df = delta_table.toDF().filter("__is_current = true")
+        source_keys = source_df.select(*join_keys).distinct()
+        target_df = (
+            delta_table.toDF()
+            .filter("__is_current = true")
+            .join(source_keys, join_keys, "semi")  # Semi-join: only keep matching rows
+        )
 
         # Join condition: build a single Column expression combining null-safe equality on all join keys
         join_conditions = [source_df[k].eqNullSafe(target_df[k]) for k in join_keys]
@@ -330,9 +337,11 @@ class DeltaMerger:
         # Assuming target has 'hashdiff' column. If not, we might need to compute it or assume change.
         # For this implementation, we assume target table is created with hashdiff.
 
+        # OPTIMIZATION: Broadcast hint for small source batches
+        # Spark will broadcast if source < 10MB (spark.sql.autoBroadcastJoinThreshold)
         joined_df = (
             source_df.alias("s")
-            .join(target_df.alias("t"), combined_join_cond, "left")
+            .join(broadcast(target_df.alias("t")), combined_join_cond, "left")
             .select(
                 "s.*",
                 col("t.hashdiff").alias("target_hashdiff"),
@@ -513,6 +522,21 @@ class DeltaMerger:
         quoted_table_name = _quote_table_name(table_name)
         sql = f"ALTER TABLE {quoted_table_name} SET TBLPROPERTIES ('delta.schema.autoMerge.enabled' = '{val}')"
         spark.sql(sql)
+
+    def get_last_merge_metrics(self, table_name: str) -> dict:
+        """
+        Get metrics from the last MERGE operation on a table.
+        Returns dict with numSourceRows, numTargetRowsInserted, numTargetRowsUpdated, etc.
+        This is more efficient than counting DataFrames since Delta tracks this automatically.
+        """
+        try:
+            delta_table = DeltaTable.forName(spark, table_name)
+            history = delta_table.history(1).select("operationMetrics").first()
+            if history and history.operationMetrics:
+                return dict(history.operationMetrics)
+        except Exception:
+            pass
+        return {}
 
     def ensure_scd2_defaults(
         self,

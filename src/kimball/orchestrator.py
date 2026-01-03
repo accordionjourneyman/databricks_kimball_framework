@@ -241,7 +241,7 @@ class StagingCleanupManager:
         # Execute cleanup in distributed manner
         cleanup_df.foreachPartition(cleanup_partition)
 
-        # Count results using DataFrame operations
+        # Count results (Note: evaluates DataFrame twice, but cache() not supported on serverless)
         total_count = cleanup_df.count()
         print(f"Atomic TTL-based staging cleanup completed for {total_count} tables")
         return total_count, 0
@@ -358,7 +358,7 @@ class PipelineCheckpoint:
             .limit(1)
         )
 
-        if result_df.count() == 0:
+        if result_df.isEmpty():
             return None
 
         try:
@@ -588,6 +588,9 @@ class Orchestrator:
         for source in self.config.sources:
             self.etl_control.batch_start(self.config.table_name, source.name)
 
+        # Stage timing
+        stage_start = time.time()
+
         try:
             # 1. Load Sources
             for source in self.config.sources:
@@ -635,6 +638,15 @@ class Orchestrator:
                 # Register Temp View
                 df.createOrReplaceTempView(source.alias)
                 active_dfs[source.name] = df
+
+            # Track sources loaded timing
+            if self.metrics_collector:
+                self.metrics_collector.add_operation_metric(
+                    "sources_loaded",
+                    duration_ms=(time.time() - stage_start) * 1000,
+                    sources_count=len(active_dfs),
+                )
+                stage_start = time.time()
 
             # 2. Early Arriving Facts (Skeleton Generation)
             if self.config.early_arriving_facts:
@@ -738,6 +750,14 @@ class Orchestrator:
                 batch_id, "transformation_complete", checkpoint_state
             )
 
+            # Track transformation timing
+            if self.metrics_collector:
+                self.metrics_collector.add_operation_metric(
+                    "transformation",
+                    duration_ms=(time.time() - stage_start) * 1000,
+                )
+                stage_start = time.time()
+
             # 4. Stage-then-Merge for concurrency resilience
             # Check if we have data to merge
             if transformed_df.isEmpty():
@@ -745,6 +765,7 @@ class Orchestrator:
             else:
                 # Ensure table exists and has defaults (if SCD2)
                 # We need to create the table if it doesn't exist to seed defaults
+                table_created = False
                 if not spark.catalog.tableExists(self.config.table_name):
                     print(f"Creating table {self.config.table_name}...")
                     # Add system columns to transformed_df schema for table creation
@@ -755,19 +776,26 @@ class Orchestrator:
                         self.config.surrogate_key_strategy,
                     )
 
+                    # Auto-cluster dimensions on natural keys if no explicit cluster_by
+                    # This improves SCD2 merge performance via data skipping
+                    cluster_cols = self.config.cluster_by
+                    if not cluster_cols and self.config.table_type == "dimension":
+                        cluster_cols = self.config.natural_keys or []
+                        if cluster_cols:
+                            print(f"Auto-clustering on natural keys: {cluster_cols}")
+
                     # Create Delta table with optional Liquid Clustering
                     self.table_creator.create_table_with_clustering(
                         table_name=self.config.table_name,
                         schema_df=schema_df,
-                        cluster_by=self.config.cluster_by or [],
+                        cluster_by=cluster_cols or [],
                         surrogate_key_col=self.config.surrogate_key,
                         surrogate_key_strategy=self.config.surrogate_key_strategy,
                     )
+                    table_created = True
 
-                # Seed default rows (-1, -2, -3) for DIMENSION tables only (not facts)
-                if self.config.table_type == "dimension" and spark.catalog.tableExists(
-                    self.config.table_name
-                ):
+                # Seed default rows (-1, -2, -3) ONLY on table creation (not every run)
+                if table_created and self.config.table_type == "dimension":
                     target_schema = spark.table(self.config.table_name).schema
                     if self.config.scd_type == 2:
                         self.merger.ensure_scd2_defaults(
@@ -887,8 +915,21 @@ class Orchestrator:
                         self.config.table_name, self.config.cluster_by or []
                     )
 
-            # Track rows written (approximate from transformed_df count)
-            total_rows_written = transformed_df.count()
+            # Get row counts from Delta merge metrics (more accurate than counting)
+            merge_metrics = self.merger.get_last_merge_metrics(self.config.table_name)
+            total_rows_read = int(merge_metrics.get("numSourceRows", 0))
+            total_rows_written = int(
+                merge_metrics.get("numTargetRowsInserted", 0)
+            ) + int(merge_metrics.get("numTargetRowsUpdated", 0))
+
+            # Track merge timing
+            if self.metrics_collector:
+                self.metrics_collector.add_operation_metric(
+                    "merge",
+                    duration_ms=(time.time() - stage_start) * 1000,
+                    rows_read=total_rows_read,
+                    rows_written=total_rows_written,
+                )
 
             # 6. Commit Watermarks with batch completion
             print("Completing batches and updating watermarks...")
