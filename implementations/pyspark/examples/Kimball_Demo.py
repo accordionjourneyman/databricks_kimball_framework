@@ -550,7 +550,7 @@ metrics_json = json.dumps(benchmark_metrics, indent=2)
 
 # Use dbutils.fs.put for Databricks Repos compatibility
 try:
-    dbutils.fs.put(metrics_path.replace("/Workspace", ""), metrics_json, overwrite=True)
+    dbutils.fs.put(metrics_path, metrics_json, overwrite=True)
     print(f"\nMetrics saved to: {metrics_path}")
 except Exception as e:
     # Fallback: print metrics for manual copy
