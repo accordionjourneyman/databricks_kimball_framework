@@ -546,6 +546,15 @@ print("=" * 70)
 import json
 
 metrics_path = f"{_repo_root}/benchmark_pyspark.json"
-with open(metrics_path.replace("/Workspace", "/dbfs"), "w") as f:
-    json.dump(benchmark_metrics, f, indent=2)
-print(f"\nMetrics saved to: {metrics_path}")
+metrics_json = json.dumps(benchmark_metrics, indent=2)
+
+# Use dbutils.fs.put for Databricks Repos compatibility
+try:
+    dbutils.fs.put(metrics_path.replace("/Workspace", ""), metrics_json, overwrite=True)
+    print(f"\nMetrics saved to: {metrics_path}")
+except Exception as e:
+    # Fallback: print metrics for manual copy
+    print(f"\n⚠️ Could not save to file ({e})")
+    print("Metrics JSON:")
+    print(metrics_json)
+
