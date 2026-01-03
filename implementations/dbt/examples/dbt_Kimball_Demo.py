@@ -161,7 +161,33 @@ host = (
     .browserHostName()
     .get()
 )
-http_path = spark.conf.get("spark.databricks.cluster.id", "")
+
+# Try to get http_path - works differently on clusters vs serverless
+try:
+    # Try cluster ID first
+    cluster_id = spark.conf.get("spark.databricks.clusterUsageTags.clusterId", None)
+    if cluster_id:
+        http_path = f"/sql/1.0/warehouses/{cluster_id}"
+    else:
+        # Serverless - try to get from context
+        http_path = spark.conf.get("spark.databricks.warehouse.id", "")
+        if http_path:
+            http_path = f"/sql/1.0/warehouses/{http_path}"
+        else:
+            # Fallback: use cluster ID directly from Spark conf
+            http_path = "/sql/protocolv1/o/0/default"  # Default serverless path
+except Exception:
+    http_path = "/sql/protocolv1/o/0/default"
+
+# Try to get token from secrets, fallback to PAT environment
+try:
+    token = dbutils.secrets.get(scope="dbt", key="token")
+except Exception:
+    # Try environment variable or prompt user
+    token = os.environ.get("DATABRICKS_TOKEN", "YOUR_TOKEN_HERE")
+    print(
+        "⚠️ No dbt secret found. Set secret or replace YOUR_TOKEN_HERE in profiles.yml"
+    )
 
 # Create profiles.yml
 profiles_content = f"""
@@ -173,8 +199,8 @@ databricks:
       catalog: main
       schema: demo_gold
       host: {host}
-      http_path: /sql/1.0/warehouses/{http_path}
-      token: {dbutils.secrets.get(scope="dbt", key="token")}
+      http_path: {http_path}
+      token: {token}
       threads: 4
 """
 

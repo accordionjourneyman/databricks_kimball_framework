@@ -10,7 +10,6 @@ authors = [{name = "Tiago Marques"}]
 license = {text = "Apache-2.0"}
 dependencies = [
     "pyyaml",
-    "great-expectations>=0.16.0",
     "jinja2",
     "jsonschema>=4.0.0"
 ]
