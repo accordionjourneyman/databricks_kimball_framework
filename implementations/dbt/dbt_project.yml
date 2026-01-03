@@ -24,6 +24,9 @@ on-run-end:
   - "{{ batch_end_run() }}"
 
 vars:
+  # Catalog configuration (set dynamically by demo notebook)
+  source_catalog: "main" # Will be overridden by --vars in demo
+
   # Schema configuration
   silver_schema: "demo_silver"
   gold_schema: "demo_gold"

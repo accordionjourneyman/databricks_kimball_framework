@@ -310,8 +310,9 @@ if result.returncode != 0:
 _t_transform_start = time.perf_counter()
 
 # Run snapshots first (SCD2 dimensions)
+dbt_vars = f'{{"source_catalog": "{catalog}"}}'
 result = subprocess.run(
-    ["dbt", "snapshot", "--profiles-dir", dbt_profiles_dir],
+    ["dbt", "snapshot", "--profiles-dir", dbt_profiles_dir, "--vars", dbt_vars],
     capture_output=True,
     text=True,
     cwd=DBT_PROJECT_PATH,
@@ -321,7 +322,7 @@ print(result.stdout)
 
 # Then run models (SCD1 dimensions and facts)
 result = subprocess.run(
-    ["dbt", "run", "--profiles-dir", dbt_profiles_dir],
+    ["dbt", "run", "--profiles-dir", dbt_profiles_dir, "--vars", dbt_vars],
     capture_output=True,
     text=True,
     cwd=DBT_PROJECT_PATH,
@@ -430,7 +431,7 @@ _t_transform_start = time.perf_counter()
 
 # Run snapshots (SCD2 - will create new rows for changed records)
 result = subprocess.run(
-    ["dbt", "snapshot", "--profiles-dir", dbt_profiles_dir],
+    ["dbt", "snapshot", "--profiles-dir", dbt_profiles_dir, "--vars", dbt_vars],
     capture_output=True,
     text=True,
     cwd=DBT_PROJECT_PATH,
@@ -440,7 +441,7 @@ print(result.stdout)
 
 # Run models (incremental)
 result = subprocess.run(
-    ["dbt", "run", "--profiles-dir", dbt_profiles_dir],
+    ["dbt", "run", "--profiles-dir", dbt_profiles_dir, "--vars", dbt_vars],
     capture_output=True,
     text=True,
     cwd=DBT_PROJECT_PATH,

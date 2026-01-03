@@ -2,7 +2,7 @@ version: 2
 
 sources:
   - name: silver
-    database: main # Unity Catalog
+    database: "{{ var('source_catalog', 'main') }}"
     schema: demo_silver
     tables:
       - name: customers

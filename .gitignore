@@ -49,6 +49,12 @@ quality_reports/
 .vscode/
 .databricks
 
+# dbt
+**/dbt_packages/
+**/target/
+**/logs/
+**/package-lock.yml
+
 # Data
 data/
 */implementations/polars/data/

@@ -67,24 +67,6 @@
 
 
 {# ================================================================
-   GET LATEST VERSION
-   Returns the latest commit version of a Delta table
-   ================================================================ #}
-
-{% macro get_latest_version(table_name) %}
-    {% set version_sql %}
-    SELECT version as latest_version
-    FROM (DESCRIBE HISTORY {{ table_name }})
-    ORDER BY version DESC
-    LIMIT 1
-    {% endset %}
-    
-    {%- set result = run_query(version_sql) -%}
-    {{ return(result.columns[0].values()[0] if result.rows|length > 0 else 0) }}
-{% endmacro %}
-
-
-{# ================================================================
    CDF SOURCE MACRO
    Use in models to read from CDF with automatic fallback
    ================================================================ #}
