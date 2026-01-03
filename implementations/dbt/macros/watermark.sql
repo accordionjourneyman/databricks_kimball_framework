@@ -70,7 +70,8 @@
 
 {% macro batch_start(target_table, source_table) %}
     {%- set control_table = ref('etl_control') -%}
-    {%- set batch_id = modules.uuid.uuid4() | string -%}
+    {# Use dbt invocation_id as batch identifier - unique per run #}
+    {%- set batch_id = invocation_id -%}
     
     {% set merge_sql %}
     MERGE INTO {{ control_table }} AS t
