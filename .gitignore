@@ -38,6 +38,7 @@ parts/
 sdist/
 var/
 wheels/
+quality_reports/
 *.egg-info/
 .installed.cfg
 *.egg

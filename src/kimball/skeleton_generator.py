@@ -1,4 +1,3 @@
-from databricks.sdk.runtime import spark
 from delta.tables import DeltaTable
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import col, current_timestamp, lit, to_date
@@ -8,6 +7,13 @@ class SkeletonGenerator:
     """
     Handles the generation of 'Skeleton' dimension rows for Early Arriving Facts.
     """
+
+    def __init__(self, spark_session=None):
+        if spark_session is None:
+            from databricks.sdk.runtime import spark
+
+            spark_session = spark
+        self.spark = spark_session
 
     def generate_skeletons(
         self,
@@ -21,13 +27,13 @@ class SkeletonGenerator:
         """
         Identifies missing keys in the dimension table and inserts skeleton rows.
         """
-        if not spark.catalog.tableExists(dim_table_name):
+        if not self.spark.catalog.tableExists(dim_table_name):
             print(
                 f"Dimension table {dim_table_name} does not exist. Skipping skeleton generation."
             )
             return
 
-        dim_table = DeltaTable.forName(spark, dim_table_name)
+        dim_table = DeltaTable.forName(self.spark, dim_table_name)
         dim_df = dim_table.toDF()
 
         # 1. Identify Distinct Keys in Fact

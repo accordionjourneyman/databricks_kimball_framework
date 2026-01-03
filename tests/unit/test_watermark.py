@@ -34,12 +34,12 @@ def test_get_watermark_returns_value(mock_spark):
 
     manager = ETLControlManager(etl_schema="test_schema")
 
-    # Mock the return of spark.table(...).filter(...).select(...).collect()
+    # Mock the return of spark.table(...).filter(...).select(...).first()
     mock_df = MagicMock()
     mock_spark.table.return_value = mock_df
-    mock_df.filter.return_value.select.return_value.collect.return_value = [
-        Row(last_processed_version=100)
-    ]
+    mock_df.filter.return_value.select.return_value.first.return_value = Row(
+        last_processed_version=100
+    )
 
     version = manager.get_watermark("fact_sales", "dim_customer")
     assert version == 100
@@ -54,7 +54,7 @@ def test_get_watermark_returns_none(mock_spark):
 
     mock_df = MagicMock()
     mock_spark.table.return_value = mock_df
-    mock_df.filter.return_value.select.return_value.collect.return_value = []
+    mock_df.filter.return_value.select.return_value.first.return_value = None
 
     version = manager.get_watermark("fact_sales", "dim_customer")
     assert version is None

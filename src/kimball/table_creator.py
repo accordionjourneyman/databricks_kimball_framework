@@ -1,4 +1,11 @@
+import re
+
 from databricks.sdk.runtime import spark
+
+
+def _is_valid_identifier(name: str) -> bool:
+    """Validate that a name is a safe SQL identifier."""
+    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name))
 
 
 def _quote_table_name(table_name: str) -> str:
