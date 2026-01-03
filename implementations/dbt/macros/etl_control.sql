@@ -15,13 +15,13 @@
         batch_id STRING NOT NULL,
         run_started_at TIMESTAMP NOT NULL,
         run_completed_at TIMESTAMP,
-        run_status STRING DEFAULT 'RUNNING',
+        run_status STRING,
         models_run INT,
         models_success INT,
         models_error INT,
         error_message STRING,
         dbt_version STRING,
-        updated_at TIMESTAMP DEFAULT current_timestamp()
+        updated_at TIMESTAMP
     )
     USING DELTA
     {% endset %}
