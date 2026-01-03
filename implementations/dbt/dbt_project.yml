@@ -15,10 +15,22 @@ clean-targets:
   - "target"
   - "dbt_packages"
 
+# Run-level hooks for ETL control table
+on-run-start:
+  - "{{ create_etl_control() }}"
+  - "{{ batch_start_run() }}"
+
+on-run-end:
+  - "{{ batch_end_run() }}"
+
 vars:
   # Schema configuration
   silver_schema: "demo_silver"
   gold_schema: "demo_gold"
+
+  # ETL control table location
+  etl_control_schema: "demo_gold"
+  etl_control_table: "etl_control"
 
   # Kimball defaults for unknown dimensions
   unknown_sk: -1

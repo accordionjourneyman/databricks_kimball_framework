@@ -60,5 +60,6 @@ LEFT JOIN dim_customer c
 LEFT JOIN dim_product p ON oi.product_id = p.product_id
 
 {% if is_incremental() %}
-WHERE oi._loaded_at > (SELECT MAX(__etl_processed_at) FROM {{ this }})
+-- CDF filtering handled in staging; this catches any edge cases
+WHERE 1=1
 {% endif %}
