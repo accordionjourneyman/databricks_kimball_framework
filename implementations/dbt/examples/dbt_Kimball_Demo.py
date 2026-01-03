@@ -240,6 +240,39 @@ except Exception:
         print("=" * 70)
         raise Exception("Missing dbt token - see instructions above")
 
+# Auto-detect catalog using Databricks SDK
+catalog = None
+try:
+    from databricks.sdk import WorkspaceClient
+
+    w = WorkspaceClient()
+    catalogs = list(w.catalogs.list())
+
+    # Filter out system catalogs
+    system_catalogs = {"system", "hive_metastore", "__databricks_internal"}
+    user_catalogs = [
+        c for c in catalogs if c.name and c.name.lower() not in system_catalogs
+    ]
+
+    if user_catalogs:
+        # Prefer 'main' or 'workspace' if available, otherwise use first user catalog
+        for preferred in ["main", "workspace"]:
+            for c in user_catalogs:
+                if c.name and c.name.lower() == preferred:
+                    catalog = c.name
+                    break
+            if catalog:
+                break
+        if not catalog:
+            catalog = user_catalogs[0].name
+        print(f"✓ Using catalog: {catalog}")
+    else:
+        catalog = "main"  # Fallback
+        print("⚠️ No user catalogs found, using 'main'")
+except Exception as e:
+    catalog = "main"
+    print(f"⚠️ Could not auto-detect catalog: {e}")
+
 # Create profiles.yml
 profiles_content = f"""
 databricks:
@@ -247,7 +280,7 @@ databricks:
   outputs:
     dev:
       type: databricks
-      catalog: main
+      catalog: {catalog}
       schema: demo_gold
       host: {host}
       http_path: {http_path}
