@@ -22,7 +22,7 @@ __all__ = [
     "PipelineResult",
     "ExecutionSummary",
     "generate_bus_matrix",
-    # ETL Control (new)
+    # ETL Control
     "ETLControlManager",
     "get_etl_schema",
     "KIMBALL_ETL_SCHEMA_ENV",

@@ -54,7 +54,7 @@ sources:
   - name: prod_silver.customers
     alias: c
     cdc_strategy: cdf
-    primary_keys: [customer_id]  # Required for CDF deduplication
+    primary_keys: [customer_id] # Required for CDF deduplication
 
 transformation_sql: |
   SELECT
@@ -90,6 +90,31 @@ os.environ["KIMBALL_CHECKPOINT_ROOT"] = "dbfs:/kimball/checkpoints/"  # DataFram
 os.environ["KIMBALL_CLEANUP_REGISTRY_TABLE"] = "prod_gold.kimball_staging_registry"  # Staging cleanup registry
 os.environ["KIMBALL_CHECKPOINT_TABLE"] = "prod_gold.kimball_pipeline_checkpoints"  # Pipeline checkpoints
 ```
+
+## Feature Flags
+
+The framework runs in **lite mode by default** - optional features are disabled for simplicity.
+Enable features as needed:
+
+```python
+import os
+
+# Enable all features at once
+os.environ["KIMBALL_MODE"] = "full"
+
+# Or enable specific features
+os.environ["KIMBALL_ENABLE_CHECKPOINTS"] = "1"      # Pipeline checkpointing
+os.environ["KIMBALL_ENABLE_STAGING_CLEANUP"] = "1"  # Orphaned staging table cleanup
+os.environ["KIMBALL_ENABLE_METRICS"] = "1"          # Query metrics collection
+os.environ["KIMBALL_ENABLE_AUTO_CLUSTER"] = "1"     # Auto Liquid Clustering on natural keys
+```
+
+| Feature           | Description                                      | Default |
+| ----------------- | ------------------------------------------------ | ------- |
+| `CHECKPOINTS`     | Pipeline state checkpointing for resumability    | OFF     |
+| `STAGING_CLEANUP` | Automatic cleanup of orphaned staging tables     | OFF     |
+| `METRICS`         | Query execution timing and operation metrics     | OFF     |
+| `AUTO_CLUSTER`    | Liquid Clustering on natural keys for dimensions | OFF     |
 
 ## Architecture
 
@@ -201,6 +226,7 @@ The framework maintains an `etl_control` table tracking:
 - `batch_started_at`, `batch_completed_at` - Timing
 
 Configure once at notebook start:
+
 ```python
 import os
 os.environ["KIMBALL_ETL_SCHEMA"] = "gold"  # Where to store ETL control table
@@ -233,16 +259,17 @@ Standard SCD2 columns:
 
 ```yaml
 # Optional: Enable expensive checkpoint() for large DAG truncation (default: false)
-enable_lineage_truncation: true  # Use checkpoint() instead of localCheckpoint()
+enable_lineage_truncation: true # Use checkpoint() instead of localCheckpoint()
 
 # Optional: Liquid Clustering for better query performance
-cluster_by: [date_col, region_col]  # Columns for Z-order clustering
+cluster_by: [date_col, region_col] # Columns for Z-order clustering
 
 # Optional: Run OPTIMIZE after MERGE operations
 optimize_after_merge: true
 ```
 
 **Performance Notes:**
+
 - `enable_lineage_truncation: true` uses `checkpoint()` which writes to disk but truncates the Spark lineage graph. Only enable for pipelines with 100+ stages.
 - `cluster_by` enables Delta Lake Liquid Clustering for optimal query performance.
 - `optimize_after_merge` runs `OPTIMIZE` after each MERGE to compact small files.
@@ -286,6 +313,7 @@ Install in editable mode: `pip install -e .`
 ### ETL control table not found
 
 Set the `KIMBALL_ETL_SCHEMA` environment variable:
+
 ```python
 import os
 os.environ["KIMBALL_ETL_SCHEMA"] = "gold"

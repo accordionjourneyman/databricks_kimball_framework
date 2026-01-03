@@ -36,6 +36,23 @@ except ImportError:
     PYSPARK_EXCEPTION_BASE = pyspark.sql.utils.AnalysisException
 
 
+def _feature_enabled(feature: str) -> bool:
+    """
+    Check if a feature is enabled via environment variable.
+
+    Features are OFF by default (lite mode). Enable via:
+    - KIMBALL_MODE=full (enables all features)
+    - KIMBALL_ENABLE_<FEATURE>=1 (enables specific feature)
+
+    Available features: checkpoints, staging_cleanup, metrics, auto_cluster
+    """
+    # Full mode enables all features
+    if os.environ.get("KIMBALL_MODE", "").lower() == "full":
+        return True
+    # Otherwise check specific feature flag
+    return os.environ.get(f"KIMBALL_ENABLE_{feature.upper()}") == "1"
+
+
 class QueryMetricsCollector:
     """
     Collects basic query execution metrics for observability.
@@ -489,11 +506,23 @@ class Orchestrator:
         self.skeleton_generator = SkeletonGenerator()
         self.table_creator = TableCreator()
 
-        # Initialize observability and resilience features
-        self.metrics_collector = QueryMetricsCollector() if enable_metrics else None
-        self.checkpoint_manager = PipelineCheckpoint(checkpoint_table)
-        self.cleanup_manager = StagingCleanupManager()
-        self.staging_table_manager = StagingTableManager(self.cleanup_manager)
+        # Initialize observability and resilience features (opt-in via feature flags)
+        self.metrics_collector = (
+            QueryMetricsCollector()
+            if enable_metrics and _feature_enabled("metrics")
+            else None
+        )
+        self.checkpoint_manager = (
+            PipelineCheckpoint(checkpoint_table)
+            if _feature_enabled("checkpoints")
+            else None
+        )
+        self.cleanup_manager = (
+            StagingCleanupManager() if _feature_enabled("staging_cleanup") else None
+        )
+        self.staging_table_manager = (
+            StagingTableManager(self.cleanup_manager) if self.cleanup_manager else None
+        )
 
     def _add_system_columns(
         self, df, scd_type: int, surrogate_key: str, surrogate_key_strategy: str
@@ -569,7 +598,7 @@ class Orchestrator:
 
         # Clean up orphaned staging tables (only once per session to avoid repeated overhead)
         global _staging_cleanup_done_this_session
-        if not _staging_cleanup_done_this_session:
+        if self.cleanup_manager and not _staging_cleanup_done_this_session:
             self.cleanup_orphaned_staging_tables()
             _staging_cleanup_done_this_session = True
 
@@ -746,9 +775,10 @@ class Orchestrator:
                 "total_rows_read": total_rows_read,
                 "active_sources": list(active_dfs.keys()),
             }
-            self.checkpoint_manager.save_checkpoint(
-                batch_id, "transformation_complete", checkpoint_state
-            )
+            if self.checkpoint_manager:
+                self.checkpoint_manager.save_checkpoint(
+                    batch_id, "transformation_complete", checkpoint_state
+                )
 
             # Track transformation timing
             if self.metrics_collector:
@@ -779,7 +809,11 @@ class Orchestrator:
                     # Auto-cluster dimensions on natural keys if no explicit cluster_by
                     # This improves SCD2 merge performance via data skipping
                     cluster_cols = self.config.cluster_by
-                    if not cluster_cols and self.config.table_type == "dimension":
+                    if (
+                        not cluster_cols
+                        and self.config.table_type == "dimension"
+                        and _feature_enabled("auto_cluster")
+                    ):
                         cluster_cols = self.config.natural_keys or []
                         if cluster_cols:
                             print(f"Auto-clustering on natural keys: {cluster_cols}")
@@ -958,10 +992,11 @@ class Orchestrator:
                 print(f"Query Metrics: {metrics_summary}")
 
             # Clear checkpoints on success
-            self.checkpoint_manager.clear_checkpoint(batch_id, "sources_loaded")
-            self.checkpoint_manager.clear_checkpoint(
-                batch_id, "transformation_complete"
-            )
+            if self.checkpoint_manager:
+                self.checkpoint_manager.clear_checkpoint(batch_id, "sources_loaded")
+                self.checkpoint_manager.clear_checkpoint(
+                    batch_id, "transformation_complete"
+                )
 
             return {
                 "status": "SUCCESS",

@@ -1,18 +1,38 @@
 # Databricks notebook source
-# Kimball Framework - Notebook Installation Cell
-# Add this as the FIRST cell in your Databricks notebooks
+# Kimball Framework - Installation Cell
+# Installs directly from the repo source (no pre-built wheel needed)
 
-# Install the Kimball framework from the uploaded wheel
-# %pip install /Workspace/Users/your.email@example.com/wheels/kimball_framework-0.1.1-py3-none-any.whl
+import subprocess
+import os
 
-# Restart Python to use the newly installed package
-dbutils.library.restartPython()
+# Install from source (builds and installs the package)
+# Note: Can't use kimball.get_repo_root() here since package isn't installed yet
+_nb_path = (
+    dbutils.notebook.entry_point.getDbutils()
+    .notebook()
+    .getContext()
+    .notebookPath()
+    .get()
+)
+_repo_root = "/Workspace" + os.path.dirname(os.path.dirname(_nb_path))
+subprocess.check_call(["pip", "install", _repo_root, "-q"])
+print(f"✓ Installed kimball from {_repo_root}")
+
+# Note: If upgrading versions and seeing stale behavior, restart your cluster
 
 # COMMAND ----------
 
-# Imports and ETL Configuration
-import os
-from pyspark.sql.functions import col, lit, current_timestamp
+# ALTERNATIVE: Install from a pre-built wheel
+# Build the wheel locally with: python -m build
+# Then upload to your preferred location and install:
+#
+# wheel_path = "/Workspace/Users/your.email@example.com/wheels/kimball_framework-0.1.1-py3-none-any.whl"
+# subprocess.check_call(["pip", "install", wheel_path, "-q"])
+# dbutils.library.restartPython()
+
+# COMMAND ----------
+
+# ETL Configuration
 from delta.tables import DeltaTable
 
 # ============================================================================
@@ -24,12 +44,31 @@ from delta.tables import DeltaTable
 # Orchestrator or PipelineExecutor call.
 os.environ["KIMBALL_ETL_SCHEMA"] = "demo_gold"
 
+# ============================================================================
+# FEATURE FLAGS - Choose lite or full mode
+# ============================================================================
+# The framework runs in LITE MODE by default (minimal overhead).
+#
+# OPTION 1: Lite Mode (default)
+# - Comment out the line below to run with no optional features
+# - Core SCD1/SCD2 functionality works identically
+# - Cleaner output, faster startup
+#
+# OPTION 2: Full Mode (enable all features)
+os.environ["KIMBALL_MODE"] = "full"  # <-- Comment this line for lite mode
+#
+# OPTION 3: Enable specific features only
+# os.environ["KIMBALL_ENABLE_CHECKPOINTS"] = "1"      # Pipeline checkpointing
+# os.environ["KIMBALL_ENABLE_STAGING_CLEANUP"] = "1"  # Orphaned staging cleanup
+# os.environ["KIMBALL_ENABLE_METRICS"] = "1"          # Query metrics collection
+# os.environ["KIMBALL_ENABLE_AUTO_CLUSTER"] = "1"     # Auto Liquid Clustering
+# ============================================================================
+
 # Setup Paths
-# - Configs: Write to workspace (allowed for file I/O)
+# - Configs: Store in repo's examples folder (reuses _repo_root from cell 1)
 # - Tables: Use managed tables (no explicit paths)
 
-username = "your.email@example.com"  # replace with your workspace user path
-CONFIG_PATH = f"/Workspace/Users/{username}/kimball_demo/configs"
+CONFIG_PATH = f"{_repo_root}/examples/configs"
 
 # Create config directory
 dbutils.fs.mkdirs(CONFIG_PATH)
@@ -45,10 +84,10 @@ for db in ["demo_silver", "demo_gold"]:
     for table in tables:
         spark.sql(f"DROP TABLE IF EXISTS {db}.{table.tableName}")
 
-print(f"✓ Demo environment set up")
+mode = "FULL" if os.environ.get("KIMBALL_MODE") == "full" else "LITE"
+print(f"✓ Demo environment set up ({mode} mode)")
 print(f"✓ Config path: {CONFIG_PATH}")
 print(f"✓ ETL schema: {os.environ['KIMBALL_ETL_SCHEMA']}")
-print(f"✓ Using managed tables for data storage")
 
 # COMMAND ----------
 
@@ -201,22 +240,8 @@ spark.sql("CREATE DATABASE IF NOT EXISTS demo_gold")
 
 # --- Day 1 Data ---
 customers_data = [
-    (
-        1,
-        "Alice",
-        "Smith",
-        "alice@example.com",
-        "123 Apple St, NY",
-        "2025-01-01T10:00:00",
-    ),
-    (
-        2,
-        "Bob",
-        "Jones",
-        "bob@example.com",
-        "456 Banana Blvd, SF",
-        "2025-01-01T10:00:00",
-    ),
+    (1, "Alice", "Smith", "alice@example.com", "123 Apple St, NY", "2025-01-01T10:00:00"),
+    (2, "Bob", "Jones", "bob@example.com", "456 Banana Blvd, SF", "2025-01-01T10:00:00"),
 ]
 customers_schema = "customer_id INT, first_name STRING, last_name STRING, email STRING, address STRING, updated_at STRING"
 
@@ -295,30 +320,9 @@ display(spark.table("demo_gold.fact_sales"))
 
 # --- Day 2 Data ---
 customers_day2 = [
-    (
-        1,
-        "Alice",
-        "Smith",
-        "alice@example.com",
-        "789 Cherry Ln, LA",
-        "2025-01-02T09:00:00",
-    ),  # Updated
-    (
-        2,
-        "Bob",
-        "Jones",
-        "bob@example.com",
-        "456 Banana Blvd, SF",
-        "2025-01-01T10:00:00",
-    ),  # Same
-    (
-        3,
-        "Charlie",
-        "Brown",
-        "charlie@example.com",
-        "321 Date Dr, TX",
-        "2025-01-02T10:00:00",
-    ),  # New
+    (1, "Alice", "Smith", "alice@example.com", "789 Cherry Ln, LA", "2025-01-02T09:00:00"),  # Updated
+    (2, "Bob", "Jones", "bob@example.com", "456 Banana Blvd, SF", "2025-01-01T10:00:00"),  # Same
+    (3, "Charlie", "Brown", "charlie@example.com", "321 Date Dr, TX", "2025-01-02T10:00:00"),  # New
 ]
 
 products_day2 = [
