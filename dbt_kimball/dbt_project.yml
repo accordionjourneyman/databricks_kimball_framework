@@ -1,0 +1,45 @@
+name: "kimball_dbt"
+version: "1.0.0"
+config-version: 2
+
+profile: "databricks"
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+vars:
+  # Schema configuration
+  silver_schema: "demo_silver"
+  gold_schema: "demo_gold"
+
+  # Kimball defaults for unknown dimensions
+  unknown_sk: -1
+  not_applicable_sk: -2
+  error_sk: -3
+
+# Model configurations
+models:
+  kimball_dbt:
+    staging:
+      +materialized: view
+      +schema: staging
+    dimensions:
+      +materialized: table
+      +schema: gold
+    facts:
+      +materialized: incremental
+      +schema: gold
+      +unique_key: order_item_id
+
+snapshots:
+  kimball_dbt:
+    +target_schema: demo_gold
+    +strategy: check

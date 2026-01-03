@@ -33,7 +33,11 @@ print(f"✓ Installed kimball from {_repo_root}")
 # COMMAND ----------
 
 # ETL Configuration
+import time
 from delta.tables import DeltaTable
+
+# Benchmark metrics storage
+benchmark_metrics = []
 
 # ============================================================================
 # SET ETL SCHEMA - Configure once, use everywhere
@@ -240,8 +244,22 @@ spark.sql("CREATE DATABASE IF NOT EXISTS demo_gold")
 
 # --- Day 1 Data ---
 customers_data = [
-    (1, "Alice", "Smith", "alice@example.com", "123 Apple St, NY", "2025-01-01T10:00:00"),
-    (2, "Bob", "Jones", "bob@example.com", "456 Banana Blvd, SF", "2025-01-01T10:00:00"),
+    (
+        1,
+        "Alice",
+        "Smith",
+        "alice@example.com",
+        "123 Apple St, NY",
+        "2025-01-01T10:00:00",
+    ),
+    (
+        2,
+        "Bob",
+        "Jones",
+        "bob@example.com",
+        "456 Banana Blvd, SF",
+        "2025-01-01T10:00:00",
+    ),
 ]
 customers_schema = "customer_id INT, first_name STRING, last_name STRING, email STRING, address STRING, updated_at STRING"
 
@@ -267,12 +285,14 @@ order_items_schema = (
 )
 
 # --- Ingest Day 1 ---
+_t_load_start = time.perf_counter()
 ingest_silver("customers", customers_data, customers_schema, ["customer_id"])
 ingest_silver("products", products_data, products_schema, ["product_id"])
 ingest_silver("orders", orders_data, orders_schema, ["order_id"])
 ingest_silver("order_items", order_items_data, order_items_schema, ["order_item_id"])
+_day1_load_time = time.perf_counter() - _t_load_start
 
-print("Day 1 Data Ingested.")
+print(f"Day 1 Data Ingested in {_day1_load_time:.2f}s")
 
 # COMMAND ----------
 
@@ -288,6 +308,7 @@ from kimball import Orchestrator
 os.environ["env"] = "demo"
 
 # Run Dimensions (ETL schema already configured via KIMBALL_ETL_SCHEMA env var)
+_t_transform_start = time.perf_counter()
 print("Running dim_customer...")
 Orchestrator(f"{CONFIG_PATH}/dim_customer.yml").run()
 
@@ -297,8 +318,21 @@ Orchestrator(f"{CONFIG_PATH}/dim_product.yml").run()
 # Run Fact
 print("Running fact_sales...")
 Orchestrator(f"{CONFIG_PATH}/fact_sales.yml").run()
+_day1_transform_time = time.perf_counter() - _t_transform_start
 
-print("Day 1 Pipeline Complete.")
+_day1_rows = spark.table("demo_gold.fact_sales").count()
+benchmark_metrics.append(
+    {
+        "framework": "pyspark",
+        "day": 1,
+        "load_time": _day1_load_time,
+        "transform_time": _day1_transform_time,
+        "total_time": _day1_load_time + _day1_transform_time,
+        "rows": _day1_rows,
+    }
+)
+
+print(f"Day 1 Pipeline Complete in {_day1_transform_time:.2f}s ({_day1_rows} rows)")
 
 # COMMAND ----------
 
@@ -320,9 +354,30 @@ display(spark.table("demo_gold.fact_sales"))
 
 # --- Day 2 Data ---
 customers_day2 = [
-    (1, "Alice", "Smith", "alice@example.com", "789 Cherry Ln, LA", "2025-01-02T09:00:00"),  # Updated
-    (2, "Bob", "Jones", "bob@example.com", "456 Banana Blvd, SF", "2025-01-01T10:00:00"),  # Same
-    (3, "Charlie", "Brown", "charlie@example.com", "321 Date Dr, TX", "2025-01-02T10:00:00"),  # New
+    (
+        1,
+        "Alice",
+        "Smith",
+        "alice@example.com",
+        "789 Cherry Ln, LA",
+        "2025-01-02T09:00:00",
+    ),  # Updated
+    (
+        2,
+        "Bob",
+        "Jones",
+        "bob@example.com",
+        "456 Banana Blvd, SF",
+        "2025-01-01T10:00:00",
+    ),  # Same
+    (
+        3,
+        "Charlie",
+        "Brown",
+        "charlie@example.com",
+        "321 Date Dr, TX",
+        "2025-01-02T10:00:00",
+    ),  # New
 ]
 
 products_day2 = [
@@ -342,12 +397,14 @@ order_items_day2 = [
 ]
 
 # --- Ingest Day 2 ---
+_t_load_start = time.perf_counter()
 ingest_silver("customers", customers_day2, customers_schema, ["customer_id"])
 ingest_silver("products", products_day2, products_schema, ["product_id"])
 ingest_silver("orders", orders_day2, orders_schema, ["order_id"])
 ingest_silver("order_items", order_items_day2, order_items_schema, ["order_item_id"])
+_day2_load_time = time.perf_counter() - _t_load_start
 
-print("Day 2 Data Ingested.")
+print(f"Day 2 Data Ingested in {_day2_load_time:.2f}s")
 
 # COMMAND ----------
 
@@ -358,6 +415,7 @@ print("Day 2 Data Ingested.")
 # COMMAND ----------
 
 # Run Dimensions
+_t_transform_start = time.perf_counter()
 print("Running dim_customer (Day 2)...")
 Orchestrator(f"{CONFIG_PATH}/dim_customer.yml").run()
 
@@ -367,8 +425,21 @@ Orchestrator(f"{CONFIG_PATH}/dim_product.yml").run()
 # Run Fact
 print("Running fact_sales (Day 2)...")
 Orchestrator(f"{CONFIG_PATH}/fact_sales.yml").run()
+_day2_transform_time = time.perf_counter() - _t_transform_start
 
-print("Day 2 Pipeline Complete.")
+_day2_rows = spark.table("demo_gold.fact_sales").count()
+benchmark_metrics.append(
+    {
+        "framework": "pyspark",
+        "day": 2,
+        "load_time": _day2_load_time,
+        "transform_time": _day2_transform_time,
+        "total_time": _day2_load_time + _day2_transform_time,
+        "rows": _day2_rows,
+    }
+)
+
+print(f"Day 2 Pipeline Complete in {_day2_transform_time:.2f}s ({_day2_rows} rows)")
 
 # COMMAND ----------
 
@@ -447,3 +518,32 @@ assert sales_check[1]["linked_customer_address"] == "789 Cherry Ln, LA", (
 )
 
 print("\n✅ Fact Linkage Test Passed")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 6. Benchmark Results
+
+# COMMAND ----------
+
+# Print benchmark comparison table
+print("\n" + "=" * 70)
+print("BENCHMARK RESULTS: PySpark Kimball Framework")
+print("=" * 70)
+print(
+    f"{'Day':<6} {'Load (s)':<12} {'Transform (s)':<15} {'Total (s)':<12} {'Rows':<8}"
+)
+print("-" * 70)
+for m in benchmark_metrics:
+    print(
+        f"{m['day']:<6} {m['load_time']:<12.2f} {m['transform_time']:<15.2f} {m['total_time']:<12.2f} {m['rows']:<8}"
+    )
+print("=" * 70)
+
+# Save metrics for comparison with dbt
+import json
+
+metrics_path = f"{_repo_root}/benchmark_pyspark.json"
+with open(metrics_path.replace("/Workspace", "/dbfs"), "w") as f:
+    json.dump(benchmark_metrics, f, indent=2)
+print(f"\nMetrics saved to: {metrics_path}")

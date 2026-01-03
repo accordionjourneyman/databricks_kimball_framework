@@ -1,0 +1,24 @@
+# Databricks dbt Profile Configuration
+# Copy this to ~/.dbt/profiles.yml and update with your credentials
+
+databricks:
+  target: dev
+  outputs:
+    dev:
+      type: databricks
+      catalog: main  # Unity Catalog name
+      schema: demo_gold
+      host: "{{ env_var('DATABRICKS_HOST') }}"
+      http_path: "{{ env_var('DATABRICKS_HTTP_PATH') }}"
+      token: "{{ env_var('DATABRICKS_TOKEN') }}"
+      threads: 4
+
+    # Alternative: Use OAuth instead of PAT
+    # dev_oauth:
+    #   type: databricks
+    #   catalog: main
+    #   schema: demo_gold
+    #   host: "{{ env_var('DATABRICKS_HOST') }}"
+    #   http_path: "{{ env_var('DATABRICKS_HTTP_PATH') }}"
+    #   auth_type: oauth
+    #   threads: 4
