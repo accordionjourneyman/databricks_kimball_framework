@@ -1,4 +1,0 @@
-employee_id,first_name,last_name,department,title,manager_id,updated_at
-101,Alice,Smith,Sales,Senior Associate,201,2025-01-02T09:00:00
-102,Bob,Jones,Sales,Associate,201,2025-01-01T09:00:00
-103,Charlie,Brown,Support,Lead,202,2025-01-01T09:00:00

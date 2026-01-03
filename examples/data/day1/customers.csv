@@ -1,3 +1,0 @@
-customer_id,first_name,last_name,email,address,updated_at
-1,Alice,Smith,alice@example.com,"123 Apple St, NY",2025-01-01T10:00:00
-2,Bob,Jones,bob@example.com,"456 Banana Blvd, SF",2025-01-01T10:00:00

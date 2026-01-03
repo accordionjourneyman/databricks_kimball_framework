@@ -1,11 +1,16 @@
 -- SCD Type 1 Dimension for Products
--- Uses incremental materialization - updates in place, no history
+-- Uses incremental materialization with watermark tracking
+
+{% set target_table = 'demo_gold.dim_product' %}
+{% set source_table = 'demo_silver.products' %}
 
 {{
     config(
         materialized='incremental',
         unique_key='product_id',
-        on_schema_change='append_new_columns'
+        on_schema_change='append_new_columns',
+        pre_hook="{{ batch_start(target_table, source_table) }}",
+        post_hook="{{ batch_complete(target_table, source_table, new_version=get_latest_version(source_table)) }}"
     )
 }}
 
@@ -28,5 +33,7 @@ SELECT
 FROM {{ ref('stg_products') }}
 
 {% if is_incremental() %}
-WHERE updated_at > (SELECT MAX(updated_at) FROM {{ this }})
+-- CDF provides filtered data; for fallback use watermark
+WHERE 1=1  -- CDF already filtered in staging
 {% endif %}
+

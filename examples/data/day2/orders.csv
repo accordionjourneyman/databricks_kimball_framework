@@ -1,5 +1,0 @@
-order_id,customer_id,employee_id,order_date,status,updated_at
-1001,1,101,2025-01-01,Completed,2025-01-01T12:00:00
-1002,2,102,2025-01-01,Processing,2025-01-01T13:00:00
-1003,1,101,2025-01-02,Processing,2025-01-02T11:00:00
-1004,3,103,2025-01-02,Shipped,2025-01-02T14:00:00

@@ -1,332 +1,60 @@
 # Databricks Kimball Framework
 
-A declarative, production-ready framework for building Kimball-style data warehouses on Databricks using Delta Lake.
+A configurable ETL framework implementing Kimball dimensional modeling patterns on Databricks with Delta Lake.
 
-## Release 0.1.1 (2025-01-06)
+## Implementations
 
-- **Renamed `WatermarkManager` → `ETLControlManager`** - Better reflects Kimball-style ETL auditing role.
-- **`KIMBALL_ETL_SCHEMA` environment variable** - Set once at notebook start, no need to pass to every Orchestrator.
-- See `CHANGELOG.md` for full details.
+This repository provides multiple implementations of the same Kimball patterns:
 
-## Features
-
-- **Declarative YAML Configuration** - Define dimensions and facts without writing boilerplate code
-- **SCD Type 1 & Type 2** - Full support for slowly changing dimensions with multiple surrogate key strategies
-- **Change Data Feed (CDF) Integration** - Efficient incremental processing using Delta Lake CDF
-- **ETL Control Table** - Kimball-style batch auditing with watermarks, lifecycle tracking, and metrics
-- **Parallel Execution** - Wave-based parallel pipelines (dimensions before facts)
-- **Early Arriving Facts** - Automatic skeleton dimension row generation
-- **Schema Evolution** - Opt-in automatic schema merging
-- **Liquid Clustering** - Automatic table optimization with configurable clustering columns
-- **Audit Columns** - Built-in ETL lineage tracking
+| Implementation                          | Language | Best For                                      |
+| --------------------------------------- | -------- | --------------------------------------------- |
+| [**PySpark**](implementations/pyspark/) | Python   | Production Databricks workloads, full control |
+| [**dbt**](implementations/dbt/)         | SQL      | SQL-first teams, simpler configurations       |
+| [**Polars**](implementations/polars/)   | Python   | Local development, single-node performance    |
 
 ## Quick Start
 
-### Installation
+### PySpark Implementation
 
 ```bash
-pip install -e .
+cd implementations/pyspark
+pip install .
 ```
 
-### Basic Usage
+Then open `examples/Kimball_Demo.py` in Databricks.
 
-1. **Configure ETL Schema** (set once at notebook start):
-
-```python
-import os
-os.environ["KIMBALL_ETL_SCHEMA"] = "prod_gold"  # Where to store ETL control table
-```
-
-2. **Define a Dimension** (`configs/dim_customer.yml`):
-
-```yaml
-table_name: prod_gold.dim_customer
-table_type: dimension
-scd_type: 2
-keys:
-  surrogate_key: customer_sk
-  natural_keys: [customer_id]
-
-surrogate_key_strategy: hash
-track_history_columns: [first_name, last_name, email, address]
-
-sources:
-  - name: prod_silver.customers
-    alias: c
-    cdc_strategy: cdf
-    primary_keys: [customer_id] # Required for CDF deduplication
-
-transformation_sql: |
-  SELECT
-    c.customer_id,
-    c.first_name,
-    c.last_name,
-    c.email,
-    c.address
-  FROM c
-
-audit_columns: true
-```
-
-3. **Run the Pipeline**:
-
-```python
-from kimball import Orchestrator
-
-# Configure checkpoint directory for reliable DataFrame checkpointing
-orchestrator = Orchestrator(
-    config_path="configs/dim_customer.yml",
-    checkpoint_root="dbfs:/kimball/checkpoints/"  # Required for production reliability
-)
-orchestrator.run()
-```
-
-**Environment Variables** (set once at notebook/cluster start):
-
-```python
-import os
-os.environ["KIMBALL_ETL_SCHEMA"] = "prod_gold"  # ETL control table location
-os.environ["KIMBALL_CHECKPOINT_ROOT"] = "dbfs:/kimball/checkpoints/"  # DataFrame checkpoints
-os.environ["KIMBALL_CLEANUP_REGISTRY_TABLE"] = "prod_gold.kimball_staging_registry"  # Staging cleanup registry
-os.environ["KIMBALL_CHECKPOINT_TABLE"] = "prod_gold.kimball_pipeline_checkpoints"  # Pipeline checkpoints
-```
-
-## Feature Flags
-
-The framework runs in **lite mode by default** - optional features are disabled for simplicity.
-Enable features as needed:
-
-```python
-import os
-
-# Enable all features at once
-os.environ["KIMBALL_MODE"] = "full"
-
-# Or enable specific features
-os.environ["KIMBALL_ENABLE_CHECKPOINTS"] = "1"      # Pipeline checkpointing
-os.environ["KIMBALL_ENABLE_STAGING_CLEANUP"] = "1"  # Orphaned staging table cleanup
-os.environ["KIMBALL_ENABLE_METRICS"] = "1"          # Query metrics collection
-os.environ["KIMBALL_ENABLE_AUTO_CLUSTER"] = "1"     # Auto Liquid Clustering on natural keys
-```
-
-| Feature           | Description                                      | Default |
-| ----------------- | ------------------------------------------------ | ------- |
-| `CHECKPOINTS`     | Pipeline state checkpointing for resumability    | OFF     |
-| `STAGING_CLEANUP` | Automatic cleanup of orphaned staging tables     | OFF     |
-| `METRICS`         | Query execution timing and operation metrics     | OFF     |
-| `AUTO_CLUSTER`    | Liquid Clustering on natural keys for dimensions | OFF     |
-
-## Architecture
-
-```
-┌─────────────────┐
-│  YAML Config    │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐      ┌──────────────┐
-│  Orchestrator   │─────▶│ ETLControl   │
-└────────┬────────┘      │   Manager    │
-         │               └──────────────┘
-         ▼
-┌─────────────────┐
-│   DataLoader    │ (CDF/Snapshot)
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ Transformation  │ (Spark SQL)
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  DeltaMerger    │ (SCD1/SCD2)
-└─────────────────┘
-```
-
-## Configuration Reference
-
-### Configuration Validation
-
-YAML configurations are automatically validated against a JSON Schema to catch configuration errors early. The validation ensures:
-
-- Required fields are present (`table_name`, `table_type`, `sources`)
-- Field types match expected formats (strings, arrays, booleans, etc.)
-- Enum values are valid (e.g., `table_type` must be "dimension" or "fact")
-- Dimensions require `keys.surrogate_key` and `keys.natural_keys`
-- Sources have required `name` field
-- CDC strategies are valid ("cdf", "full", "timestamp")
-
-Invalid configurations will raise descriptive `ValueError` exceptions at load time.
-
-### Table Types
-
-#### Dimension (SCD Type 1)
-
-```yaml
-table_type: dimension
-scd_type: 1
-keys:
-  surrogate_key: product_sk
-  natural_keys: [product_id]
-```
-
-#### Dimension (SCD Type 2)
-
-```yaml
-table_type: dimension
-scd_type: 2
-surrogate_key_strategy: hash # identity (recommended), hash
-track_history_columns: [name, category, price]
-```
-
-#### Fact Table
-
-```yaml
-table_type: fact
-# Facts do not define surrogate or natural keys. Instead, provide
-# `merge_keys` which are the degenerate key columns used in the MERGE
-# condition (e.g., order_item_id for fact lines).
-merge_keys: [order_item_id]
-
-# Kimball-proper: Explicit foreign key declarations
-# Replaces the old naming convention hack (columns ending with '_sk')
-foreign_keys:
-  - column: customer_sk
-    references: prod_gold.dim_customer # Optional: for documentation/Bus Matrix
-    default_value: -1 # Default for NULL handling (-1=Unknown, -2=N/A, -3=Error)
-  - column: product_sk
-    references: prod_gold.dim_product
-
-schema_evolution: true
-early_arriving_facts:
-  - dimension_table: prod_gold.dim_customer
-    fact_join_key: customer_id
-    dimension_join_key: customer_id
-    surrogate_key_col: customer_sk
-    surrogate_key_strategy: hash
-```
-
-### CDC Strategies
-
-- **`cdf`** - Incremental processing using Delta Change Data Feed
-- **`full`** - Full table snapshot (for dimension lookups in facts)
-
-## Key Concepts
-
-### ETL Control Table
-
-The framework maintains an `etl_control` table tracking:
-
-- `target_table` - The table being loaded
-- `source_table` - The source being read
-- `last_processed_version` - Last Delta version processed (watermark)
-- `batch_id`, `batch_status` - Lifecycle tracking (RUNNING/SUCCESS/FAILED)
-- `rows_read`, `rows_written` - Row metrics
-- `batch_started_at`, `batch_completed_at` - Timing
-
-Configure once at notebook start:
-
-```python
-import os
-os.environ["KIMBALL_ETL_SCHEMA"] = "gold"  # Where to store ETL control table
-```
-
-This ensures exactly-once processing even across failures.
-
-### SCD Type 2 Implementation
-
-Uses the "Union Approach" for atomic SCD2 updates:
-
-1. Compute `hashdiff` for change detection
-2. Duplicate changed rows (one for UPDATE, one for INSERT)
-3. Execute single MERGE with conditional logic
-
-Standard SCD2 columns:
-
-- `__valid_from` - Row effective date
-- `__valid_to` - Row expiration date (NULL for current)
-- `__is_current` - Boolean flag for current version
-- `hashdiff` - Hash of tracked columns
-
-### Surrogate Key Strategies
-
-- **Identity** - Databricks Identity Columns (recommended)
-- **Hash** - xxhash64 of natural keys (deterministic)
-- **Sequence** - Row number + max key (use with caution)
-
-### Performance & Optimization Options
-
-```yaml
-# Optional: Enable expensive checkpoint() for large DAG truncation (default: false)
-enable_lineage_truncation: true # Use checkpoint() instead of localCheckpoint()
-
-# Optional: Liquid Clustering for better query performance
-cluster_by: [date_col, region_col] # Columns for Z-order clustering
-
-# Optional: Run OPTIMIZE after MERGE operations
-optimize_after_merge: true
-```
-
-**Performance Notes:**
-
-- `enable_lineage_truncation: true` uses `checkpoint()` which writes to disk but truncates the Spark lineage graph. Only enable for pipelines with 100+ stages.
-- `cluster_by` enables Delta Lake Liquid Clustering for optimal query performance.
-- `optimize_after_merge` runs `OPTIMIZE` after each MERGE to compact small files.
-
-## Examples
-
-See the `examples/` directory for complete working examples:
-
-- `dim_customer.yml` - SCD2 dimension with hash keys
-- `dim_employee_scd2_identity.yml` - SCD2 with identity columns
-- `dim_product.yml` - SCD1 dimension
-- `fact_sales.yml` - Fact table with early arriving facts
-
-## Testing
+### dbt Implementation
 
 ```bash
-# Run unit tests
-pytest tests/unit/
-
-# Run with coverage
-pytest --cov=kimball tests/
+cd implementations/dbt
+dbt deps
+dbt run
 ```
 
-## Best Practices
+Then open `examples/dbt_Kimball_Demo.py` in Databricks.
 
-1. **Use CDF for large tables** - Dramatically reduces processing time
-2. **Enable schema evolution cautiously** - Only in dev/staging initially
-3. **Choose appropriate surrogate key strategy**:
-   - Identity: Best for new tables
-   - Hash: Best for idempotency and distributed systems
-   - Sequence: Avoid in concurrent scenarios
-4. **Track minimal history columns** - Only track attributes that change and matter for analysis
-5. **Use early arriving facts** - Preserves referential integrity and enables better reporting
+## Features
 
-## Troubleshooting
+Both implementations support:
 
-### "No module named 'kimball'"
+- **SCD Type 1**: Overwrite in place
+- **SCD Type 2**: Track history with valid_from/valid_to
+- **Surrogate Keys**: Hash or identity-based
+- **Change Data Feed (CDF)**: Incremental processing
+- **Foreign Key Lookups**: With Kimball-style defaults (-1 for unknown)
 
-Install in editable mode: `pip install -e .`
+## Documentation
 
-### ETL control table not found
+See [docs/](docs/) for detailed documentation:
 
-Set the `KIMBALL_ETL_SCHEMA` environment variable:
+- [Getting Started](docs/GETTING_STARTED.md)
+- [Configuration](docs/CONFIGURATION.md)
+- [Architecture](docs/ARCHITECTURE.md)
 
-```python
-import os
-os.environ["KIMBALL_ETL_SCHEMA"] = "gold"
-```
+## Benchmarking
 
-### Watermark not advancing
-
-Check that the source table has new versions: `DESCRIBE HISTORY source_table`
-
-### Duplicate keys in SCD2
-
-Verify `natural_keys` uniquely identify business entities
+Both demos collect timing metrics for comparison. Run both demos and check the benchmark output at the end of each notebook.
 
 ## License
 
-Licensed under the Apache License, Version 2.0. See the `LICENSE` file for details.
+Apache 2.0 - See [LICENSE](implementations/pyspark/LICENSE)

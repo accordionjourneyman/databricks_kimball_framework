@@ -24,7 +24,8 @@ import time
 # Benchmark metrics storage
 benchmark_metrics = []
 
-# Get repo root from notebook path
+# Get paths from notebook location
+# Path: implementations/dbt/examples/dbt_Kimball_Demo.py
 _nb_path = (
     dbutils.notebook.entry_point.getDbutils()
     .notebook()
@@ -32,8 +33,10 @@ _nb_path = (
     .notebookPath()
     .get()
 )
-_repo_root = "/Workspace" + os.path.dirname(os.path.dirname(os.path.dirname(_nb_path)))
-DBT_PROJECT_PATH = f"{_repo_root}/dbt_kimball"
+# Go up: examples → dbt → implementations → repo_root
+_dbt_root = "/Workspace" + os.path.dirname(os.path.dirname(_nb_path))
+_repo_root = os.path.dirname(os.path.dirname(_dbt_root))
+DBT_PROJECT_PATH = _dbt_root
 
 print(f"✓ dbt project path: {DBT_PROJECT_PATH}")
 
@@ -451,4 +454,105 @@ try:
         )
     print("=" * 70)
 except FileNotFoundError:
-    print("\nNote: Run PySpark demo first to enable comparison table")
+    print("\\nNote: Run PySpark demo first to enable comparison table")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 8. ETL Control / Watermark Verification
+
+# COMMAND ----------
+
+# Verify watermarks were tracked
+print("=" * 70)
+print("ETL CONTROL TABLE (Watermarks + Batch Audit)")
+print("=" * 70)
+
+try:
+    etl_control = spark.table("demo_gold.etl_control")
+    if etl_control.count() > 0:
+        display(etl_control)
+
+        # Verify batch statuses
+        success_count = etl_control.filter("batch_status = 'SUCCESS'").count()
+        total_count = etl_control.count()
+        print(f"\n✅ Batch Success Rate: {success_count}/{total_count}")
+    else:
+        print("⚠️ No watermarks recorded yet (first run)")
+except Exception as e:
+    print(f"⚠️ etl_control table not available: {e}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 9. Query Metrics (Databricks Query History)
+
+# COMMAND ----------
+
+
+def collect_query_metrics(since_ms: int) -> list:
+    """Collect query metrics from Databricks Query History API."""
+    try:
+        from databricks.sdk import WorkspaceClient
+
+        w = WorkspaceClient()
+        queries = list(
+            w.query_history.list(
+                filter_by={"start_time_ms": since_ms},
+                include_metrics=True,
+                max_results=50,
+            )
+        )
+
+        metrics = []
+        for q in queries:
+            if q.metrics and "dbt" in (q.query_text or "").lower():
+                metrics.append(
+                    {
+                        "query_id": q.query_id,
+                        "duration_ms": q.duration,
+                        "rows_produced": q.metrics.rows_produced_count
+                        if q.metrics
+                        else 0,
+                        "bytes_read": q.metrics.total_file_bytes_read
+                        if q.metrics
+                        else 0,
+                        "status": q.status.value if q.status else "unknown",
+                    }
+                )
+        return metrics
+    except Exception as e:
+        print(f"⚠️ Query History API not available: {e}")
+        return []
+
+
+# Collect metrics from pipeline execution
+pipeline_start_ms = int(
+    (time.time() - (_day1_transform_time + _day2_transform_time + 60)) * 1000
+)
+query_metrics = collect_query_metrics(pipeline_start_ms)
+
+if query_metrics:
+    print("=" * 70)
+    print("QUERY METRICS (from Databricks Query History)")
+    print("=" * 70)
+    for qm in query_metrics[:10]:  # Show top 10
+        mb_read = qm["bytes_read"] / (1024 * 1024) if qm["bytes_read"] else 0
+        print(
+            f"Query {qm['query_id']}: {qm['duration_ms']}ms, {qm['rows_produced']} rows, {mb_read:.2f} MB read"
+        )
+
+    # Add to benchmark metrics
+    total_bytes = sum(qm["bytes_read"] for qm in query_metrics if qm["bytes_read"])
+    total_duration = sum(qm["duration_ms"] for qm in query_metrics if qm["duration_ms"])
+    benchmark_metrics.append(
+        {
+            "framework": "dbt",
+            "metric_type": "query_history",
+            "total_queries": len(query_metrics),
+            "total_duration_ms": total_duration,
+            "total_bytes_read": total_bytes,
+        }
+    )
+else:
+    print("⚠️ No query metrics collected (Query History API may require Databricks SDK)")

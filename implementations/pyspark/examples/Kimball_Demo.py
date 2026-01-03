@@ -6,7 +6,7 @@ import subprocess
 import os
 
 # Install from source (builds and installs the package)
-# Note: Can't use kimball.get_repo_root() here since package isn't installed yet
+# Path: implementations/pyspark/examples/Kimball_Demo.py → go up 3 levels to pyspark root
 _nb_path = (
     dbutils.notebook.entry_point.getDbutils()
     .notebook()
@@ -14,8 +14,10 @@ _nb_path = (
     .notebookPath()
     .get()
 )
-_repo_root = "/Workspace" + os.path.dirname(os.path.dirname(_nb_path))
-subprocess.check_call(["pip", "install", _repo_root, "-q"])
+# Go up: examples → pyspark → implementations → repo_root
+_pyspark_root = "/Workspace" + os.path.dirname(os.path.dirname(_nb_path))
+_repo_root = os.path.dirname(os.path.dirname(_pyspark_root))
+subprocess.check_call(["pip", "install", _pyspark_root, "-q"])
 print(f"✓ Installed kimball from {_repo_root}")
 
 # Note: If upgrading versions and seeing stale behavior, restart your cluster
