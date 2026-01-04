@@ -11,8 +11,8 @@
         check_cols=['first_name', 'last_name', 'email', 'address'],
         invalidate_hard_deletes=True,
         post_hook="
-            MERGE INTO {{ this }} AS target
-            USING (
+            INSERT INTO {{ this }}
+            SELECT * FROM (
                 SELECT 
                     CAST(customer_sk AS STRING) as customer_sk,
                     CAST(customer_id AS INT) as customer_id,
@@ -25,13 +25,10 @@
                     current_timestamp() as __etl_processed_at
                 FROM {{ ref('default_dim_customer') }}
             ) AS defaults
-            ON target.customer_sk = defaults.customer_sk
-            WHEN MATCHED THEN UPDATE SET
-                target.first_name = defaults.first_name,
-                target.last_name = defaults.last_name,
-                target.email = defaults.email,
-                target.address = defaults.address
-            WHEN NOT MATCHED THEN INSERT *
+            WHERE NOT EXISTS (
+                SELECT 1 FROM {{ this }} target 
+                WHERE target.customer_sk = defaults.customer_sk
+            )
         "
     )
 }}

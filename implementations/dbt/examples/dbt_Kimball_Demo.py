@@ -442,6 +442,9 @@ ingest_silver("order_items", order_items_day2, order_items_schema, ["order_item_
 _day2_load_time = time.perf_counter() - _t_load_start
 
 print(f"✓ Day 2 Data Ingested in {_day2_load_time:.2f}s")
+# DEBUG: Verify Alice's address in Silver
+print("DEBUG: Checking Alice's address in silver.customers...")
+spark.sql(f"SELECT * FROM {silver_schema}.customers WHERE customer_id = 1").show()
 
 # COMMAND ----------
 
