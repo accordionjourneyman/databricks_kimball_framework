@@ -52,5 +52,6 @@ SELECT
 
 -- Use source directly (not staging view) since snapshot runs before models
 FROM {{ source('silver', 'customers') }}
+QUALIFY ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY updated_at DESC) = 1
 
 {% endsnapshot %}
