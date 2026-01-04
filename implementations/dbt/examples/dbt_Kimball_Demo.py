@@ -319,6 +319,9 @@ result = subprocess.run(
 )
 print("=== dbt seed ===")
 print(result.stdout)
+if result.returncode != 0:
+    print(result.stderr)
+    raise Exception("dbt seed failed!")
 
 # Run snapshots (SCD2 dimensions)
 result = subprocess.run(
@@ -329,6 +332,9 @@ result = subprocess.run(
 )
 print("=== dbt snapshot ===")
 print(result.stdout)
+if result.returncode != 0:
+    print(result.stderr)
+    raise Exception("dbt snapshot failed!")
 
 # Then run models (SCD1 dimensions and facts)
 result = subprocess.run(
@@ -339,6 +345,9 @@ result = subprocess.run(
 )
 print("=== dbt run ===")
 print(result.stdout)
+if result.returncode != 0:
+    print(result.stderr)
+    raise Exception("dbt run failed!")
 
 _day1_transform_time = time.perf_counter() - _t_transform_start
 _day1_rows = spark.table("demo_gold.fact_sales").count()
@@ -448,6 +457,9 @@ result = subprocess.run(
 )
 print("=== dbt snapshot (Day 2) ===")
 print(result.stdout)
+if result.returncode != 0:
+    print(result.stderr)
+    raise Exception("dbt snapshot (Day 2) failed!")
 
 # Run models (incremental)
 result = subprocess.run(
@@ -458,6 +470,9 @@ result = subprocess.run(
 )
 print("=== dbt run (Day 2) ===")
 print(result.stdout)
+if result.returncode != 0:
+    print(result.stderr)
+    raise Exception("dbt run (Day 2) failed!")
 
 _day2_transform_time = time.perf_counter() - _t_transform_start
 _day2_rows = spark.table("demo_gold.fact_sales").count()
