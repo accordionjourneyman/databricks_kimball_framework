@@ -48,10 +48,10 @@ models:
       +schema: staging
     dimensions:
       +materialized: table
-      +schema: gold
+      # Uses profile's schema directly (demo_gold)
     facts:
       +materialized: incremental
-      +schema: gold
+      # Uses profile's schema directly (demo_gold)
       +unique_key: order_item_id
 
 snapshots:
