@@ -442,9 +442,20 @@ ingest_silver("order_items", order_items_day2, order_items_schema, ["order_item_
 _day2_load_time = time.perf_counter() - _t_load_start
 
 print(f"✓ Day 2 Data Ingested in {_day2_load_time:.2f}s")
-# DEBUG: Verify Alice's address in Silver
+# DEBUG: Verify Alice's address in Silver and CHECK FOR DUPLICATES
+print(f"DEBUG: Current Spark Catalog: {spark.catalog.currentCatalog()}")
 print("DEBUG: Checking Alice's address in silver.customers...")
-spark.sql(f"SELECT * FROM demo_silver.customers WHERE customer_id = 1").show()
+spark.sql("SELECT * FROM demo_silver.customers WHERE customer_id = 1").show()
+
+print("DEBUG: Checking for duplicates in demo_silver.customers (customer_id)...")
+dup_check = spark.sql(
+    "SELECT customer_id, count(*) as cnt FROM demo_silver.customers GROUP BY customer_id HAVING cnt > 1"
+)
+if dup_check.count() > 0:
+    print("🚨 DUPLICATES FOUND IN SILVER!")
+    dup_check.show()
+else:
+    print("✓ No duplicates in Silver.")
 
 # COMMAND ----------
 

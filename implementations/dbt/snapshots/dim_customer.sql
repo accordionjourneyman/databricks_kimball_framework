@@ -7,8 +7,8 @@
     config(
         target_schema='demo_gold',
         unique_key='customer_id',
-        strategy='check',
-        check_cols=['first_name', 'last_name', 'email', 'address'],
+        strategy='timestamp',
+        updated_at='updated_at',
         invalidate_hard_deletes=True,
         post_hook="
             INSERT INTO {{ this }} BY NAME
@@ -47,7 +47,7 @@ SELECT
     address,
     
     -- Audit columns
-    updated_at,
+    CAST(updated_at AS TIMESTAMP) as updated_at,
     current_timestamp() as __etl_processed_at
 
 -- Use source directly (not staging view) since snapshot runs before models
