@@ -41,6 +41,7 @@ source_products AS (
         current_timestamp() as __etl_processed_at
 
     FROM {{ ref('stg_products') }}
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY updated_at DESC) = 1
 )
 
 -- On full refresh, include defaults; on incremental, just new source data
