@@ -11,7 +11,7 @@
         check_cols=['first_name', 'last_name', 'email', 'address'],
         invalidate_hard_deletes=True,
         post_hook="
-            INSERT INTO {{ this }}
+            INSERT INTO {{ this }} BY NAME
             SELECT * FROM (
                 SELECT 
                     CAST(customer_sk AS STRING) as customer_sk,
