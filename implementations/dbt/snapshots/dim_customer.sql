@@ -25,7 +25,12 @@
                     current_timestamp() as __etl_processed_at
                 FROM {{ ref('default_dim_customer') }}
             ) AS defaults
-            ON target.customer_id = defaults.customer_id
+            ON target.customer_sk = defaults.customer_sk
+            WHEN MATCHED THEN UPDATE SET
+                target.first_name = defaults.first_name,
+                target.last_name = defaults.last_name,
+                target.email = defaults.email,
+                target.address = defaults.address
             WHEN NOT MATCHED THEN INSERT *
         "
     )
