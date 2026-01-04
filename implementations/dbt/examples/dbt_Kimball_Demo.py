@@ -627,18 +627,29 @@ def collect_query_metrics(since_ms: int) -> list:
 
         metrics = []
         for q in queries:
-            if q.metrics and "dbt" in (q.query_text or "").lower():
+            # Handle both SDK objects and dicts safely
+            is_dict = isinstance(q, dict)
+
+            # Helper to get attribute or key
+            def get_val(obj, key, default=None):
+                if is_dict:
+                    return obj.get(key, default)
+                return getattr(obj, key, default)
+
+            # Helper to get nested metrics
+            q_metrics = get_val(q, "metrics")
+            query_text = get_val(q, "query_text", "")
+
+            if q_metrics and "dbt" in (query_text or "").lower():
                 metrics.append(
                     {
-                        "query_id": q.query_id,
-                        "duration_ms": q.duration,
-                        "rows_produced": q.metrics.rows_produced_count
-                        if q.metrics
-                        else 0,
-                        "bytes_read": q.metrics.total_file_bytes_read
-                        if q.metrics
-                        else 0,
-                        "status": q.status.value if q.status else "unknown",
+                        "query_id": get_val(q, "query_id"),
+                        "duration_ms": get_val(q, "duration"),
+                        "rows_produced": get_val(q_metrics, "rows_produced_count", 0),
+                        "bytes_read": get_val(q_metrics, "total_file_bytes_read", 0),
+                        "status": str(
+                            get_val(get_val(q, "status"), "value", "unknown")
+                        ),
                     }
                 )
         return metrics

@@ -21,7 +21,7 @@
                     CAST(NULL AS TIMESTAMP) as dbt_valid_to,
                     CAST('1900-01-01' AS TIMESTAMP) as dbt_updated_at,
                     '{{ invocation_id }}' as dbt_scd_id,
-                    CAST(updated_at AS TIMESTAMP) as updated_at,
+                    CAST('1900-01-01' AS TIMESTAMP) as updated_at,
                     current_timestamp() as __etl_processed_at
                 FROM {{ ref('default_dim_customer') }}
             ) AS defaults
