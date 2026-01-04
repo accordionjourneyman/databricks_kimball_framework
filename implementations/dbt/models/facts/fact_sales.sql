@@ -17,16 +17,6 @@ orders AS (
     SELECT * FROM {{ ref('stg_orders') }}
 ),
 
--- Get customer records from SCD2 snapshot (dbt_valid_to NULL = current)
-dim_customer AS (
-    SELECT 
-        customer_sk,
-        customer_id,
-        dbt_valid_from,
-        dbt_valid_to
-    FROM {{ ref('dim_customer') }}
-),
-
 dim_product AS (
     SELECT * FROM {{ ref('dim_product') }}
 )
@@ -53,14 +43,11 @@ SELECT
 
 FROM order_items oi
 INNER JOIN orders o ON oi.order_id = o.order_id
--- Temporal SCD2 join: find dimension version active at order_date
-LEFT JOIN dim_customer c 
+-- SCD2 join: use current record (dbt_valid_to IS NULL)
+-- Note: Full temporal join (order_date between valid_from/to) requires
+-- proper initialization of valid_from dates, which dbt snapshots don't do.
+-- For production, consider initializing valid_from to 1900-01-01 for existing records.
+LEFT JOIN {{ ref('dim_customer') }} c 
     ON o.customer_id = c.customer_id
-    AND o.order_date >= c.dbt_valid_from 
-    AND (c.dbt_valid_to IS NULL OR o.order_date < c.dbt_valid_to)
+    AND c.dbt_valid_to IS NULL
 LEFT JOIN dim_product p ON oi.product_id = p.product_id
-
-{% if is_incremental() %}
--- CDF filtering handled in staging; this catches any edge cases
-WHERE 1=1
-{% endif %}

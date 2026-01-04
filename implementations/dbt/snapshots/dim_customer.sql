@@ -9,7 +9,25 @@
         unique_key='customer_id',
         strategy='check',
         check_cols=['first_name', 'last_name', 'email', 'address'],
-        invalidate_hard_deletes=True
+        invalidate_hard_deletes=True,
+        post_hook="
+            MERGE INTO {{ this }} AS target
+            USING (
+                SELECT 
+                    CAST(customer_sk AS STRING) as customer_sk,
+                    CAST(customer_id AS INT) as customer_id,
+                    first_name, last_name, email, address,
+                    CAST(dbt_valid_from AS TIMESTAMP) as dbt_valid_from,
+                    CAST(NULL AS TIMESTAMP) as dbt_valid_to,
+                    CAST('1900-01-01' AS TIMESTAMP) as dbt_updated_at,
+                    '{{ invocation_id }}' as dbt_scd_id,
+                    CAST(updated_at AS TIMESTAMP) as updated_at,
+                    current_timestamp() as __etl_processed_at
+                FROM {{ ref('default_dim_customer') }}
+            ) AS defaults
+            ON target.customer_id = defaults.customer_id
+            WHEN NOT MATCHED THEN INSERT *
+        "
     )
 }}
 
