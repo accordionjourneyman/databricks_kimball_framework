@@ -1,0 +1,4 @@
+product_sk,product_id,name,category,unit_cost,updated_at
+-1,-1,Unknown,Unknown,0,1900-01-01
+-2,-2,Not Applicable,Not Applicable,0,1900-01-01
+-3,-3,Error,Error,0,1900-01-01

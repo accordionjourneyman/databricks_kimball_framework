@@ -1,0 +1,4 @@
+customer_sk,customer_id,first_name,last_name,email,address,dbt_valid_from,dbt_valid_to
+-1,-1,Unknown,Unknown,unknown@unknown.com,Unknown,1900-01-01,
+-2,-2,Not Applicable,Not Applicable,na@na.com,Not Applicable,1900-01-01,
+-3,-3,Error,Error,error@error.com,Error,1900-01-01,

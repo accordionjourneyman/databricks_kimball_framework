@@ -58,3 +58,11 @@ snapshots:
   kimball_dbt:
     +target_schema: demo_gold
     +strategy: check
+
+# Seeds for default Kimball dimension rows
+seeds:
+  kimball_dbt:
+    default_dim_customer:
+      +schema: demo_gold
+    default_dim_product:
+      +schema: demo_gold

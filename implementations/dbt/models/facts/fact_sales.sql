@@ -17,13 +17,13 @@ orders AS (
     SELECT * FROM {{ ref('stg_orders') }}
 ),
 
--- Get current customer records from SCD2 snapshot
+-- Get customer records from SCD2 snapshot (dbt_valid_to NULL = current)
 dim_customer AS (
     SELECT 
         customer_sk,
         customer_id,
         dbt_valid_from,
-        COALESCE(dbt_valid_to, '2099-12-31'::timestamp) as dbt_valid_to
+        dbt_valid_to
     FROM {{ ref('dim_customer') }}
 ),
 
@@ -53,10 +53,11 @@ SELECT
 
 FROM order_items oi
 INNER JOIN orders o ON oi.order_id = o.order_id
+-- Temporal SCD2 join: find dimension version active at order_date
 LEFT JOIN dim_customer c 
     ON o.customer_id = c.customer_id
     AND o.order_date >= c.dbt_valid_from 
-    AND o.order_date < c.dbt_valid_to
+    AND (c.dbt_valid_to IS NULL OR o.order_date < c.dbt_valid_to)
 LEFT JOIN dim_product p ON oi.product_id = p.product_id
 
 {% if is_incremental() %}

@@ -309,8 +309,18 @@ if result.returncode != 0:
 # Run dbt pipeline (Day 1 - full refresh)
 _t_transform_start = time.perf_counter()
 
-# Run snapshots first (SCD2 dimensions)
+# First load seed data (default Kimball dimension rows)
 dbt_vars = f'{{"source_catalog": "{catalog}"}}'
+result = subprocess.run(
+    ["dbt", "seed", "--profiles-dir", dbt_profiles_dir, "--vars", dbt_vars],
+    capture_output=True,
+    text=True,
+    cwd=DBT_PROJECT_PATH,
+)
+print("=== dbt seed ===")
+print(result.stdout)
+
+# Run snapshots (SCD2 dimensions)
 result = subprocess.run(
     ["dbt", "snapshot", "--profiles-dir", dbt_profiles_dir, "--vars", dbt_vars],
     capture_output=True,
@@ -542,7 +552,7 @@ print("=" * 70)
 import json
 
 metrics_path = f"{_repo_root}/benchmark_dbt.json"
-with open(metrics_path.replace("/Workspace", "/dbfs"), "w") as f:
+with open(metrics_path, "w") as f:
     json.dump(benchmark_metrics, f, indent=2)
 print(f"\nMetrics saved to: {metrics_path}")
 
