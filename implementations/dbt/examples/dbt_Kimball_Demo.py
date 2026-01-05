@@ -624,7 +624,7 @@ try:
         display(etl_control)
 
         # Verify batch statuses
-        success_count = etl_control.filter("batch_status = 'SUCCESS'").count()
+        success_count = etl_control.filter("run_status = 'SUCCESS'").count()
         total_count = etl_control.count()
         print(f"\n✅ Batch Success Rate: {success_count}/{total_count}")
     else:
@@ -644,11 +644,16 @@ def collect_query_metrics(since_ms: int) -> list:
     """Collect query metrics from Databricks Query History API."""
     try:
         from databricks.sdk import WorkspaceClient
+        from databricks.sdk.service.sql import QueryFilter, TimeRange
 
         w = WorkspaceClient()
+        # Explicitly construct filter to avoid SDK dict conversion errors
+        time_filter = TimeRange(start_time_ms=since_ms)
+        query_filter = QueryFilter(query_start_time_range=time_filter)
+
         queries = list(
             w.query_history.list(
-                filter_by={"start_time_ms": since_ms},
+                filter_by=query_filter,
                 include_metrics=True,
                 max_results=50,
             )
@@ -657,6 +662,10 @@ def collect_query_metrics(since_ms: int) -> list:
         metrics = []
         for q in queries:
             # Handle both SDK objects and dicts safely
+            # If it's a dict, use .get(), if it's an object use getattr
+            # The previous error 'dict object has no attribute as_dict' suggests q is already a dict
+            # so we should use dictionary access or generic getattr with fallback
+
             is_dict = isinstance(q, dict)
 
             # Helper to get attribute or key

@@ -1,27 +1,81 @@
-#!/usr/bin/env python3
-"""
-Polars Kimball Framework Demo
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # Polars Kimball Framework Demo (Databricks Notebook)
+# MAGIC
+# MAGIC This notebook demonstrates the Polars-based Kimball framework with:
+# MAGIC - Delta MERGE for SCD1
+# MAGIC - SCD2 with proper history tracking
+# MAGIC - Fact table with dimension lookups
+# MAGIC - Watermark tracking
 
-This script demonstrates the Polars-based Kimball framework with:
-- Delta MERGE for SCD1
-- SCD2 with proper history tracking
-- Fact table with dimension lookups
-- Watermark tracking
+# COMMAND ----------
 
-Run with: python Kimball_Demo.py
-"""
+# MAGIC %md
+# MAGIC ## Install Required Packages
 
+# COMMAND ----------
+
+# DBTITLE 1,Install Dependencies and Setup Paths
+import subprocess
+import os
+
+# Derive paths from notebook location (no hardcoding needed)
+# Path: implementations/polars/examples/Kimball_Demo.py → go up 3 levels to polars root
+_nb_path = (
+    dbutils.notebook.entry_point.getDbutils()
+    .notebook()
+    .getContext()
+    .notebookPath()
+    .get()
+)
+# Go up: examples → polars → implementations → repo_root
+_polars_root = "/Workspace" + os.path.dirname(os.path.dirname(_nb_path))
+_repo_root = os.path.dirname(os.path.dirname(_polars_root))
+
+# Install polars and deltalake
+subprocess.check_call(["pip", "install", "polars", "deltalake", "-q"])
+
+# Install kimball_polars from source
+subprocess.check_call(["pip", "install", _polars_root, "-q"])
+print(f"✓ Installed kimball_polars from {_polars_root}")
+
+# COMMAND ----------
+
+# DBTITLE 1,Restart Python to pick up new packages
+dbutils.library.restartPython()
+
+# COMMAND ----------
+
+# DBTITLE 1,Re-derive paths after Python restart
+import os
+
+# Re-derive paths after restart (variables are lost on restart)
+_nb_path = (
+    dbutils.notebook.entry_point.getDbutils()
+    .notebook()
+    .getContext()
+    .notebookPath()
+    .get()
+)
+_polars_root = "/Workspace" + os.path.dirname(os.path.dirname(_nb_path))
+_repo_root = os.path.dirname(os.path.dirname(_polars_root))
+print(f"✓ Repo root: {_repo_root}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Imports and Setup
+
+# COMMAND ----------
+
+# DBTITLE 1,Imports
 import json
 import shutil
-import sys
 import time
 from pathlib import Path
 
 import polars as pl
 from deltalake import DeltaTable, write_deltalake
-
-# Add src to path for local import
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from kimball_polars import (
     apply_scd1,
@@ -30,11 +84,14 @@ from kimball_polars import (
     update_watermark,
 )
 
+# COMMAND ----------
+
+# DBTITLE 1,Configuration
 # Benchmark metrics storage
 benchmark_metrics = []
 
-# Data directory for Delta tables
-DATA_DIR = Path(__file__).parent.parent / "data"
+# Data directory for Delta tables (use DBFS or Unity Catalog volumes in production)
+DATA_DIR = Path("/dbfs/tmp/kimball_polars_demo/data")
 SILVER_DIR = DATA_DIR / "silver"
 GOLD_DIR = DATA_DIR / "gold"
 CONTROL_DIR = DATA_DIR / "control"
@@ -46,6 +103,9 @@ print("  - SCD2 with history tracking")
 print("  - Fact table with FK lookups")
 print("=" * 70)
 
+# COMMAND ----------
+
+# DBTITLE 1,Initialize Data Directories
 # Clean up previous run
 if DATA_DIR.exists():
     shutil.rmtree(DATA_DIR)
@@ -55,7 +115,10 @@ GOLD_DIR.mkdir()
 CONTROL_DIR.mkdir()
 print(f"✓ Data directory: {DATA_DIR}")
 
+# COMMAND ----------
 
+
+# DBTITLE 1,Helper Functions
 def write_silver(df: pl.DataFrame, name: str):
     """Write to silver layer."""
     path = SILVER_DIR / name
@@ -68,10 +131,15 @@ def read_delta(path: Path) -> pl.DataFrame:
     return pl.from_arrow(DeltaTable(str(path)).to_pyarrow_table())
 
 
-# =============================================================================
-# Day 1: Initial Load
-# =============================================================================
-print("\n## Day 1: Initial Load")
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Day 1: Initial Load
+
+# COMMAND ----------
+
+# DBTITLE 1,Day 1 - Source Data
+print("## Day 1: Initial Load")
 
 # --- Day 1 Data ---
 customers_day1 = pl.DataFrame(
@@ -114,7 +182,12 @@ order_items_day1 = pl.DataFrame(
     }
 )
 
-# --- Write Silver Tables ---
+display(customers_day1.to_pandas())
+display(products_day1.to_pandas())
+
+# COMMAND ----------
+
+# DBTITLE 1,Day 1 - Write Silver Tables
 _t_load_start = time.perf_counter()
 write_silver(customers_day1, "customers")
 write_silver(products_day1, "products")
@@ -123,7 +196,9 @@ write_silver(order_items_day1, "order_items")
 _day1_load_time = time.perf_counter() - _t_load_start
 print(f"✓ Silver tables written in {_day1_load_time:.4f}s")
 
-# --- Apply SCD Logic (Day 1) ---
+# COMMAND ----------
+
+# DBTITLE 1,Day 1 - Apply SCD Logic
 _t_transform_start = time.perf_counter()
 
 # SCD2 for customers
@@ -145,6 +220,9 @@ dim_product = apply_scd1(
 )
 print(f"  dim_product: {len(dim_product)} rows")
 
+# COMMAND ----------
+
+# DBTITLE 1,Day 1 - Build Fact Table
 # Build fact table with FK lookups (current rows only)
 orders = read_delta(SILVER_DIR / "orders")
 order_items = read_delta(SILVER_DIR / "order_items")
@@ -209,10 +287,21 @@ benchmark_metrics.append(
 print(f"  fact_sales: {len(fact_sales)} rows")
 print(f"✓ Day 1 Complete in {_day1_load_time + _day1_transform_time:.4f}s")
 
-# =============================================================================
-# Day 2: Incremental Updates
-# =============================================================================
-print("\n## Day 2: Incremental Updates")
+display(fact_sales.to_pandas())
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Day 2: Incremental Updates
+# MAGIC
+# MAGIC - Alice moves to LA (SCD2 → new history row)
+# MAGIC - Laptop price drops to $900 (SCD1 → MERGE update)
+# MAGIC - Charlie joins (new customer)
+
+# COMMAND ----------
+
+# DBTITLE 1,Day 2 - Source Data
+print("## Day 2: Incremental Updates")
 print("- Alice moves to LA (SCD2 → new history row)")
 print("- Laptop price drops to $900 (SCD1 → MERGE update)")
 print("- Charlie joins (new customer)")
@@ -266,7 +355,12 @@ order_items_day2 = pl.DataFrame(
     }
 )
 
-# --- Write Silver (append new data) ---
+display(customers_day2.to_pandas())
+display(products_day2.to_pandas())
+
+# COMMAND ----------
+
+# DBTITLE 1,Day 2 - Write Silver Tables
 _t_load_start = time.perf_counter()
 write_silver(customers_day2, "customers")
 write_silver(products_day2, "products")
@@ -283,7 +377,9 @@ write_silver(all_items, "order_items")
 _day2_load_time = time.perf_counter() - _t_load_start
 print(f"✓ Silver tables updated in {_day2_load_time:.4f}s")
 
-# --- Apply SCD Logic (Day 2) ---
+# COMMAND ----------
+
+# DBTITLE 1,Day 2 - Apply SCD Logic
 _t_transform_start = time.perf_counter()
 
 # SCD2 for customers - should create history for Alice
@@ -305,6 +401,9 @@ dim_product = apply_scd1(
 )
 print(f"  dim_product: {len(dim_product)} rows")
 
+# COMMAND ----------
+
+# DBTITLE 1,Day 2 - Build Fact Table
 # Build fact for all orders
 orders = read_delta(SILVER_DIR / "orders")
 order_items = read_delta(SILVER_DIR / "order_items")
@@ -359,44 +458,62 @@ benchmark_metrics.append(
 print(f"  fact_sales: {len(fact_sales)} rows")
 print(f"✓ Day 2 Complete in {_day2_load_time + _day2_transform_time:.4f}s")
 
-# =============================================================================
-# Verification
-# =============================================================================
-print("\n## Verification")
+display(fact_sales.to_pandas())
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Verification
+
+# COMMAND ----------
+
+# DBTITLE 1,Verify SCD2 - Alice History
+print("## Verification")
 
 # 1. SCD2 Test - Alice should have 2 rows
 dim_customer = read_delta(GOLD_DIR / "dim_customer")
 alice_history = dim_customer.filter(pl.col("customer_id") == 1)
 print("\nAlice History (SCD2):")
-print(
+display(
     alice_history.select(
         ["customer_sk", "address", "__valid_from", "__valid_to", "__is_current"]
-    )
+    ).to_pandas()
 )
 
 assert len(alice_history) == 2, f"Alice should have 2 rows, got {len(alice_history)}"
 print("✅ SCD2 Test Passed")
 
+# COMMAND ----------
+
+# DBTITLE 1,Verify SCD1 - Laptop Price Update
 # 2. SCD1 Test - Laptop should have new price
 dim_product = read_delta(GOLD_DIR / "dim_product")
 laptop = dim_product.filter(pl.col("product_id") == 101)
 print("\nLaptop (SCD1 via MERGE):")
-print(laptop.select(["product_sk", "name", "unit_cost"]))
+display(laptop.select(["product_sk", "name", "unit_cost"]).to_pandas())
 
 assert laptop["unit_cost"][0] == 900.0, "Laptop cost should be 900"
 print("✅ SCD1 Test Passed")
 
+# COMMAND ----------
+
+# DBTITLE 1,Verify Fact Table
 # 3. Fact table
 fact_sales = read_delta(GOLD_DIR / "fact_sales")
 print(f"\nFact Sales: {len(fact_sales)} rows")
-print(fact_sales)
+display(fact_sales.to_pandas())
 
 assert len(fact_sales) == 4, f"Should have 4 fact rows, got {len(fact_sales)}"
 print("✅ Fact Table Test Passed")
 
-# =============================================================================
-# Benchmark Results
-# =============================================================================
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Benchmark Results
+
+# COMMAND ----------
+
+# DBTITLE 1,Display Benchmark Results
 print("\n" + "=" * 70)
 print("BENCHMARK RESULTS: Polars Kimball Framework")
 print("  (with Delta MERGE + SCD2 History)")
@@ -411,14 +528,18 @@ for m in benchmark_metrics:
     )
 print("=" * 70)
 
-# Save metrics
-metrics_path = (
-    Path(__file__).parent.parent.parent.parent
-    / "benchmarks"
-    / "results"
-    / "benchmark_polars.json"
-)
-metrics_path.parent.mkdir(parents=True, exist_ok=True)
+# Display as DataFrame for better visualization
+import pandas as pd
+
+benchmark_df = pd.DataFrame(benchmark_metrics)
+display(benchmark_df)
+
+# COMMAND ----------
+
+# DBTITLE 1,Save Metrics (Optional)
+# Save metrics to DBFS (update path as needed)
+metrics_path = "/dbfs/tmp/kimball_polars_demo/benchmark_polars.json"
+Path(metrics_path).parent.mkdir(parents=True, exist_ok=True)
 with open(metrics_path, "w") as f:
     json.dump(benchmark_metrics, f, indent=2)
 print(f"\nMetrics saved to: {metrics_path}")
