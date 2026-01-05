@@ -1,3 +1,5 @@
+# Requires Python 3.10+ (uses PEP 604 union syntax)
+
 pyyaml
 pyspark>=3.4.0
 delta-spark>=2.4.0
@@ -7,7 +9,10 @@ pytest
 black
 isort
 mypy
+
+# Databricks SDK/Connect - tested with DBR 14.x
 databricks-connect==14.0.0
 databricks-sdk==0.20.0
+
 python-dotenv
 requests

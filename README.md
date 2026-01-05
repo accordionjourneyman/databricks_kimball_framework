@@ -10,7 +10,6 @@ This repository provides multiple implementations of the same Kimball patterns:
 | --------------------------------------- | -------- | --------------------------------------------- |
 | [**PySpark**](implementations/pyspark/) | Python   | Production Databricks workloads, full control |
 | [**dbt**](implementations/dbt/)         | SQL      | SQL-first teams, simpler configurations       |
-| [**Polars**](implementations/polars/)   | Python   | Local development, single-node performance    |
 
 ## Quick Start
 
