@@ -1,10 +1,14 @@
+from __future__ import annotations
+
 import time
+from collections.abc import Callable
 from datetime import date, datetime
 from functools import wraps
+from typing import Any, Protocol
 
 from delta.tables import DeltaTable
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import col, current_timestamp, lit
+from pyspark.sql.functions import col, current_timestamp, lit, row_number
 from pyspark.sql.types import (
     BooleanType,
     DateType,
@@ -14,8 +18,10 @@ from pyspark.sql.types import (
     IntegerType,
     LongType,
     ShortType,
+    StructType,
     TimestampType,
 )
+from pyspark.sql.window import Window
 
 try:
     # Databricks Runtime 13+ - errors moved to pyspark.errors
@@ -31,8 +37,16 @@ from functools import reduce
 
 from databricks.sdk.runtime import spark
 
-from kimball.hashing import compute_hashdiff
-from kimball.key_generator import (
+from kimball.common.constants import (
+    DEFAULT_START_DATE,
+    DEFAULT_VALID_FROM,
+    DEFAULT_VALID_TO,
+    SQL_DEFAULT_VALID_FROM,
+    SQL_DEFAULT_VALID_TO,
+)
+from kimball.common.utils import quote_table_name
+from kimball.processing.hashing import compute_hashdiff
+from kimball.processing.key_generator import (
     HashKeyGenerator,
     IdentityKeyGenerator,
     KeyGenerator,
@@ -40,24 +54,17 @@ from kimball.key_generator import (
 )
 
 
-def _quote_table_name(table_name: str) -> str:
-    """
-    Properly quote a multi-part table name for SQL.
-    Converts 'schema.table' to '`schema`.`table`' instead of '`schema.table`'.
-    """
-    parts = table_name.split(".")
-    return ".".join(f"`{part}`" for part in parts)
-
-
-def retry_on_concurrent_exception(max_retries=3, backoff_base=2):
+def retry_on_concurrent_exception(
+    max_retries: int = 3, backoff_base: int = 2
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """
     Decorator to retry merge operations on ConcurrentAppendException with exponential backoff.
     Updated for Databricks Runtime 13+ compatibility.
     """
 
-    def decorator(func):
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
             for attempt in range(max_retries + 1):
                 try:
                     return func(*args, **kwargs)
@@ -85,6 +92,357 @@ def retry_on_concurrent_exception(max_retries=3, backoff_base=2):
     return decorator
 
 
+def set_table_auto_merge(table_name: str, enabled: bool) -> None:
+    """
+    Set the table property 'delta.schema.autoMerge.enabled' on a Delta table.
+    """
+    val = "true" if enabled else "false"
+    quoted_table_name = quote_table_name(table_name)
+    sql = f"ALTER TABLE {quoted_table_name} SET TBLPROPERTIES ('delta.schema.autoMerge.enabled' = '{val}')"
+    spark.sql(sql)
+
+
+class MergeStrategy(Protocol):
+    """Protocol defining the interface for SCD merge strategies."""
+
+    def merge(self, source_df: DataFrame) -> None: ...
+
+
+class SCD1Strategy:
+    """
+    Implements SCD Type 1 (Overwrite) merge logic.
+    Updates existing records in place and inserts new records.
+    Supports hard and soft deletes.
+    """
+
+    def __init__(
+        self,
+        target_table_name: str,
+        join_keys: list[str],
+        delete_strategy: str,
+        schema_evolution: bool,
+        surrogate_key_col: str | None = None,
+        surrogate_key_strategy: str = "identity",
+    ):
+        if not join_keys:
+            raise ValueError(
+                "join_keys must be provided for SCD1 MERGE. "
+                "Ensure 'natural_keys' (Dimensions) or 'merge_keys' (Facts) are defined in config."
+            )
+        self.target_table_name = target_table_name
+        self.join_keys = join_keys
+        self.delete_strategy = delete_strategy
+        self.schema_evolution = schema_evolution
+        self.surrogate_key_col = surrogate_key_col
+        self.surrogate_key_strategy = surrogate_key_strategy
+
+    def merge(self, source_df: DataFrame) -> None:
+        # Construct Merge Condition
+        merge_condition = " AND ".join(
+            [f"target.{k} <=> source.{k}" for k in self.join_keys]
+        )
+
+        delta_table = DeltaTable.forName(spark, self.target_table_name)
+
+        if self.schema_evolution:
+            try:
+                set_table_auto_merge(self.target_table_name, True)
+            except Exception:
+                pass
+
+        # Generate surrogate keys
+        if self.surrogate_key_col and self.surrogate_key_strategy:
+            max_key = 0
+            key_gen: KeyGenerator | None = None
+            if self.surrogate_key_strategy == "identity":
+                key_gen = IdentityKeyGenerator()
+            elif self.surrogate_key_strategy == "hash":
+                key_gen = HashKeyGenerator(self.join_keys)
+            elif self.surrogate_key_strategy == "sequence":
+                try:
+                    max_key_row = (
+                        delta_table.toDF().agg({self.surrogate_key_col: "max"}).first()
+                    )
+                    max_key = max_key_row[0] if max_key_row else 0
+                except PYSPARK_EXCEPTION_BASE as e:
+                    print(
+                        f"Warning: Failed to retrieve max key for {self.surrogate_key_col}: {e}"
+                    )
+                    max_key = 0
+                key_gen = SequenceKeyGenerator()
+
+            if key_gen and self.surrogate_key_strategy != "identity":
+                source_df = key_gen.generate_keys(
+                    source_df, self.surrogate_key_col, existing_max_key=max_key
+                )
+
+        merge_builder = delta_table.alias("target").merge(
+            source_df.alias("source"), merge_condition
+        )
+
+        if "_change_type" in source_df.columns:
+            if self.delete_strategy == "hard":
+                merge_builder = merge_builder.whenMatchedDelete(
+                    condition="source._change_type = 'delete'"
+                )
+            elif self.delete_strategy == "soft":
+                merge_builder = merge_builder.whenMatchedUpdate(
+                    condition="source._change_type = 'delete'",
+                    set={
+                        "__is_deleted": "true",
+                        "__etl_processed_at": "current_timestamp()",
+                    },
+                )
+
+        update_condition = (
+            "source._change_type != 'delete'"
+            if "_change_type" in source_df.columns
+            else None
+        )
+
+        source_cols_map = {c: f"source.{c}" for c in source_df.columns}
+
+        update_map = {
+            c: f"source.{c}" for c in source_df.columns if c != self.surrogate_key_col
+        }
+        update_map["__is_deleted"] = "false"
+        update_map["__etl_processed_at"] = "current_timestamp()"
+
+        insert_map = {
+            **source_cols_map,
+            "__is_deleted": "false",
+            "__etl_processed_at": "current_timestamp()",
+        }
+
+        if (
+            self.surrogate_key_strategy == "identity"
+            and self.surrogate_key_col in insert_map
+        ):
+            del insert_map[self.surrogate_key_col]
+
+        merge_builder = merge_builder.whenMatchedUpdate(
+            condition=update_condition, set=update_map
+        )
+
+        merge_builder = merge_builder.whenNotMatchedInsert(
+            condition=update_condition, values=insert_map
+        )
+
+        merge_builder.execute()
+
+
+class SCD2Strategy:
+    """
+    Implements SCD Type 2 (History Tracking) merge logic.
+    Tracks changes to `track_history_columns` by closing the current record
+    and inserting a new active record.
+    Preserves history with `__valid_from`, `__valid_to`, and `__is_current`.
+    """
+
+    def __init__(
+        self,
+        target_table_name: str,
+        join_keys: list[str],
+        track_history_columns: list[str],
+        surrogate_key_col: str,
+        surrogate_key_strategy: str,
+        schema_evolution: bool = False,
+    ):
+        if not join_keys:
+            raise ValueError(
+                "join_keys must be provided for SCD2 MERGE. "
+                "Ensure 'natural_keys' are defined in config."
+            )
+        self.target_table_name = target_table_name
+        self.join_keys = join_keys
+        self.track_history_columns = track_history_columns
+        self.surrogate_key_col = surrogate_key_col
+        self.surrogate_key_strategy = surrogate_key_strategy
+        self.schema_evolution = schema_evolution
+
+    def merge(self, source_df: DataFrame) -> None:
+        """
+        Executes SCD Type 2 Merge.
+
+        Algorithm:
+        1. Deduplicates source data (intra-batch) using window functions.
+        2. Detects changes by comparing HashDiffs between Source and Target.
+        3. Classifies rows into:
+           - INSERT_NEW: New business keys.
+           - UPDATE_EXPIRE: Existing keys with changed data (to expire old version).
+           - INSERT_VERSION: New version of changed keys (to become current).
+        4. Performs a single MERGE operation using a synthesized 'staged_source'.
+        """
+        if not self.track_history_columns:
+            raise ValueError("track_history_columns must be provided for SCD Type 2")
+
+        if self.schema_evolution:
+            try:
+                set_table_auto_merge(self.target_table_name, True)
+            except Exception:
+                pass
+
+        delta_table = DeltaTable.forName(spark, self.target_table_name)
+
+        source_df = source_df.withColumn(
+            "hashdiff", compute_hashdiff(self.track_history_columns)
+        )
+
+        if self.join_keys and "__etl_processed_at" in source_df.columns:
+            window = Window.partitionBy(*self.join_keys).orderBy(
+                col("__etl_processed_at").desc()
+            )
+            source_df = (
+                source_df.withColumn("_intra_batch_seq", row_number().over(window))
+                .filter(col("_intra_batch_seq") == 1)
+                .drop("_intra_batch_seq")
+            )
+            print(
+                "Applied intra-batch sequencing for SCD2 - removed duplicate keys within batch"
+            )
+
+        source_keys = source_df.select(*self.join_keys).distinct()
+        target_df = (
+            delta_table.toDF()
+            .filter("__is_current = true")
+            .join(source_keys, self.join_keys, "semi")
+        )
+
+        join_conditions = [
+            source_df[k].eqNullSafe(target_df[k]) for k in self.join_keys
+        ]
+        if join_conditions:
+            combined_join_cond = reduce(lambda a, b: a & b, join_conditions)
+        else:
+            combined_join_cond = None
+
+        joined_df = (
+            source_df.alias("s")
+            .join(target_df.alias("t"), combined_join_cond, "left")
+            .select(
+                "s.*",
+                col("t.hashdiff").alias("target_hashdiff"),
+                col("t." + self.surrogate_key_col).alias("target_sk"),
+            )
+        )
+
+        rows_new = (
+            joined_df.filter(col("target_sk").isNull())
+            .drop("target_hashdiff", "target_sk")
+            .withColumn("__merge_action", lit("INSERT_NEW"))
+        )
+
+        rows_changed = joined_df.filter(
+            col("target_sk").isNotNull() & (col("hashdiff") != col("target_hashdiff"))
+        ).drop("target_hashdiff", "target_sk")
+
+        rows_to_expire = rows_changed.withColumn("__merge_action", lit("UPDATE_EXPIRE"))
+        rows_to_insert_version = rows_changed.withColumn(
+            "__merge_action", lit("INSERT_VERSION")
+        )
+
+        staged_source = rows_new.union(rows_to_expire).union(rows_to_insert_version)
+
+        rows_needing_keys = staged_source.filter(
+            col("__merge_action").isin("INSERT_NEW", "INSERT_VERSION")
+        )
+        rows_no_keys = staged_source.filter(col("__merge_action") == "UPDATE_EXPIRE")
+
+        max_key = 0
+        key_gen: KeyGenerator
+        if self.surrogate_key_strategy == "identity":
+            key_gen = IdentityKeyGenerator()
+        elif self.surrogate_key_strategy == "hash":
+            key_gen = HashKeyGenerator(self.join_keys)
+        elif self.surrogate_key_strategy == "sequence":
+            try:
+                max_key_row = (
+                    delta_table.toDF().agg({self.surrogate_key_col: "max"}).first()
+                )
+                max_key = max_key_row[0] if max_key_row else 0
+            except PYSPARK_EXCEPTION_BASE as e:
+                print(
+                    f"Warning: Failed to retrieve max key for {self.surrogate_key_col}: {e}"
+                )
+                max_key = 0
+            key_gen = SequenceKeyGenerator()
+        else:
+            raise ValueError(f"Unknown key strategy: {self.surrogate_key_strategy}")
+
+        rows_with_keys = key_gen.generate_keys(
+            rows_needing_keys,
+            self.surrogate_key_col,
+            existing_max_key=max_key
+            if self.surrogate_key_strategy == "sequence"
+            else 0,
+        )
+
+        if (
+            self.surrogate_key_col in rows_with_keys.columns
+            and self.surrogate_key_col not in rows_no_keys.columns
+        ):
+            rows_no_keys = rows_no_keys.withColumn(self.surrogate_key_col, lit(None))
+
+        final_source = rows_with_keys.unionByName(
+            rows_no_keys, allowMissingColumns=True
+        )
+
+        from pyspark.sql.functions import when as _when
+
+        for k in self.join_keys:
+            final_source = final_source.withColumn(f"__orig_{k}", col(k))
+            final_source = final_source.withColumn(
+                k,
+                _when(col("__merge_action") == "UPDATE_EXPIRE", col(k)).otherwise(
+                    lit(None)
+                ),
+            )
+
+        merge_condition = (
+            " AND ".join([f"target.{k} <=> source.{k}" for k in self.join_keys])
+            + " AND target.__is_current = true"
+        )
+
+        insert_values = {}
+        for c in source_df.columns:
+            if c == "__merge_action":
+                continue
+            if c in self.join_keys:
+                insert_values[c] = f"source.__orig_{c}"
+            else:
+                insert_values[c] = f"source.{c}"
+
+        insert_values.update(
+            {
+                "__is_current": "true",
+                "__valid_from": f"CASE WHEN source.__merge_action = 'INSERT_NEW' THEN {SQL_DEFAULT_VALID_FROM} ELSE source.__etl_processed_at END",
+                "__valid_to": SQL_DEFAULT_VALID_TO,
+                "__etl_processed_at": "current_timestamp()",
+                "__is_deleted": "false",
+            }
+        )
+
+        if self.surrogate_key_col in final_source.columns:
+            insert_values[self.surrogate_key_col] = f"source.{self.surrogate_key_col}"
+
+        if (
+            self.surrogate_key_strategy == "identity"
+            and self.surrogate_key_col in insert_values
+        ):
+            del insert_values[self.surrogate_key_col]
+
+        delta_table.alias("target").merge(
+            final_source.alias("source"), merge_condition
+        ).whenMatchedUpdate(
+            condition="source.__merge_action = 'UPDATE_EXPIRE'",
+            set={
+                "__is_current": "false",
+                "__valid_to": "source.__etl_processed_at",
+                "__etl_processed_at": "current_timestamp()",
+            },
+        ).whenNotMatchedInsert(values=insert_values).execute()
+
+
 class DeltaMerger:
     """
     Handles the MERGE operation into the target Delta table.
@@ -104,7 +462,7 @@ class DeltaMerger:
         surrogate_key_col: str = "surrogate_key",
         surrogate_key_strategy: str = "identity",
         schema_evolution: bool = False,
-    ):
+    ) -> None:
         """
         Executes the MERGE operation.
         """
@@ -113,20 +471,19 @@ class DeltaMerger:
         if batch_id:
             enriched_df = enriched_df.withColumn("__etl_batch_id", lit(batch_id))
 
+        strategy: MergeStrategy
         if scd_type == 2:
-            self._merge_scd2(
+            strategy = SCD2Strategy(
                 target_table_name,
-                enriched_df,
                 join_keys,
-                track_history_columns,
+                track_history_columns or [],
                 surrogate_key_col,
                 surrogate_key_strategy,
                 schema_evolution,
             )
         else:
-            self._merge_scd1(
+            strategy = SCD1Strategy(
                 target_table_name,
-                enriched_df,
                 join_keys,
                 delete_strategy,
                 schema_evolution,
@@ -134,373 +491,7 @@ class DeltaMerger:
                 surrogate_key_strategy,
             )
 
-    def _merge_scd1(
-        self,
-        target_table_name,
-        source_df,
-        join_keys,
-        delete_strategy,
-        schema_evolution,
-        surrogate_key_col=None,
-        surrogate_key_strategy="identity",
-    ):
-        # 2. Construct Merge Condition
-        # Use null-safe equality (<=>) to handle NULLs in composite keys
-        merge_condition = " AND ".join(
-            [f"target.{k} <=> source.{k}" for k in join_keys]
-        )
-
-        # 3. Execute Merge
-        delta_table = DeltaTable.forName(spark, target_table_name)
-
-        # For Databricks Runtime we enable table-level auto-merge so MERGE can evolve schema.
-        # Use table properties so this works on managed tables: set delta.schema.autoMerge.enabled = true
-        if schema_evolution:
-            try:
-                self._set_table_auto_merge(target_table_name, True)
-            except Exception:
-                # If setting the property fails, fall back to leaving Spark conf untouched
-                pass
-
-        # Generate surrogate keys for new rows if needed
-        if surrogate_key_col and surrogate_key_strategy:
-            # Initialize Key Generator
-            max_key = 0
-            if surrogate_key_strategy == "identity":
-                key_gen = IdentityKeyGenerator()
-            elif surrogate_key_strategy == "hash":
-                key_gen = HashKeyGenerator(join_keys)
-            elif surrogate_key_strategy == "sequence":
-                # WARNING: SequenceKeyGenerator is deprecated and may cause OOM on large datasets
-                # Consider using 'identity' or 'hash' strategy instead
-                try:
-                    max_key_row = (
-                        delta_table.toDF().agg({surrogate_key_col: "max"}).first()
-                    )
-                    max_key = max_key_row[0] if max_key_row else 0
-                except PYSPARK_EXCEPTION_BASE as e:
-                    # Log warning but continue with max_key = 0
-                    print(
-                        f"Warning: Failed to retrieve max key for {surrogate_key_col}: {e}"
-                    )
-                    max_key = 0
-                key_gen = SequenceKeyGenerator()
-            else:
-                key_gen = None
-
-            if key_gen and surrogate_key_strategy != "identity":
-                # Generate keys for source rows (for hash/sequence strategies)
-                source_df = key_gen.generate_keys(
-                    source_df, surrogate_key_col, existing_max_key=max_key
-                )
-
-        merge_builder = delta_table.alias("target").merge(
-            source_df.alias("source"), merge_condition
-        )
-
-        # Handle Deletes (if source has _change_type = 'delete')
-        if "_change_type" in source_df.columns:
-            if delete_strategy == "hard":
-                merge_builder = merge_builder.whenMatchedDelete(
-                    condition="source._change_type = 'delete'"
-                )
-            elif delete_strategy == "soft":
-                merge_builder = merge_builder.whenMatchedUpdate(
-                    condition="source._change_type = 'delete'",
-                    set={
-                        "__is_deleted": "true",
-                        "__etl_processed_at": "current_timestamp()",
-                    },
-                )
-
-        update_condition = (
-            "source._change_type != 'delete'"
-            if "_change_type" in source_df.columns
-            else None
-        )
-
-        # Build explicit update and insert maps so system columns like __is_deleted are set
-        source_cols_map = {c: f"source.{c}" for c in source_df.columns}
-
-        # Ensure system columns are explicitly set on update/insert
-        # For updates, do NOT overwrite the existing surrogate key
-        update_map = {
-            c: f"source.{c}" for c in source_df.columns if c != surrogate_key_col
-        }
-        update_map["__is_deleted"] = "false"
-        update_map["__etl_processed_at"] = "current_timestamp()"
-
-        # For inserts, include the surrogate key (unless using identity column)
-        insert_map = {
-            **source_cols_map,
-            "__is_deleted": "false",
-            "__etl_processed_at": "current_timestamp()",
-        }
-
-        # If using Identity, remove SK from insert map so DB generates it
-        if surrogate_key_strategy == "identity" and surrogate_key_col in insert_map:
-            del insert_map[surrogate_key_col]
-
-        merge_builder = merge_builder.whenMatchedUpdate(
-            condition=update_condition, set=update_map
-        )
-
-        merge_builder = merge_builder.whenNotMatchedInsert(
-            condition=update_condition, values=insert_map
-        )
-
-        merge_builder.execute()
-
-    def _merge_scd2(
-        self,
-        target_table_name,
-        source_df,
-        join_keys,
-        track_history_columns,
-        surrogate_key_col,
-        surrogate_key_strategy,
-        schema_evolution: bool = False,
-    ):
-        """
-        Implements SCD Type 2 Merge using Hashdiff and Surrogate Keys with Deletion Vectors.
-        """
-        if not track_history_columns:
-            raise ValueError("track_history_columns must be provided for SCD Type 2")
-
-        # For Databricks Runtime we enable table-level auto-merge so MERGE can evolve schema.
-        if schema_evolution:
-            try:
-                self._set_table_auto_merge(target_table_name, True)
-            except Exception:
-                pass
-
-        delta_table = DeltaTable.forName(spark, target_table_name)
-
-        # 1. Compute Hashdiff on Source
-        source_df = source_df.withColumn(
-            "hashdiff", compute_hashdiff(track_history_columns)
-        )
-
-        # 1.5. Handle Intra-Batch Sequencing (SCD2 Multi-Update Fix)
-        # If multiple updates for same natural key exist in source batch,
-        # only process the latest one to avoid merge conflicts
-        if join_keys and "__etl_processed_at" in source_df.columns:
-            from pyspark.sql.functions import row_number
-            from pyspark.sql.window import Window
-
-            # Rank records by effective date within each natural key group
-            window = Window.partitionBy(*join_keys).orderBy(
-                col("__etl_processed_at").desc()
-            )
-            source_df = (
-                source_df.withColumn("_intra_batch_seq", row_number().over(window))
-                .filter(col("_intra_batch_seq") == 1)
-                .drop("_intra_batch_seq")
-            )
-            print(
-                "Applied intra-batch sequencing for SCD2 - removed duplicate keys within batch"
-            )
-
-        # 2. Prepare Staged Source for Merge
-        # We need to identify:
-        # - Rows to Close (Update): Match on Keys + is_current + Hashdiff Changed
-        # - Rows to Insert (New Version): Match on Keys + is_current + Hashdiff Changed
-        # - Rows to Insert (New Key): No Match on Keys
-
-        # We use the "Union" approach to handle both update and insert in one MERGE.
-        # Source rows are duplicated for the "Update" and "Insert" actions if they are changes.
-
-        # OPTIMIZATION: Semi-join filter to avoid full target table scan
-        # Instead of loading ALL current rows, only load rows matching source keys
-        # This is critical for large dimensions with small incremental batches
-        from pyspark.sql.functions import broadcast
-
-        source_keys = source_df.select(*join_keys).distinct()
-        target_df = (
-            delta_table.toDF()
-            .filter("__is_current = true")
-            .join(source_keys, join_keys, "semi")  # Semi-join: only keep matching rows
-        )
-
-        # Join condition: build a single Column expression combining null-safe equality on all join keys
-        join_conditions = [source_df[k].eqNullSafe(target_df[k]) for k in join_keys]
-        if join_conditions:
-            combined_join_cond = reduce(lambda a, b: a & b, join_conditions)
-        else:
-            combined_join_cond = None
-
-        # Identify Changes
-        # We join source and target.
-        # If match AND hashdiff differs -> Change
-        # If no match -> New
-
-        # We need to bring 'hashdiff' from target to compare.
-        # Assuming target has 'hashdiff' column. If not, we might need to compute it or assume change.
-        # For this implementation, we assume target table is created with hashdiff.
-
-        # OPTIMIZATION: Broadcast hint for small source batches
-        # Spark will broadcast if source < 10MB (spark.sql.autoBroadcastJoinThreshold)
-        joined_df = (
-            source_df.alias("s")
-            .join(broadcast(target_df.alias("t")), combined_join_cond, "left")
-            .select(
-                "s.*",
-                col("t.hashdiff").alias("target_hashdiff"),
-                col("t." + surrogate_key_col).alias("target_sk"),
-            )
-        )
-
-        # Rows that are NEW (no match in target)
-        rows_new = (
-            joined_df.filter(col("target_sk").isNull())
-            .drop("target_hashdiff", "target_sk")
-            .withColumn("__merge_action", lit("INSERT_NEW"))
-        )
-
-        # Rows that CHANGED (match in target, but hashdiff differs)
-        rows_changed = joined_df.filter(
-            col("target_sk").isNotNull() & (col("hashdiff") != col("target_hashdiff"))
-        ).drop("target_hashdiff", "target_sk")
-
-        # For changed rows, we need TWO actions:
-        # 1. UPDATE old row (expire it)
-        # 2. INSERT new row
-
-        rows_to_expire = rows_changed.withColumn("__merge_action", lit("UPDATE_EXPIRE"))
-        rows_to_insert_version = rows_changed.withColumn(
-            "__merge_action", lit("INSERT_VERSION")
-        )
-
-        # Combine all rows for MERGE
-        staged_source = rows_new.union(rows_to_expire).union(rows_to_insert_version)
-
-        # 3. Generate Surrogate Keys for INSERT rows
-        # We only generate keys for INSERT_NEW and INSERT_VERSION
-        # UPDATE_EXPIRE rows don't need a new key (they match on natural key to expire)
-
-        # Filter for rows needing keys
-        rows_needing_keys = staged_source.filter(
-            col("__merge_action").isin("INSERT_NEW", "INSERT_VERSION")
-        )
-        rows_no_keys = staged_source.filter(col("__merge_action") == "UPDATE_EXPIRE")
-
-        # Initialize Key Generator with proper typing
-        max_key = 0  # Initialize max_key before conditional blocks
-        key_gen: KeyGenerator
-        if surrogate_key_strategy == "identity":
-            key_gen = IdentityKeyGenerator()
-        elif surrogate_key_strategy == "hash":
-            key_gen = HashKeyGenerator(join_keys)  # Use natural keys for hash key
-        elif surrogate_key_strategy == "sequence":
-            # WARNING: SequenceKeyGenerator is deprecated and may cause OOM on large datasets
-            # Consider using 'identity' or 'hash' strategy instead
-            # For sequence, we'd need the max key.
-            # This is expensive. For now, use 0 or fetch if feasible.
-            # In production, use a separate generator service or Identity columns.
-            try:
-                max_key_row = delta_table.toDF().agg({surrogate_key_col: "max"}).first()
-                max_key = max_key_row[0] if max_key_row else 0
-            except PYSPARK_EXCEPTION_BASE as e:
-                # Log warning but continue with max_key = 0
-                print(
-                    f"Warning: Failed to retrieve max key for {surrogate_key_col}: {e}"
-                )
-                max_key = 0
-            key_gen = SequenceKeyGenerator()
-        else:
-            raise ValueError(f"Unknown key strategy: {surrogate_key_strategy}")
-
-        # Generate keys
-        # Note: For Identity, this might drop the column or do nothing.
-        rows_with_keys = key_gen.generate_keys(
-            rows_needing_keys,
-            surrogate_key_col,
-            existing_max_key=max_key if surrogate_key_strategy == "sequence" else 0,
-        )
-
-        # Union back
-        # Ensure schema matches (if key gen added a column, we need to add it to rows_no_keys as null)
-        if (
-            surrogate_key_col in rows_with_keys.columns
-            and surrogate_key_col not in rows_no_keys.columns
-        ):
-            rows_no_keys = rows_no_keys.withColumn(surrogate_key_col, lit(None))
-
-        final_source = rows_with_keys.unionByName(
-            rows_no_keys, allowMissingColumns=True
-        )
-
-        # 4. Execute MERGE
-
-        # Merge Condition:
-        # We match on Natural Keys AND __is_current = true
-        # BUT for INSERT rows, we want to force a NOT MATCH.
-        # So we nullify the join keys in source for INSERT actions.
-        # IMPORTANT: Preserve original values before nullifying so we can insert them!
-
-        from pyspark.sql.functions import when as _when
-
-        for k in join_keys:
-            # Preserve original value in a temp column for INSERT
-            final_source = final_source.withColumn(f"__orig_{k}", col(k))
-            # Nullify the join key for INSERT rows so they don't match
-            final_source = final_source.withColumn(
-                k,
-                _when(col("__merge_action") == "UPDATE_EXPIRE", col(k)).otherwise(
-                    lit(None)
-                ),
-            )
-
-        merge_condition = (
-            " AND ".join([f"target.{k} <=> source.{k}" for k in join_keys])
-            + " AND target.__is_current = true"
-        )
-
-        # Define Values for Insert
-        # We insert all columns from source, plus SCD2 cols
-        # Use the preserved __orig_ columns for natural keys since join keys were nullified
-        insert_values = {}
-        for c in source_df.columns:
-            if c == "__merge_action":
-                continue
-            if c in join_keys:
-                # Use preserved original value
-                insert_values[c] = f"source.__orig_{c}"
-            else:
-                insert_values[c] = f"source.{c}"
-
-        # Add SCD2 system columns
-        # For __valid_from:
-        #   - INSERT_NEW (first version): use 1900-01-01 so historical facts can join
-        #   - INSERT_VERSION (new version after change): use current timestamp
-        insert_values.update(
-            {
-                "__is_current": "true",
-                "__valid_from": "CASE WHEN source.__merge_action = 'INSERT_NEW' THEN cast('1900-01-01 00:00:00' as timestamp) ELSE source.__etl_processed_at END",
-                "__valid_to": "cast('2099-12-31 23:59:59' as timestamp)",
-                "__etl_processed_at": "current_timestamp()",
-                "__is_deleted": "false",
-            }
-        )
-
-        # If key gen provided a key, include it.
-        if surrogate_key_col in final_source.columns:
-            insert_values[surrogate_key_col] = f"source.{surrogate_key_col}"
-
-        # If using Identity, we DO NOT include the key in insert (unless we want to override, which we usually don't).
-        if surrogate_key_strategy == "identity" and surrogate_key_col in insert_values:
-            del insert_values[surrogate_key_col]
-
-        delta_table.alias("target").merge(
-            final_source.alias("source"), merge_condition
-        ).whenMatchedUpdate(
-            condition="source.__merge_action = 'UPDATE_EXPIRE'",
-            set={
-                "__is_current": "false",
-                "__valid_to": "source.__etl_processed_at",
-                "__etl_processed_at": "current_timestamp()",
-            },
-        ).whenNotMatchedInsert(values=insert_values).execute()
+        strategy.merge(enriched_df)
 
     def _is_delta_table(self, table_name: str) -> bool:
         """
@@ -513,19 +504,7 @@ class DeltaMerger:
         except Exception:
             return False
 
-    def _set_table_auto_merge(self, table_name: str, enabled: bool):
-        """
-        Set the table property 'delta.schema.autoMerge.enabled' on a Delta table.
-        This enables Databricks Runtime's auto-merge behavior for MERGE operations.
-        Uses ALTER TABLE ... SET TBLPROPERTIES for managed tables.
-        """
-        val = "true" if enabled else "false"
-        # Use ALTER TABLE to set the table property
-        quoted_table_name = _quote_table_name(table_name)
-        sql = f"ALTER TABLE {quoted_table_name} SET TBLPROPERTIES ('delta.schema.autoMerge.enabled' = '{val}')"
-        spark.sql(sql)
-
-    def get_last_merge_metrics(self, table_name: str) -> dict:
+    def get_last_merge_metrics(self, table_name: str) -> dict[str, Any]:
         """
         Get metrics from the last MERGE operation on a table.
         Returns dict with numSourceRows, numTargetRowsInserted, numTargetRowsUpdated, etc.
@@ -542,12 +521,12 @@ class DeltaMerger:
 
     def ensure_scd2_defaults(
         self,
-        target_table_name,
-        schema,
-        surrogate_key,
-        default_values=None,
-        surrogate_key_strategy="identity",
-    ):
+        target_table_name: str,
+        schema: StructType,
+        surrogate_key: str,
+        default_values: dict[str, Any] | None = None,
+        surrogate_key_strategy: str = "identity",
+    ) -> None:
         """
         Ensures that the standard SCD2 default rows (-1, -2, -3) exist in the table.
         """
@@ -577,8 +556,8 @@ class DeltaMerger:
         rows_to_insert = []
 
         for key, label in standard_defaults.items():
-            # Construct row
-            row = {surrogate_key: key}
+            # Construct row with heterogeneous types
+            row: dict[str, Any] = {surrogate_key: key}
 
             # Fill other columns
             for field in schema.fields:
@@ -590,20 +569,18 @@ class DeltaMerger:
                 if col_name == "__is_current":
                     row[col_name] = True
                 elif col_name == "__valid_from":
-                    row[col_name] = datetime(1900, 1, 1, 0, 0, 0)  # Standard start
+                    row[col_name] = DEFAULT_VALID_FROM  # Standard start
                 elif col_name == "__valid_to":
-                    row[col_name] = datetime(
-                        2099, 12, 31, 23, 59, 59
-                    )  # Standard end for default rows
+                    row[col_name] = DEFAULT_VALID_TO  # Standard end for default rows
                 elif col_name.startswith("__"):
                     # Other system cols: provide a fallback if the target field is non-nullable
                     if not field.nullable:
                         dtype = field.dataType
                         # Timestamp/Date -> use safe historical date/time
                         if isinstance(dtype, TimestampType):
-                            row[col_name] = datetime(1900, 1, 1, 0, 0, 0)
+                            row[col_name] = DEFAULT_VALID_FROM
                         elif isinstance(dtype, DateType):
-                            row[col_name] = date(1900, 1, 1)
+                            row[col_name] = DEFAULT_START_DATE
                         elif isinstance(
                             dtype,
                             (
@@ -636,9 +613,9 @@ class DeltaMerger:
                         elif "Int" in dtype or "Long" in dtype or "Double" in dtype:
                             row[col_name] = -1
                         elif "Timestamp" in dtype:
-                            row[col_name] = datetime(1900, 1, 1, 0, 0, 0)
+                            row[col_name] = DEFAULT_VALID_FROM
                         elif "Date" in dtype:
-                            row[col_name] = date(1900, 1, 1)
+                            row[col_name] = DEFAULT_START_DATE
                         else:
                             row[col_name] = None
 
@@ -657,12 +634,12 @@ class DeltaMerger:
 
     def ensure_scd1_defaults(
         self,
-        target_table_name,
-        schema,
-        surrogate_key,
-        default_values=None,
-        surrogate_key_strategy="identity",
-    ):
+        target_table_name: str,
+        schema: StructType,
+        surrogate_key: str,
+        default_values: dict[str, Any] | None = None,
+        surrogate_key_strategy: str = "identity",
+    ) -> None:
         """
         Ensures that the standard SCD1 default rows (-1, -2, -3) exist in the table.
         Similar to SCD2 but without the SCD2-specific system columns.
@@ -687,7 +664,7 @@ class DeltaMerger:
         standard_defaults = {-1: "Unknown", -2: "Not Applicable", -3: "Error"}
 
         for key, label in standard_defaults.items():
-            row = {surrogate_key: key}
+            row: dict[str, Any] = {surrogate_key: key}
 
             for field in schema.fields:
                 col_name = field.name
@@ -731,9 +708,9 @@ class DeltaMerger:
                         elif "Int" in dtype or "Long" in dtype or "Double" in dtype:
                             row[col_name] = -1
                         elif "Timestamp" in dtype:
-                            row[col_name] = datetime(1900, 1, 1, 0, 0, 0)
+                            row[col_name] = DEFAULT_VALID_FROM
                         elif "Date" in dtype:
-                            row[col_name] = date(1900, 1, 1)
+                            row[col_name] = DEFAULT_START_DATE
                         else:
                             row[col_name] = None
 
@@ -750,7 +727,9 @@ class DeltaMerger:
                 df.alias("source"), f"target.{surrogate_key} = source.{surrogate_key}"
             ).whenNotMatchedInsertAll().execute()
 
-    def optimize_table(self, table_name: str, cluster_by: list[str] | None = None):
+    def optimize_table(
+        self, table_name: str, cluster_by: list[str] | None = None
+    ) -> None:
         """
         Runs OPTIMIZE on the target table.
 
@@ -764,11 +743,11 @@ class DeltaMerger:
             # If cluster_by is specified, ensure the table is configured for Liquid Clustering
             # Note: This assumes the table was created with CLUSTER BY clause
             # We just run OPTIMIZE, which will use the existing clustering spec
-            quoted_table_name = _quote_table_name(table_name)
+            quoted_table_name = quote_table_name(table_name)
             spark.sql(f"OPTIMIZE {quoted_table_name}")
             print(f"Optimized {table_name} using Liquid Clustering on {cluster_by}")
         else:
             # Standard OPTIMIZE without clustering
-            quoted_table_name = _quote_table_name(table_name)
+            quoted_table_name = quote_table_name(table_name)
             spark.sql(f"OPTIMIZE {quoted_table_name}")
             print(f"Optimized {table_name}")

@@ -7,7 +7,7 @@ from pyspark.sql import Row, SparkSession
 # Set env var before importing (simulates notebook setup)
 os.environ["KIMBALL_ETL_SCHEMA"] = "test_schema"
 
-from kimball.watermark import ETLControlManager
+from kimball.orchestration.watermark import ETLControlManager
 
 
 @pytest.fixture
@@ -17,18 +17,19 @@ def spark_mock():
     return spark
 
 
-@patch("kimball.watermark.spark")
+@patch("kimball.orchestration.watermark.spark")
 def test_ensure_table_exists_creates_table(mock_spark):
     """Test that the table is created if it doesn't exist."""
     mock_spark.catalog.tableExists.return_value = False
 
-    manager = ETLControlManager(etl_schema="test_schema")
+    _ = ETLControlManager(etl_schema="test_schema")
 
     mock_spark.sql.assert_called()  # CREATE DATABASE and CREATE TABLE
 
 
-@patch("kimball.watermark.spark")
-def test_get_watermark_returns_value(mock_spark):
+@patch("kimball.orchestration.watermark.col")
+@patch("kimball.orchestration.watermark.spark")
+def test_get_watermark_returns_value(mock_spark, mock_col):
     """Test retrieving an existing watermark."""
     mock_spark.catalog.tableExists.return_value = True
 
@@ -45,8 +46,9 @@ def test_get_watermark_returns_value(mock_spark):
     assert version == 100
 
 
-@patch("kimball.watermark.spark")
-def test_get_watermark_returns_none(mock_spark):
+@patch("kimball.orchestration.watermark.col")
+@patch("kimball.orchestration.watermark.spark")
+def test_get_watermark_returns_none(mock_spark, mock_col):
     """Test retrieving a non-existent watermark."""
     mock_spark.catalog.tableExists.return_value = True
 
@@ -60,7 +62,7 @@ def test_get_watermark_returns_none(mock_spark):
     assert version is None
 
 
-@patch("kimball.watermark.spark")
+@patch("kimball.orchestration.watermark.spark")
 def test_env_var_schema(mock_spark):
     """Test that KIMBALL_ETL_SCHEMA env var is used."""
     mock_spark.catalog.tableExists.return_value = True

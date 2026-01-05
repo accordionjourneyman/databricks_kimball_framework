@@ -1,6 +1,6 @@
 import pytest
 
-from kimball.config import ConfigLoader
+from kimball.common.config import ConfigLoader
 
 
 def test_load_config_valid_fact(tmp_path):

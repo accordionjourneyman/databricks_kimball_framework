@@ -1,5 +1,5 @@
 from delta.tables import DeltaTable
-from pyspark.sql import DataFrame
+from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import col, current_timestamp, lit, to_date
 
 
@@ -8,7 +8,7 @@ class SkeletonGenerator:
     Handles the generation of 'Skeleton' dimension rows for Early Arriving Facts.
     """
 
-    def __init__(self, spark_session=None):
+    def __init__(self, spark_session: SparkSession | None = None) -> None:
         if spark_session is None:
             from databricks.sdk.runtime import spark
 

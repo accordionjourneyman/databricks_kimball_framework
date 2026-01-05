@@ -3,7 +3,7 @@ import tempfile
 
 from pyspark.sql import SparkSession
 
-from kimball.orchestrator import Orchestrator
+from kimball.orchestration.orchestrator import Orchestrator
 
 
 def test_schema_evolution_with_new_column(spark: SparkSession):

@@ -6,7 +6,7 @@ def test_skeleton_generator_table_not_exists():
     spark = MagicMock()
     spark.catalog.tableExists.return_value = False
 
-    from kimball.skeleton_generator import SkeletonGenerator
+    from kimball.processing.skeleton_generator import SkeletonGenerator
 
     gen = SkeletonGenerator(spark)
 
@@ -22,11 +22,11 @@ def test_skeleton_generator_table_not_exists():
 def test_skeleton_generator_logic():
     """Test skeleton generator with mocked PySpark functions."""
     with (
-        patch("kimball.skeleton_generator.DeltaTable") as mock_dt,
-        patch("kimball.skeleton_generator.col") as mock_col,
-        patch("kimball.skeleton_generator.lit") as mock_lit,
-        patch("kimball.skeleton_generator.current_timestamp") as mock_ts,
-        patch("kimball.skeleton_generator.to_date") as mock_date,
+        patch("kimball.processing.skeleton_generator.DeltaTable") as mock_dt,
+        patch("kimball.processing.skeleton_generator.col"),
+        patch("kimball.processing.skeleton_generator.lit"),
+        patch("kimball.processing.skeleton_generator.current_timestamp"),
+        patch("kimball.processing.skeleton_generator.to_date"),
     ):
         spark = MagicMock()
         spark.catalog.tableExists.return_value = True
@@ -58,7 +58,7 @@ def test_skeleton_generator_logic():
         # Test case 1: No missing keys
         missing_keys.isEmpty.return_value = True
 
-        from kimball.skeleton_generator import SkeletonGenerator
+        from kimball.processing.skeleton_generator import SkeletonGenerator
 
         gen = SkeletonGenerator(spark)
         gen.generate_skeletons(

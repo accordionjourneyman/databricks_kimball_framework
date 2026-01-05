@@ -1,4 +1,4 @@
-from kimball.bus_matrix import generate_bus_matrix
+from kimball.observability.bus_matrix import generate_bus_matrix
 
 
 def test_generate_bus_matrix(tmp_path):

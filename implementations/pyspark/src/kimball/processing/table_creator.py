@@ -1,6 +1,12 @@
+from __future__ import annotations
+
 import re
+from typing import Any
 
 from databricks.sdk.runtime import spark
+from pyspark.sql import DataFrame
+
+from kimball.common.utils import quote_table_name
 
 
 def _is_valid_identifier(name: str) -> bool:
@@ -8,30 +14,65 @@ def _is_valid_identifier(name: str) -> bool:
     return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name))
 
 
-def _quote_table_name(table_name: str) -> str:
-    """
-    Properly quote a multi-part table name for SQL.
-    Converts 'schema.table' to '`schema`.`table`' instead of '`schema.table`'.
-    """
-    parts = table_name.split(".")
-    return ".".join(f"`{part}`" for part in parts)
-
-
 class TableCreator:
     """
     Handles creation of Delta tables with Liquid Clustering support.
     """
 
+    def add_system_columns(
+        self,
+        df: DataFrame,
+        scd_type: int,
+        surrogate_key: str | None,
+        surrogate_key_strategy: str,
+    ) -> DataFrame:
+        """
+        Add system/audit columns to a DataFrame for table creation.
+        SCD1: __etl_processed_at, __etl_batch_id, __is_deleted (for soft deletes)
+        SCD2: above + __is_current, __valid_from, __valid_to, hashdiff
+        """
+        from pyspark.sql.functions import current_timestamp, lit
+        from pyspark.sql.types import LongType, StringType, TimestampType
+
+        # Common audit columns
+        result_df = df.withColumn("__etl_processed_at", current_timestamp())
+        result_df = result_df.withColumn("__etl_batch_id", lit(None).cast(StringType()))
+        result_df = result_df.withColumn("__is_deleted", lit(False))
+
+        if scd_type == 2:
+            # SCD2 specific columns
+            result_df = result_df.withColumn("__is_current", lit(True))
+            result_df = result_df.withColumn("__valid_from", current_timestamp())
+            result_df = result_df.withColumn(
+                "__valid_to", lit(None).cast(TimestampType())
+            )
+            result_df = result_df.withColumn("hashdiff", lit(None).cast(StringType()))
+
+        # Add surrogate key column according to strategy
+        if surrogate_key:
+            if surrogate_key_strategy in ("identity", "sequence"):
+                # numeric surrogate key
+                result_df = result_df.withColumn(
+                    surrogate_key, lit(None).cast(LongType())
+                )
+            else:
+                # default to string for hash or unknown strategies
+                result_df = result_df.withColumn(
+                    surrogate_key, lit(None).cast(StringType())
+                )
+
+        return result_df
+
     def create_table_with_clustering(
         self,
         table_name: str,
-        schema_df,
-        config: dict | None = None,
+        schema_df: DataFrame,
+        config: dict[str, Any] | None = None,
         cluster_by: list[str] | None = None,
         partition_by: list[str] | None = None,
         surrogate_key_col: str | None = None,
         surrogate_key_strategy: str | None = None,
-    ):
+    ) -> None:
         """
         Creates a Delta table with optional Liquid Clustering.
 
@@ -78,7 +119,7 @@ class TableCreator:
         columns_sql = ",\n  ".join(columns)
 
         # Properly quote multi-part table names for Unity Catalog compatibility
-        quoted_table_name = _quote_table_name(table_name)
+        quoted_table_name = quote_table_name(table_name)
 
         create_sql = f"""
         CREATE TABLE {quoted_table_name} (
@@ -123,8 +164,11 @@ class TableCreator:
             self.apply_delta_constraints(table_name, config)
 
     def apply_basic_constraints(
-        self, table_name: str, surrogate_key_col: str | None = None, schema_df=None
-    ):
+        self,
+        table_name: str,
+        surrogate_key_col: str | None = None,
+        schema_df: DataFrame | None = None,
+    ) -> None:
         """
         Apply basic Delta constraints using ALTER TABLE statements.
 
@@ -134,7 +178,7 @@ class TableCreator:
             schema_df: DataFrame with schema information
         """
         # Apply surrogate key NOT NULL constraint
-        quoted_table_name = _quote_table_name(table_name)
+        quoted_table_name = quote_table_name(table_name)
         if surrogate_key_col:
             alter_sql = f"ALTER TABLE {quoted_table_name} ADD CONSTRAINT sk_not_null CHECK (`{surrogate_key_col}` IS NOT NULL)"
             try:
@@ -152,7 +196,7 @@ class TableCreator:
             except Exception as e:
                 print(f"Warning: Could not apply is_current constraint: {e}")
 
-    def apply_delta_constraints(self, table_name: str, config: dict):
+    def apply_delta_constraints(self, table_name: str, config: dict[str, Any]) -> None:
         """
         Apply Delta constraints based on YAML configuration.
 
@@ -161,7 +205,7 @@ class TableCreator:
             config: Table configuration from YAML
         """
         # Apply NOT NULL constraints for natural keys
-        quoted_table_name = _quote_table_name(table_name)
+        quoted_table_name = quote_table_name(table_name)
         natural_keys = config.get("natural_keys", [])
         for key in natural_keys:
             alter_sql = (
@@ -186,29 +230,29 @@ class TableCreator:
                 except Exception as e:
                     print(f"Failed to apply constraint {constraint_name}: {e}")
 
-    def enable_schema_auto_merge(self):
+    def enable_schema_auto_merge(self) -> None:
         """
         Enable schema auto-merge for the current session.
         """
         spark.conf.set("spark.databricks.delta.schema.autoMerge.enabled", "true")
         print("Enabled schema auto-merge for current session")
 
-    def enable_predictive_optimization(self, table_name: str):
+    def enable_predictive_optimization(self, table_name: str) -> None:
         """
         Enables Predictive Optimization for a Delta table.
         This allows Databricks to automatically optimize table layout and performance.
         """
-        quoted_table_name = _quote_table_name(table_name)
+        quoted_table_name = quote_table_name(table_name)
         alter_sql = f"ALTER TABLE {quoted_table_name} SET TBLPROPERTIES ('delta.enablePredictiveOptimization' = 'true')"
         spark.sql(alter_sql)
         print(f"Predictive Optimization enabled for {table_name}")
 
-    def enable_deletion_vectors(self, table_name: str):
+    def enable_deletion_vectors(self, table_name: str) -> None:
         """
         Enables Deletion Vectors for a Delta table.
         This improves performance for MERGE operations with many updates/deletes.
         """
-        quoted_table_name = _quote_table_name(table_name)
+        quoted_table_name = quote_table_name(table_name)
         alter_sql = f"ALTER TABLE {quoted_table_name} SET TBLPROPERTIES ('delta.enableDeletionVectors' = 'true')"
         spark.sql(alter_sql)
         print(f"Deletion Vectors enabled for {table_name}")

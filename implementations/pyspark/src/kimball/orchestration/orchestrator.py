@@ -5,27 +5,21 @@ import warnings
 from typing import Any
 
 from databricks.sdk.runtime import spark
-from pyspark.sql.functions import col, current_timestamp, lit
-from pyspark.sql.types import (
-    LongType,
-    StringType,
-    TimestampType,
-)
+from pyspark.sql.functions import col
 
-from kimball.config import ConfigLoader
-from kimball.errors import NonRetriableError, RetriableError
-from kimball.loader import DataLoader
-from kimball.merger import DeltaMerger
-from kimball.resilience import (
+from kimball.common.config import ConfigLoader
+from kimball.common.errors import NonRetriableError, RetriableError
+from kimball.observability.resilience import (
     PipelineCheckpoint,
     QueryMetricsCollector,
     StagingCleanupManager,
-    StagingTableManager,
     _feature_enabled,
 )
-from kimball.skeleton_generator import SkeletonGenerator
-from kimball.table_creator import TableCreator
-from kimball.watermark import ETLControlManager, get_etl_schema
+from kimball.orchestration.watermark import ETLControlManager, get_etl_schema
+from kimball.processing.loader import DataLoader
+from kimball.processing.merger import DeltaMerger
+from kimball.processing.skeleton_generator import SkeletonGenerator
+from kimball.processing.table_creator import TableCreator
 
 try:
     # Databricks Runtime 13+ - errors moved to pyspark.errors
@@ -70,6 +64,13 @@ class Orchestrator:
         enable_metrics: bool = True,
         checkpoint_table: str | None = None,
         checkpoint_root: str | None = None,
+        # Dependency Injection
+        loader: DataLoader | None = None,
+        merger: DeltaMerger | None = None,
+        etl_control: ETLControlManager | None = None,
+        table_creator: TableCreator | None = None,
+        skeleton_generator: SkeletonGenerator | None = None,
+        cleanup_manager: StagingCleanupManager | None = None,
     ):
         """
         Args:
@@ -135,11 +136,11 @@ class Orchestrator:
                 "Warning: No checkpoint_root provided. Using local checkpointing which is unreliable in production."
             )
 
-        self.etl_control = ETLControlManager(etl_schema=etl_schema)
-        self.loader = DataLoader()
-        self.merger = DeltaMerger()
-        self.skeleton_generator = SkeletonGenerator()
-        self.table_creator = TableCreator()
+        self.etl_control = etl_control or ETLControlManager(etl_schema=etl_schema)
+        self.loader = loader or DataLoader()
+        self.merger = merger or DeltaMerger()
+        self.skeleton_generator = skeleton_generator or SkeletonGenerator()
+        self.table_creator = table_creator or TableCreator()
 
         # Initialize observability and resilience features (opt-in via feature flags)
         self.metrics_collector = (
@@ -152,53 +153,13 @@ class Orchestrator:
             if _feature_enabled("checkpoints")
             else None
         )
-        self.cleanup_manager = (
+        self.cleanup_manager = cleanup_manager or (
             StagingCleanupManager() if _feature_enabled("staging_cleanup") else None
         )
-        self.staging_table_manager = (
-            StagingTableManager(self.cleanup_manager) if self.cleanup_manager else None
-        )
-
-    def _add_system_columns(
-        self, df, scd_type: int, surrogate_key: str, surrogate_key_strategy: str
-    ):
-        """
-        Add system/audit columns to a DataFrame for table creation.
-        SCD1: __etl_processed_at, __etl_batch_id, __is_deleted (for soft deletes)
-        SCD2: above + __is_current, __valid_from, __valid_to, hashdiff
-        """
-        # Common audit columns
-        result_df = df.withColumn("__etl_processed_at", current_timestamp())
-        result_df = result_df.withColumn("__etl_batch_id", lit(None).cast(StringType()))
-        result_df = result_df.withColumn("__is_deleted", lit(False))
-
-        if scd_type == 2:
-            # SCD2 specific columns
-            result_df = result_df.withColumn("__is_current", lit(True))
-            result_df = result_df.withColumn("__valid_from", current_timestamp())
-            result_df = result_df.withColumn(
-                "__valid_to", lit(None).cast(TimestampType())
-            )
-            result_df = result_df.withColumn("hashdiff", lit(None).cast(StringType()))
-
-        # Add surrogate key column according to strategy
-        if surrogate_key:
-            if surrogate_key_strategy in ("identity", "sequence"):
-                # numeric surrogate key
-                result_df = result_df.withColumn(
-                    surrogate_key, lit(None).cast(LongType())
-                )
-            else:
-                # default to string for hash or unknown strategies
-                result_df = result_df.withColumn(
-                    surrogate_key, lit(None).cast(StringType())
-                )
-
-        return result_df
 
     def cleanup_orphaned_staging_tables(
         self, pipeline_id: str | None = None, max_age_hours: int = 24
-    ):
+    ) -> None:
         """
         Clean up orphaned staging tables from previous crashed runs.
         Only cleans tables that are older than max_age_hours to avoid interfering with concurrent pipelines.
@@ -221,7 +182,7 @@ class Orchestrator:
         if failed > 0:
             print(f"Warning: {failed} staging tables could not be cleaned up")
 
-    def run(self, max_retries: int = 0):
+    def run(self, max_retries: int = 0) -> dict[str, Any]:
         """
         Execute the ETL pipeline with batch lifecycle tracking.
 
@@ -252,8 +213,9 @@ class Orchestrator:
         total_rows_written = 0
 
         # Start batch tracking for each source
-        for source in self.config.sources:
-            self.etl_control.batch_start(self.config.table_name, source.name)
+        # Start batch tracking for all sources (bulk)
+        source_names = [s.name for s in self.config.sources]
+        self.etl_control.batch_start_all(self.config.table_name, source_names)
 
         # Stage timing
         stage_start = time.time()
@@ -267,7 +229,9 @@ class Orchestrator:
 
                 # Determine Load Strategy
                 if source.cdc_strategy == "full":
-                    df = self.loader.load_full_snapshot(source.name)
+                    df = self.loader.load_full_snapshot(
+                        source.name, format=source.format, options=source.options
+                    )
                 elif source.cdc_strategy == "cdf":
                     wm = self.etl_control.get_watermark(
                         self.config.table_name, source.name
@@ -276,7 +240,9 @@ class Orchestrator:
                         print(
                             f"No watermark for {source.name}. Performing Full Snapshot."
                         )
-                        df = self.loader.load_full_snapshot(source.name)
+                        df = self.loader.load_full_snapshot(
+                            source.name, format=source.format, options=source.options
+                        )
                     else:
                         if wm >= latest_v:
                             print(
@@ -437,7 +403,7 @@ class Orchestrator:
                 if not spark.catalog.tableExists(self.config.table_name):
                     print(f"Creating table {self.config.table_name}...")
                     # Add system columns to transformed_df schema for table creation
-                    schema_df = self._add_system_columns(
+                    schema_df = self.table_creator.add_system_columns(
                         transformed_df.limit(0),
                         self.config.scd_type,
                         self.config.surrogate_key,
@@ -670,7 +636,9 @@ class Orchestrator:
 
             raise
 
-    def run_with_retry(self, max_retries: int = 3, backoff_seconds: int = 30):
+    def run_with_retry(
+        self, max_retries: int = 3, backoff_seconds: int = 30
+    ) -> dict[str, Any]:
         """
         Execute pipeline with smart retry based on error type.
 

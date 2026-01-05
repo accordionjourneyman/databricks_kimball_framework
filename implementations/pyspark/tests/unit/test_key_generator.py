@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from kimball.key_generator import (
+from kimball.processing.key_generator import (
     HashKeyGenerator,
     IdentityKeyGenerator,
     SequenceKeyGenerator,
@@ -14,7 +14,7 @@ def test_identity_key_generator_mock():
 
     # Case 1: Key exists
     gen.generate_keys(df, "id")
-    df.drop.assert_called_with("id")
+    df.drop.assert_not_called()
 
     # Case 2: Key does not exist
     df.columns = ["val"]
@@ -26,8 +26,8 @@ def test_identity_key_generator_mock():
 
 def test_hash_key_generator_mock():
     with (
-        patch("kimball.key_generator.xxhash64") as mock_hash,
-        patch("kimball.key_generator.col") as mock_col,
+        patch("kimball.processing.key_generator.xxhash64") as mock_hash,
+        patch("kimball.processing.key_generator.col"),
     ):
         gen = HashKeyGenerator(["val"])
         df = MagicMock()
@@ -45,9 +45,9 @@ def test_hash_key_generator_mock():
 
 def test_sequence_key_generator_mock():
     with (
-        patch("kimball.key_generator.row_number") as mock_row_number,
-        patch("kimball.key_generator.Window") as mock_window,
-        patch("kimball.key_generator.lit") as mock_lit,
+        patch("kimball.processing.key_generator.row_number") as mock_row_number,
+        patch("kimball.processing.key_generator.Window"),
+        patch("kimball.processing.key_generator.lit"),
     ):
         gen = SequenceKeyGenerator()
         df = MagicMock()

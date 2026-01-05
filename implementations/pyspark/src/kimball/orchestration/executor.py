@@ -44,10 +44,10 @@ import warnings
 from dataclasses import dataclass, field
 from typing import Any
 
-from kimball.config import ConfigLoader
-from kimball.errors import NonRetriableError
-from kimball.orchestrator import Orchestrator
-from kimball.watermark import get_etl_schema
+from kimball.common.config import ConfigLoader
+from kimball.common.errors import NonRetriableError
+from kimball.orchestration.orchestrator import Orchestrator
+from kimball.orchestration.watermark import get_etl_schema
 
 
 @dataclass
@@ -78,7 +78,7 @@ class ExecutionSummary:
     total_duration_seconds: float
     results: list[PipelineResult] = field(default_factory=list)
 
-    def __str__(self):
+    def __str__(self) -> str:
         return (
             f"Execution Summary:\n"
             f"  Total Pipelines: {self.total_pipelines}\n"
@@ -167,7 +167,11 @@ class PipelineExecutor:
         # Categorize pipelines into waves
         self._categorize_pipelines()
 
-    def _categorize_pipelines(self):
+    def _create_orchestrator(self, config_path: str) -> Orchestrator:
+        """Factory method to create Orchestrator instance. Can be overridden for testing."""
+        return Orchestrator(config_path, etl_schema=self.etl_schema)
+
+    def _categorize_pipelines(self) -> None:
         """Categorize pipelines into dimension and fact waves."""
         self.dimensions: list[dict[str, Any]] = []
         self.facts: list[dict[str, Any]] = []
@@ -206,7 +210,7 @@ class PipelineExecutor:
 
         try:
             print(f"  Starting: {table_name}")
-            orchestrator = Orchestrator(path, etl_schema=self.etl_schema)
+            orchestrator = self._create_orchestrator(path)
             result = orchestrator.run()
             duration = time.time() - start_time
 

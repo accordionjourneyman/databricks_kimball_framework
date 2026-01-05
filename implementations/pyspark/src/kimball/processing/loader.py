@@ -10,11 +10,29 @@ class DataLoader:
     Handles reading data from source tables using various strategies (CDF, Snapshot).
     """
 
-    def load_full_snapshot(self, table_name: str) -> DataFrame:
+    def load_full_snapshot(
+        self,
+        table_name: str,
+        format: str = "delta",
+        options: dict[str, str] | None = None,
+    ) -> DataFrame:
         """
-        Reads the full snapshot of a Delta table.
+        Reads the full snapshot of a source table/file.
+        Supports Delta (default), Parquet, CSV, JDBC, etc.
         """
-        return spark.read.format("delta").table(table_name)
+        reader = spark.read.format(format)
+        if options:
+            reader = reader.options(**options)
+
+        # For Delta tables in catalog, use .table()
+        # For files (path inputs) or other formats, use .load()
+        if format == "delta" and "/" not in table_name:
+            return reader.table(table_name)
+
+        # For paths or non-catalog sources
+        # Note: JDBC requires 'url'/'dbtable' in options, table_name passed to load() is often ignored or path
+        # But for spark.read.jdbc, usage is different. format("jdbc").options(...).load()
+        return reader.load(table_name)
 
     def load_cdf(
         self,

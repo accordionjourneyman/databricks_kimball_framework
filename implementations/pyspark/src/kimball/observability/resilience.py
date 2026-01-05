@@ -19,23 +19,28 @@ from __future__ import annotations
 import json
 import os
 import time
+import traceback
+from types import TracebackType
 from typing import Any
 
 from databricks.sdk.runtime import spark
-from pyspark.sql import DataFrame
+from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import col, current_timestamp, desc
 from pyspark.sql.types import StringType, StructField, StructType, TimestampType
 
 
 def _feature_enabled(feature: str) -> bool:
-    """
-    Check if a feature is enabled via environment variable.
+    """Check if a feature is enabled via environment variable.
 
-    Features are OFF by default (lite mode). Enable via:
-    - KIMBALL_MODE=full (enables all features)
-    - KIMBALL_ENABLE_<FEATURE>=1 (enables specific feature)
+    Args:
+        feature: Feature name (checkpoints, staging_cleanup, metrics, auto_cluster).
 
-    Available features: checkpoints, staging_cleanup, metrics, auto_cluster
+    Returns:
+        True if feature is enabled, False otherwise.
+
+    Environment Variables:
+        KIMBALL_MODE: Set to "full" to enable all features.
+        KIMBALL_ENABLE_<FEATURE>: Set to "1" to enable specific feature.
     """
     # Full mode enables all features
     if os.environ.get("KIMBALL_MODE", "").lower() == "full":
@@ -62,7 +67,14 @@ class QueryMetricsCollector:
     def add_operation_metric(
         self, operation_name: str, df: DataFrame | None = None, **kwargs: Any
     ) -> None:
-        """Add a metric for a specific operation."""
+        """Add a metric for a specific operation.
+
+        Args:
+            operation_name: Name of the operation being measured.
+            df: Optional DataFrame to extract metadata from.
+            **kwargs: Additional metrics to record. Common keys:
+                - duration_ms (float): Operation duration in milliseconds.
+        """
         try:
             metric: dict[str, Any] = {
                 "operation": operation_name,
@@ -71,14 +83,14 @@ class QueryMetricsCollector:
             }
 
             # Add DataFrame metrics if available
-            if df is not None:
+            if df is not None and isinstance(df, DataFrame):
                 try:
-                    # Get basic stats without collecting data
-                    if hasattr(df, "_jdf"):
-                        # Try to get some basic metrics from the logical plan
-                        metric["has_logical_plan"] = True
-                    else:
-                        metric["has_logical_plan"] = False
+                    # Try to get some basic metrics from the logical plan
+                    # Note: accessing _jdf or plan might still be internal,
+                    # but checking type existence is safer.
+                    # Ideally we would check df.explain(mode="cost") but that prints to stdout.
+                    # For now just flag that we have a valid DF.
+                    metric["has_logical_plan"] = True
                 except Exception:
                     metric["has_logical_plan"] = False
 
@@ -87,7 +99,9 @@ class QueryMetricsCollector:
             self.metrics.append(metric)
 
         except Exception as e:
-            print(f"Failed to collect metric for {operation_name}: {e}")
+            print(
+                f"Failed to collect metric for {operation_name}: {e}\n{traceback.format_exc()}"
+            )
 
     def stop_collection(self) -> list[dict[str, Any]]:
         """Stop collecting metrics and return collected data."""
@@ -103,10 +117,13 @@ class QueryMetricsCollector:
         if not self.metrics:
             return {}
 
-        total_time = sum(m.get("duration_ms", 0) for m in self.metrics)
-        operation_count = len(
-            [m for m in self.metrics if m.get("operation") != "total_pipeline"]
-        )
+        # Single-pass iteration for efficiency
+        total_time = 0
+        operation_count = 0
+        for m in self.metrics:
+            total_time += m.get("duration_ms", 0)
+            if m.get("operation") != "total_pipeline":
+                operation_count += 1
 
         return {
             "total_operations": operation_count,
@@ -182,14 +199,22 @@ class StagingCleanupManager:
 
     def cleanup_staging_tables(
         self,
-        spark_session: Any = None,
+        spark_session: SparkSession | None = None,
         pipeline_id: str | None = None,
         max_age_hours: int = 24,
     ) -> tuple[int, int]:
         """Clean up orphaned staging tables using DataFrame API.
 
-        This method uses DataFrame API for filtering (avoiding SQL injection)
-        and driver-side cleanup (avoiding DeltaTable serialization issues).
+        Uses DataFrame API for filtering (avoiding SQL injection) and
+        driver-side cleanup (avoiding DeltaTable serialization issues).
+
+        Args:
+            spark_session: Spark session to use. Defaults to global spark.
+            pipeline_id: Optional filter for specific pipeline's tables.
+            max_age_hours: Remove tables older than this. Default 24h. Use 0 to disable.
+
+        Returns:
+            Tuple of (cleaned_count, failed_count).
         """
         if spark_session is None:
             spark_session = spark
@@ -208,8 +233,13 @@ class StagingCleanupManager:
         if pipeline_id:
             registry_df = registry_df.filter(col("pipeline_id") == pipeline_id)
 
-        # Collect to driver (registry table is small; avoids serialization issue)
-        tables_to_cleanup = [row.staging_table for row in registry_df.collect()]
+        # Single Spark action: collect with limit+1 to detect overflow
+        MAX_CLEANUP_BATCH = 1000
+        rows = registry_df.limit(MAX_CLEANUP_BATCH + 1).collect()
+        if len(rows) > MAX_CLEANUP_BATCH:
+            print(f"Warning: Registry exceeds {MAX_CLEANUP_BATCH} entries, truncating")
+            rows = rows[:MAX_CLEANUP_BATCH]
+        tables_to_cleanup = [row.staging_table for row in rows]
 
         # Cleanup on driver side (single pass, no double evaluation)
         cleaned, failed = 0, 0
@@ -254,7 +284,12 @@ class StagingTableManager:
     def __enter__(self) -> StagingTableManager:
         return self
 
-    def __exit__(self, _exc_type: Any, _exc_val: Any, _exc_tb: Any) -> None:
+    def __exit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        _exc_val: BaseException | None,
+        _exc_tb: TracebackType | None,
+    ) -> None:
         """Ensure staging tables are cleaned up even if an exception occurs."""
         for staging_table in self.staging_tables:
             try:
@@ -303,7 +338,16 @@ class PipelineCheckpoint:
     def save_checkpoint(
         self, pipeline_id: str, stage: str, state: dict[str, Any]
     ) -> None:
-        """Save pipeline state at a specific stage using atomic Delta operations."""
+        """Save pipeline state at a specific stage using atomic Delta operations.
+
+        If checkpoint exists for this pipeline_id/stage, it is atomically updated.
+        Otherwise, a new checkpoint is created.
+
+        Args:
+            pipeline_id: Unique identifier for the pipeline.
+            stage: Stage name within the pipeline.
+            state: JSON-serializable dictionary of state data.
+        """
         from delta.tables import DeltaTable
 
         state_json = json.dumps(state)
@@ -325,7 +369,15 @@ class PipelineCheckpoint:
         print(f"Checkpoint saved: {pipeline_id} -> {stage}")
 
     def load_checkpoint(self, pipeline_id: str, stage: str) -> dict[str, Any] | None:
-        """Load pipeline state from Delta table checkpoint."""
+        """Load pipeline state from Delta table checkpoint.
+
+        Args:
+            pipeline_id: Pipeline identifier.
+            stage: Stage name.
+
+        Returns:
+            State dictionary if found, None if checkpoint doesn't exist or load fails.
+        """
         checkpoint_df = spark.table(self.checkpoint_table)
         result_df = (
             checkpoint_df.filter(

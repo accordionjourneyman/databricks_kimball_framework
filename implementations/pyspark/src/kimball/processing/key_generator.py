@@ -37,19 +37,16 @@ class IdentityKeyGenerator(KeyGenerator):
     """
     Relies on Delta Lake Identity Columns.
     Does not add a key column in the DataFrame, assumes the target table handles it on INSERT.
+    Returns the DataFrame unmodified to allow explicit values (if present) or auto-generation (if absent).
     """
 
     def generate_keys(
         self, df: DataFrame, key_col_name: str, existing_max_key: int = 0
     ) -> DataFrame:
-        # For Identity Columns, we typically DO NOT provide the column in the INSERT statement
-        # or we provide it as DEFAULT.
-        # However, if the dataframe already has the column (e.g. from source), we might need to drop it
-        # or ensure it's not mapped in the MERGE insert.
-        # For this implementation, we'll assume the caller handles the MERGE mapping,
-        # so we just return the DF as is, potentially ensuring the key col is NOT present or is NULL.
-        if key_col_name in df.columns:
-            return df.drop(key_col_name)
+        # For Identity Columns:
+        # - If the column is missing (normal case), Delta generates the ID.
+        # - If the column is present (e.g. default rows with -1), Delta uses the provided value.
+        # So we just return the DataFrame as-is.
         return df
 
 

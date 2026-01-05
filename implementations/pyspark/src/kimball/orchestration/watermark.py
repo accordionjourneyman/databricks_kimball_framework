@@ -14,10 +14,13 @@ Environment Variables:
                         Example: os.environ["KIMBALL_ETL_SCHEMA"] = "my_catalog.etl_config"
 """
 
+from __future__ import annotations
+
 import os
 import uuid
 import warnings
 from datetime import datetime
+from typing import Any, TypedDict
 
 from databricks.sdk.runtime import spark
 from delta.tables import DeltaTable
@@ -39,6 +42,22 @@ def get_etl_schema() -> str | None:
     return os.environ.get(KIMBALL_ETL_SCHEMA_ENV)
 
 
+class ETLControlRecord(TypedDict, total=False):
+    """Schema for ETL Control table records."""
+
+    target_table: str
+    source_table: str
+    last_processed_version: int | None
+    batch_id: str | None
+    batch_started_at: datetime | None
+    batch_completed_at: datetime | None
+    batch_status: str | None
+    rows_read: int | None
+    rows_written: int | None
+    error_message: str | None
+    updated_at: datetime
+
+
 class ETLControlManager:
     """
     Manages ETL control records including watermarks and batch auditing.
@@ -48,7 +67,7 @@ class ETLControlManager:
     - Batch lifecycle: When batches start, complete, or fail
     - Metrics: Rows read/written, duration
 
-    The table is partitioned by (target_table, source_table) to enable
+    The table is partitioned by (target_table) to enable
     zero-contention concurrent writes from parallel pipelines.
 
     Configuration:
@@ -137,7 +156,7 @@ class ETLControlManager:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _ensure_table_exists(self):
+    def _ensure_table_exists(self) -> None:
         """Create schema and ETL control table if they don't exist.
 
         The table is partitioned by (target_table, source_table) to enable
@@ -165,8 +184,8 @@ class ETLControlManager:
                     updated_at TIMESTAMP NOT NULL
                 )
                 USING DELTA
-                PARTITIONED BY (target_table, source_table)
-                COMMENT 'Kimball ETL Control Table: watermarks + batch auditing. Partitioned for concurrent writes.'
+                PARTITIONED BY (target_table)
+                COMMENT 'Kimball ETL Control Table. Partitioned by target_table for concurrent pipeline isolation.'
             """)
 
     # ------------------------------------------------------------------
@@ -192,7 +211,9 @@ class ETLControlManager:
             return int(version) if version is not None else None
         return None
 
-    def update_watermark(self, target_table: str, source_table: str, version: int):
+    def update_watermark(
+        self, target_table: str, source_table: str, version: int
+    ) -> None:
         """Insert or update the watermark row atomically via Delta MERGE.
 
         Note: Prefer using batch_complete() which updates both watermark and metrics.
@@ -236,6 +257,49 @@ class ETLControlManager:
 
         return batch_id
 
+    def batch_start_all(
+        self, target_table: str, source_tables: list[str]
+    ) -> dict[str, str]:
+        """
+        Mark the start of a batch for multiple sources in a single transaction.
+
+        This is a performance optimization over calling batch_start() in a loop,
+        reducing Spark overhead from O(N) to O(1).
+
+        Args:
+            target_table: The target table name.
+            source_tables: List of source table names.
+
+        Returns:
+            Dictionary mapping source_table_name -> batch_id.
+        """
+        batch_ids = {}
+        updates_list = []
+
+        timestamp = datetime.now()
+
+        for source in source_tables:
+            bid = str(uuid.uuid4())
+            batch_ids[source] = bid
+            updates_list.append(
+                {
+                    "target_table": target_table,
+                    "source_table": source,
+                    "batch_id": bid,
+                    "batch_started_at": timestamp,
+                    "batch_completed_at": None,
+                    "batch_status": "RUNNING",
+                    "rows_read": None,
+                    "rows_written": None,
+                    "error_message": None,
+                }
+            )
+
+        if updates_list:
+            self._upsert_control_records(updates_list)
+
+        return batch_ids
+
     def batch_complete(
         self,
         target_table: str,
@@ -243,7 +307,7 @@ class ETLControlManager:
         new_version: int,
         rows_read: int | None = None,
         rows_written: int | None = None,
-    ):
+    ) -> None:
         """Mark a batch as successfully completed and update watermark.
 
         Args:
@@ -266,7 +330,9 @@ class ETLControlManager:
             },
         )
 
-    def batch_fail(self, target_table: str, source_table: str, error_message: str):
+    def batch_fail(
+        self, target_table: str, source_table: str, error_message: str
+    ) -> None:
         """Mark a batch as failed.
 
         Note: Does NOT update the watermark, so the batch can be retried.
@@ -291,7 +357,9 @@ class ETLControlManager:
             },
         )
 
-    def get_batch_status(self, target_table: str, source_table: str) -> dict | None:
+    def get_batch_status(
+        self, target_table: str, source_table: str
+    ) -> dict[str, Any] | None:
         """Get the current batch status for a (target, source) pair.
 
         Returns:
@@ -339,45 +407,75 @@ class ETLControlManager:
     )
 
     def _upsert_control_record(
-        self, target_table: str, source_table: str, updates: dict
-    ):
-        """Upsert a control record with the given updates."""
+        self, target_table: str, source_table: str, updates: ETLControlRecord
+    ) -> None:
+        """Wrapper for single record upsert."""
+        record = updates.copy()
+        record["target_table"] = target_table
+        record["source_table"] = source_table
+        # Ensure updated_at is set if not present
+        if "updated_at" not in record:
+            record["updated_at"] = datetime.now()
+
+        self._upsert_control_records([record])
+
+    def _upsert_control_records(self, records: list[ETLControlRecord]) -> None:
+        """
+        Upsert multiple control records in a single transaction.
+        Handles schema validation and dynamic update set generation.
+        """
+        if not records:
+            return
+
         delta_table = DeltaTable.forName(spark, self.fq_table)
 
-        # Build the full record for insert
-        full_record = {
-            "target_table": target_table,
-            "source_table": source_table,
-            "last_processed_version": updates.get("last_processed_version"),
-            "batch_id": updates.get("batch_id"),
-            "batch_started_at": updates.get("batch_started_at"),
-            "batch_completed_at": updates.get("batch_completed_at"),
-            "batch_status": updates.get("batch_status"),
-            "rows_read": updates.get("rows_read"),
-            "rows_written": updates.get("rows_written"),
-            "error_message": updates.get("error_message"),
-            "updated_at": datetime.now(),
-        }
+        # 1. Normalize records to match schema
+        # We need to ensure all fields in _UPDATE_SCHEMA are present (or None)
+        # to create the DataFrame, while preserving the intent of which columns to update.
+        normalized_records = []
+        for r in records:
+            norm = {
+                field.name: r.get(field.name) for field in self._UPDATE_SCHEMA.fields
+            }
+            # Ensure mandatory keys are present
+            norm["target_table"] = r["target_table"]
+            norm["source_table"] = r["source_table"]
+            # Ensure updated_at
+            if not norm.get("updated_at"):
+                norm["updated_at"] = datetime.now()
+            normalized_records.append(norm)
 
-        # Create DataFrame with explicit schema to avoid type inference issues
-        # (Spark Connect fails when all values are None)
-        update_df = spark.createDataFrame([full_record], schema=self._UPDATE_SCHEMA)
+        # 2. Create DataFrame
+        update_df = spark.createDataFrame(
+            normalized_records, schema=self._UPDATE_SCHEMA
+        )
 
-        # Build update set - only update fields that are in the updates dict
-        update_set = {"updated_at": "current_timestamp()"}
-        for key in updates:
-            update_set[key] = f"u.{key}"
+        # 3. Determine Update Set
+        # We update columns that are present in the INPUT records keys (from the first record).
+        # This assumes all records in the batch update the same set of columns.
+        # This is true for batch_start_all (all set start time/status).
+        sample_keys = records[0].keys()
 
-        # Build insert values
+        update_set = {"updated_at": "u.updated_at"}
+        for key in sample_keys:
+            if key not in ("target_table", "source_table", "updated_at"):
+                # Only update if the key corresponds to a valid column
+                if key in update_df.columns:
+                    update_set[key] = f"u.{key}"
+
+        # 4. Determine Insert Values
         insert_values = {
             "target_table": "u.target_table",
             "source_table": "u.source_table",
-            "updated_at": "current_timestamp()",
+            "updated_at": "u.updated_at",
         }
-        for key in full_record:
-            if key not in ("target_table", "source_table", "updated_at"):
-                insert_values[key] = f"u.{key}"
+        # For Insert, we use all available columns
+        for field in self._UPDATE_SCHEMA.fields:
+            name = field.name
+            if name not in insert_values:
+                insert_values[name] = f"u.{name}"
 
+        # 5. Execute Merge
         (
             delta_table.alias("w")
             .merge(
