@@ -335,11 +335,8 @@ class PipelineCheckpoint:
             .limit(1)
         )
 
-        if result_df.isEmpty():
-            return None
-
         try:
-            row = result_df.first()
+            row = result_df.first()  # Single Spark action (avoids isEmpty + first)
             if row is None:
                 return None
             state_json = row["state"]
