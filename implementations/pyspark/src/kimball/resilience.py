@@ -186,63 +186,47 @@ class StagingCleanupManager:
         pipeline_id: str | None = None,
         max_age_hours: int = 24,
     ) -> tuple[int, int]:
-        """Clean up orphaned staging tables using atomic TTL-based filtering."""
+        """Clean up orphaned staging tables using DataFrame API.
+
+        This method uses DataFrame API for filtering (avoiding SQL injection)
+        and driver-side cleanup (avoiding DeltaTable serialization issues).
+        """
         if spark_session is None:
             spark_session = spark
 
-        from delta.tables import DeltaTable
+        from pyspark.sql.functions import expr
 
-        registry_table = DeltaTable.forName(spark_session, self.registry_table)
+        # Use DataFrame API instead of SQL string building (fixes SQL injection)
+        registry_df = spark_session.table(self.registry_table)
 
-        # Build condition for cleanup (age + optional pipeline filter)
-        conditions = []
+        # Apply age filter using DataFrame API
         if max_age_hours > 0:
-            conditions.append(
-                f"current_timestamp() - created_at > INTERVAL {max_age_hours} HOURS"
-            )
+            threshold = current_timestamp() - expr(f"INTERVAL {max_age_hours} HOURS")
+            registry_df = registry_df.filter(col("created_at") < threshold)
+
+        # Apply pipeline filter using DataFrame API (safe from injection)
         if pipeline_id:
-            conditions.append(f"pipeline_id = '{pipeline_id}'")
+            registry_df = registry_df.filter(col("pipeline_id") == pipeline_id)
 
-        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        # Collect to driver (registry table is small; avoids serialization issue)
+        tables_to_cleanup = [row.staging_table for row in registry_df.collect()]
 
-        # Get tables to clean up atomically
-        cleanup_query = f"""
-        SELECT staging_table, pipeline_id, batch_id
-        FROM {self.registry_table}
-        WHERE {where_clause}
-        """
+        # Cleanup on driver side (single pass, no double evaluation)
+        cleaned, failed = 0, 0
+        for staging_table_name in tables_to_cleanup:
+            try:
+                spark_session.catalog.dropTable(
+                    staging_table_name, ignoreIfNotExists=True
+                )
+                self.unregister_staging_table(staging_table_name)
+                cleaned += 1
+                print(f"Cleaned up orphaned staging table: {staging_table_name}")
+            except Exception as e:
+                print(f"Failed to cleanup {staging_table_name}: {e}")
+                failed += 1
 
-        cleanup_df = spark_session.sql(cleanup_query)
-
-        # Use foreachPartition for distributed cleanup
-        def cleanup_partition(rows: Any) -> None:
-            for row in rows:
-                staging_table_name = row.staging_table
-                try:
-                    # Drop physical table first (best effort)
-                    spark_session.catalog.dropTable(
-                        staging_table_name, ignoreIfNotExists=True
-                    )
-
-                    # Then remove from registry atomically
-                    registry_table.alias("target").merge(
-                        spark_session.createDataFrame(
-                            [(staging_table_name,)], ["staging_table"]
-                        ).alias("source"),
-                        "target.staging_table = source.staging_table",
-                    ).whenMatchedDelete().execute()
-
-                    print(f"Cleaned up orphaned staging table: {staging_table_name}")
-                except Exception as e:
-                    print(f"Failed to clean up {staging_table_name}: {e}")
-
-        # Execute cleanup in distributed manner
-        cleanup_df.foreachPartition(cleanup_partition)
-
-        # Count results
-        total_count = cleanup_df.count()
-        print(f"Atomic TTL-based staging cleanup completed for {total_count} tables")
-        return total_count, 0
+        print(f"Staging cleanup completed: {cleaned} cleaned, {failed} failed")
+        return cleaned, failed
 
 
 class StagingTableManager:
