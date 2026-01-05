@@ -57,4 +57,4 @@ quality_reports/
 
 # Data
 data/
-*/implementations/polars/data/
+*/implementations/*/data/
