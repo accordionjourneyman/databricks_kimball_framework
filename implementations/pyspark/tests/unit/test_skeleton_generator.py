@@ -26,7 +26,6 @@ def test_skeleton_generator_logic():
         patch("kimball.processing.skeleton_generator.col"),
         patch("kimball.processing.skeleton_generator.lit"),
         patch("kimball.processing.skeleton_generator.current_timestamp"),
-        patch("kimball.processing.skeleton_generator.to_date"),
     ):
         spark = MagicMock()
         spark.catalog.tableExists.return_value = True

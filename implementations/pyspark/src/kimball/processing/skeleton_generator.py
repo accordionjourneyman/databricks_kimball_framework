@@ -1,6 +1,6 @@
 from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.functions import col, current_timestamp, lit, to_date
+from pyspark.sql.functions import col, current_timestamp, lit
 
 
 class SkeletonGenerator:
@@ -63,18 +63,21 @@ class SkeletonGenerator:
         # Add standard SCD2 columns
         skeletons = (
             skeletons.withColumn("__is_current", lit(True))
-            .withColumn("__valid_from", to_date(lit("1900-01-01")))
+            .withColumn("__valid_from", lit("1900-01-01 00:00:00").cast("timestamp"))
             .withColumn("__valid_to", lit(None).cast("timestamp"))
             .withColumn("__etl_processed_at", current_timestamp())
             .withColumn("__etl_batch_id", lit("SKELETON_GEN"))
         )
 
         # Add other columns from schema as NULL (except SK and Join Key)
+        # Optimization: Build projection list for missing columns instead of looping withColumn
+        # This prevents Catalyst plan explosion for wide tables
+        select_exprs = [col(c) for c in skeletons.columns]
         for field in target_schema.fields:
             if field.name not in skeletons.columns and field.name != surrogate_key_col:
-                skeletons = skeletons.withColumn(
-                    field.name, lit(None).cast(field.dataType)
-                )
+                select_exprs.append(lit(None).cast(field.dataType).alias(field.name))
+
+        skeletons = skeletons.select(*select_exprs)
 
         # 5. Generate Surrogate Keys
         if surrogate_key_strategy == "identity":

@@ -56,7 +56,7 @@ models:
 
 snapshots:
   kimball_dbt:
-    +target_schema: demo_gold
+    +target_schema: "{{ var('gold_schema') }}"
     +strategy: check
 
 # Seeds for default Kimball dimension rows

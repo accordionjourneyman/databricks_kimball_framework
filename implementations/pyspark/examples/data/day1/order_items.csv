@@ -1,0 +1,3 @@
+order_item_id,order_id,product_id,quantity,sales_amount
+5001,1001,101,1,1200.00
+5002,1002,102,2,50.00

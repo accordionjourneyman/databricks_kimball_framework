@@ -46,12 +46,11 @@ print(f"✓ dbt project path: {DBT_PROJECT_PATH}")
 spark.sql("CREATE DATABASE IF NOT EXISTS demo_silver")
 spark.sql("CREATE DATABASE IF NOT EXISTS demo_gold")
 
-# Clean up previous run
+# Clean up previous run via efficient DROP CASCADE
 print("Cleaning up previous demo...")
 for db in ["demo_silver", "demo_gold"]:
-    tables = spark.sql(f"SHOW TABLES IN {db}").collect()
-    for table in tables:
-        spark.sql(f"DROP TABLE IF EXISTS {db}.{table.tableName}")
+    spark.sql(f"DROP DATABASE IF EXISTS {db} CASCADE")
+    spark.sql(f"CREATE DATABASE IF NOT EXISTS {db}")
 
 print("✓ Databases ready")
 
@@ -219,13 +218,14 @@ if not http_path:
     print("=" * 70)
     raise Exception("No SQL Warehouse configured - see instructions above")
 
-# Try to get token from secrets, fallback to PAT environment
-try:
-    token = dbutils.secrets.get(scope="dbt", key="token")
-except Exception:
-    # Try environment variable or prompt user
-    token = os.environ.get("DATABRICKS_TOKEN", "")
-    if not token:
+# Try to ensure DATABRICKS_TOKEN is available in environment
+if "DATABRICKS_TOKEN" not in os.environ:
+    try:
+        # Try to get from secrets
+        token = dbutils.secrets.get(scope="dbt", key="token")
+        os.environ["DATABRICKS_TOKEN"] = token
+        print("✓ Loaded DATABRICKS_TOKEN from secrets")
+    except Exception:
         print("=" * 70)
         print("⚠️  dbt SECRET REQUIRED")
         print("=" * 70)
@@ -238,7 +238,7 @@ except Exception:
         print("")
         print("Or set DATABRICKS_TOKEN environment variable.")
         print("=" * 70)
-        raise Exception("Missing dbt token - see instructions above")
+        raise Exception("Missing DATABRICKS_TOKEN - see instructions above")
 
 # Auto-detect catalog using Databricks SDK
 catalog = None
@@ -284,7 +284,7 @@ databricks:
       schema: demo_gold
       host: {host}
       http_path: {http_path}
-      token: {token}
+      token: "{{ env_var('DATABRICKS_TOKEN') }}"
       threads: 4
 """
 
@@ -296,13 +296,15 @@ print("✓ dbt profile configured")
 # COMMAND ----------
 
 # Install dbt packages
+# Install dbt packages
 os.chdir(DBT_PROJECT_PATH)
-result = subprocess.run(
-    ["dbt", "deps", "--profiles-dir", dbt_profiles_dir], capture_output=True, text=True
+print("Running dbt deps...")
+subprocess.run(
+    ["dbt", "deps", "--profiles-dir", dbt_profiles_dir],
+    check=True,
+    cwd=DBT_PROJECT_PATH,
 )
-print(result.stdout)
-if result.returncode != 0:
-    print(result.stderr)
+print("✓ dbt deps complete")
 
 # COMMAND ----------
 
@@ -310,47 +312,46 @@ if result.returncode != 0:
 _t_transform_start = time.perf_counter()
 
 # First load seed data (default Kimball dimension rows)
+# First load seed data (default Kimball dimension rows)
 dbt_vars = f'{{"source_catalog": "{catalog}"}}'
-result = subprocess.run(
+print("Running dbt seed...")
+subprocess.run(
     ["dbt", "seed", "--profiles-dir", dbt_profiles_dir, "--vars", dbt_vars],
-    capture_output=True,
-    text=True,
+    check=True,
     cwd=DBT_PROJECT_PATH,
 )
-print("=== dbt seed ===")
-print(result.stdout)
-if result.returncode != 0:
-    print(result.stderr)
-    raise Exception("dbt seed failed!")
+print("✓ dbt seed complete")
 
 # Run snapshots (SCD2 dimensions)
-result = subprocess.run(
+print("Running dbt snapshot...")
+subprocess.run(
     ["dbt", "snapshot", "--profiles-dir", dbt_profiles_dir, "--vars", dbt_vars],
-    capture_output=True,
-    text=True,
+    check=True,
     cwd=DBT_PROJECT_PATH,
 )
-print("=== dbt snapshot ===")
-print(result.stdout)
-if result.returncode != 0:
-    print(result.stderr)
-    raise Exception("dbt snapshot failed!")
+print("✓ dbt snapshot complete")
 
 # Then run models (SCD1 dimensions and facts)
-result = subprocess.run(
+print("Running dbt run...")
+subprocess.run(
     ["dbt", "run", "--profiles-dir", dbt_profiles_dir, "--vars", dbt_vars],
-    capture_output=True,
-    text=True,
+    check=True,
     cwd=DBT_PROJECT_PATH,
 )
-print("=== dbt run ===")
-print(result.stdout)
-if result.returncode != 0:
-    print(result.stderr)
-    raise Exception("dbt run failed!")
+print("✓ dbt run complete")
 
 _day1_transform_time = time.perf_counter() - _t_transform_start
-_day1_rows = spark.table("demo_gold.fact_sales").count()
+
+# Optimization: Use Delta metadata for row count to avoid full table scan overhead
+try:
+    _day1_rows = (
+        spark.sql("DESCRIBE DETAIL demo_gold.fact_sales")
+        .select("numOutputRows")
+        .collect()[0][0]
+    )
+except Exception:
+    _day1_rows = spark.table("demo_gold.fact_sales").count()
+
 
 benchmark_metrics.append(
     {
@@ -451,7 +452,8 @@ print("DEBUG: Checking for duplicates in demo_silver.customers (customer_id)..."
 dup_check = spark.sql(
     "SELECT customer_id, count(*) as cnt FROM demo_silver.customers GROUP BY customer_id HAVING cnt > 1"
 )
-if dup_check.count() > 0:
+# Optimization: Check first row to avoid double scan (count + show)
+if not dup_check.limit(1).isEmpty():
     print("🚨 DUPLICATES FOUND IN SILVER!")
     dup_check.show()
 else:
@@ -463,33 +465,36 @@ else:
 _t_transform_start = time.perf_counter()
 
 # Run snapshots (SCD2 - will create new rows for changed records)
-result = subprocess.run(
+# Run snapshots (SCD2 - will create new rows for changed records)
+print("Running dbt snapshot (Day 2)...")
+subprocess.run(
     ["dbt", "snapshot", "--profiles-dir", dbt_profiles_dir, "--vars", dbt_vars],
-    capture_output=True,
-    text=True,
+    check=True,
     cwd=DBT_PROJECT_PATH,
 )
-print("=== dbt snapshot (Day 2) ===")
-print(result.stdout)
-if result.returncode != 0:
-    print(result.stderr)
-    raise Exception("dbt snapshot (Day 2) failed!")
+print("✓ dbt snapshot complete")
 
 # Run models (incremental)
-result = subprocess.run(
+print("Running dbt run (Day 2)...")
+subprocess.run(
     ["dbt", "run", "--profiles-dir", dbt_profiles_dir, "--vars", dbt_vars],
-    capture_output=True,
-    text=True,
+    check=True,
     cwd=DBT_PROJECT_PATH,
 )
-print("=== dbt run (Day 2) ===")
-print(result.stdout)
-if result.returncode != 0:
-    print(result.stderr)
-    raise Exception("dbt run (Day 2) failed!")
+print("✓ dbt run complete")
 
 _day2_transform_time = time.perf_counter() - _t_transform_start
-_day2_rows = spark.table("demo_gold.fact_sales").count()
+
+# Optimization: Use Delta metadata for row count
+try:
+    _day2_rows = (
+        spark.sql("DESCRIBE DETAIL demo_gold.fact_sales")
+        .select("numOutputRows")
+        .collect()[0][0]
+    )
+except Exception:
+    _day2_rows = spark.table("demo_gold.fact_sales").count()
+
 
 benchmark_metrics.append(
     {

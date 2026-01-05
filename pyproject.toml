@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kimball_framework"
+version = "0.1.1"
+description = "A declarative, CDF-based ETL framework for Databricks"
+authors = [{name = "Tiago Marques"}]
+license = {text = "Apache-2.0"}
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml",
+    "jinja2",
+    "jsonschema>=4.0.0",
+    "pydantic>=2.0.0",
+    "pyspark>=3.4.0",
+    "delta-spark>=2.4.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["implementations/pyspark/src"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "isort",
+    "mypy",
+    "ruff"
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+exclude = ["examples"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+exclude = ["examples"]

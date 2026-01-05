@@ -55,6 +55,6 @@ quality_reports/
 **/logs/
 **/package-lock.yml
 
-# Data
-data/
-*/implementations/*/data/
+# Data (allow committed fixtures, ignore typical scratch paths)
+# data/
+# */implementations/*/data/

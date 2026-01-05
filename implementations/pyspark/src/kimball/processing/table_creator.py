@@ -6,6 +6,7 @@ from typing import Any
 from databricks.sdk.runtime import spark
 from pyspark.sql import DataFrame
 
+from kimball.common.constants import SPARK_CONF_AUTO_MERGE
 from kimball.common.utils import quote_table_name
 
 
@@ -97,6 +98,15 @@ class TableCreator:
         elif cluster_by:
             print(f"Using provided cluster_by: {cluster_by}")
 
+        # Validate clustering columns to prevent SQL injection
+        if cluster_by:
+            formatted_cluster_cols = []
+            for col_name in cluster_by:
+                if not _is_valid_identifier(col_name):
+                    raise ValueError(f"Invalid clustering column name: {col_name}")
+                formatted_cluster_cols.append(f"`{col_name}`")
+            cluster_by = formatted_cluster_cols
+
         # Build CREATE TABLE statement
         # We'll use the DataFrame schema to infer column definitions
         columns = []
@@ -148,13 +158,17 @@ class TableCreator:
         # Enable Delta optimizations after table creation (optional features, may fail on Free Edition)
         try:
             self.enable_predictive_optimization(table_name)
-        except Exception:
-            pass  # Feature not available on this cluster tier
+        except Exception as e:
+            print(
+                f"Notice: Predictive Optimization not enabled (expected on Community Edition): {e}"
+            )
 
         try:
             self.enable_deletion_vectors(table_name)
-        except Exception:
-            pass  # Feature not available on this cluster tier
+        except Exception as e:
+            print(
+                f"Notice: Deletion Vectors not enabled (expected on Community Edition): {e}"
+            )
 
         # Apply basic Delta constraints after table creation
         self.apply_basic_constraints(table_name, surrogate_key_col, schema_df)
@@ -205,8 +219,12 @@ class TableCreator:
             config: Table configuration from YAML
         """
         # Apply NOT NULL constraints for natural keys
+        # Apply NOT NULL constraints for natural keys
         quoted_table_name = quote_table_name(table_name)
-        natural_keys = config.get("natural_keys", [])
+        # Handle both flat and nested config structures for natural keys
+        natural_keys = config.get("natural_keys") or config.get("keys", {}).get(
+            "natural_keys", []
+        )
         for key in natural_keys:
             alter_sql = (
                 f"ALTER TABLE {quoted_table_name} ALTER COLUMN `{key}` SET NOT NULL"
@@ -222,7 +240,19 @@ class TableCreator:
         for constraint in constraints:
             constraint_name = constraint.get("name")
             constraint_expr = constraint.get("expression")
+
             if constraint_name and constraint_expr:
+                if not _is_valid_identifier(constraint_name):
+                    print(f"Skipping invalid constraint name: {constraint_name}")
+                    continue
+
+                # Basic SQL injection guard for expression
+                # Reject semicolons and comment markers to prevent command chaining/hiding
+                if any(x in constraint_expr for x in [";", "--", "/*"]):
+                    raise ValueError(
+                        f"Invalid characters in constraint expression: {constraint_expr}"
+                    )
+
                 alter_sql = f"ALTER TABLE {quoted_table_name} ADD CONSTRAINT `{constraint_name}` CHECK ({constraint_expr})"
                 try:
                     spark.sql(alter_sql)
@@ -234,7 +264,7 @@ class TableCreator:
         """
         Enable schema auto-merge for the current session.
         """
-        spark.conf.set("spark.databricks.delta.schema.autoMerge.enabled", "true")
+        spark.conf.set(SPARK_CONF_AUTO_MERGE, "true")
         print("Enabled schema auto-merge for current session")
 
     def enable_predictive_optimization(self, table_name: str) -> None:

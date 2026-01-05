@@ -15,6 +15,11 @@ from kimball.observability.resilience import (
     StagingCleanupManager,
     _feature_enabled,
 )
+from kimball.common.constants import (
+    SPARK_CONF_AQE_COALESCE,
+    SPARK_CONF_AQE_ENABLED,
+    SPARK_CONF_AQE_SKEW_JOIN,
+)
 from kimball.orchestration.watermark import ETLControlManager, get_etl_schema
 from kimball.processing.loader import DataLoader
 from kimball.processing.merger import DeltaMerger
@@ -90,9 +95,9 @@ class Orchestrator:
 
         # Enable Photon and AQE for performance (best-effort, may not be available on Spark Connect)
         try:
-            spark.conf.set("spark.sql.adaptive.enabled", "true")
-            spark.conf.set("spark.sql.adaptive.skewJoin.enabled", "true")
-            spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
+            spark.conf.set(SPARK_CONF_AQE_ENABLED, "true")
+            spark.conf.set(SPARK_CONF_AQE_SKEW_JOIN, "true")
+            spark.conf.set(SPARK_CONF_AQE_COALESCE, "true")
         except Exception:
             # Spark Connect (Databricks Free Edition) does not allow setting these configs
             pass
