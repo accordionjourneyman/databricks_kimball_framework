@@ -14,6 +14,12 @@ from kimball.errors import (
 )
 from kimball.executor import ExecutionSummary, PipelineExecutor, PipelineResult
 from kimball.orchestrator import Orchestrator
+from kimball.resilience import (
+    PipelineCheckpoint,
+    QueryMetricsCollector,
+    StagingCleanupManager,
+    StagingTableManager,
+)
 from kimball.watermark import KIMBALL_ETL_SCHEMA_ENV, ETLControlManager, get_etl_schema
 
 __all__ = [
@@ -26,6 +32,11 @@ __all__ = [
     "ETLControlManager",
     "get_etl_schema",
     "KIMBALL_ETL_SCHEMA_ENV",
+    # Resilience Features
+    "PipelineCheckpoint",
+    "QueryMetricsCollector",
+    "StagingCleanupManager",
+    "StagingTableManager",
     # Errors
     "KimballError",
     "RetriableError",

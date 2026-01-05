@@ -1,4 +1,3 @@
-import json
 import os
 import time
 import uuid
@@ -6,13 +5,10 @@ import warnings
 from typing import Any
 
 from databricks.sdk.runtime import spark
-from pyspark.sql import DataFrame
-from pyspark.sql.functions import col, current_timestamp, desc, lit
+from pyspark.sql.functions import col, current_timestamp, lit
 from pyspark.sql.types import (
     LongType,
     StringType,
-    StructField,
-    StructType,
     TimestampType,
 )
 
@@ -20,6 +16,13 @@ from kimball.config import ConfigLoader
 from kimball.errors import NonRetriableError, RetriableError
 from kimball.loader import DataLoader
 from kimball.merger import DeltaMerger
+from kimball.resilience import (
+    PipelineCheckpoint,
+    QueryMetricsCollector,
+    StagingCleanupManager,
+    StagingTableManager,
+    _feature_enabled,
+)
 from kimball.skeleton_generator import SkeletonGenerator
 from kimball.table_creator import TableCreator
 from kimball.watermark import ETLControlManager, get_etl_schema
@@ -36,376 +39,8 @@ except ImportError:
     PYSPARK_EXCEPTION_BASE = pyspark.sql.utils.AnalysisException
 
 
-def _feature_enabled(feature: str) -> bool:
-    """
-    Check if a feature is enabled via environment variable.
-
-    Features are OFF by default (lite mode). Enable via:
-    - KIMBALL_MODE=full (enables all features)
-    - KIMBALL_ENABLE_<FEATURE>=1 (enables specific feature)
-
-    Available features: checkpoints, staging_cleanup, metrics, auto_cluster
-    """
-    # Full mode enables all features
-    if os.environ.get("KIMBALL_MODE", "").lower() == "full":
-        return True
-    # Otherwise check specific feature flag
-    return os.environ.get(f"KIMBALL_ENABLE_{feature.upper()}") == "1"
-
-
-class QueryMetricsCollector:
-    """
-    Collects basic query execution metrics for observability.
-    Uses DataFrame operations and timing instead of Spark listeners.
-    """
-
-    def __init__(self):
-        self.metrics = []
-        self.start_time = None
-
-    def start_collection(self):
-        """Start collecting query execution metrics."""
-        self.start_time = time.time()
-        self.metrics = []
-
-    def add_operation_metric(self, operation_name: str, df=None, **kwargs):
-        """Add a metric for a specific operation."""
-        try:
-            metric = {
-                "operation": operation_name,
-                "timestamp": time.time(),
-                "duration_ms": kwargs.get("duration_ms", 0),
-            }
-
-            # Add DataFrame metrics if available
-            if df is not None:
-                try:
-                    # Get basic stats without collecting data
-                    if hasattr(df, "_jdf"):
-                        # Try to get some basic metrics from the logical plan
-                        metric["has_logical_plan"] = True
-                    else:
-                        metric["has_logical_plan"] = False
-                except Exception:
-                    metric["has_logical_plan"] = False
-
-            # Add any additional metrics passed
-            metric.update(kwargs)
-            self.metrics.append(metric)
-
-        except Exception as e:
-            print(f"Failed to collect metric for {operation_name}: {e}")
-
-    def stop_collection(self):
-        """Stop collecting metrics and return collected data."""
-        if self.start_time:
-            total_duration = time.time() - self.start_time
-            self.add_operation_metric(
-                "total_pipeline", duration_ms=total_duration * 1000
-            )
-        return self.metrics
-
-    def get_summary(self) -> dict[str, Any]:
-        """Get summary of collected metrics."""
-        if not self.metrics:
-            return {}
-
-        total_time = sum(m.get("duration_ms", 0) for m in self.metrics)
-        operation_count = len(
-            [m for m in self.metrics if m.get("operation") != "total_pipeline"]
-        )
-
-        return {
-            "total_operations": operation_count,
-            "total_execution_time_ms": total_time,
-            "operations": self.metrics,
-            "avg_operation_time_ms": total_time / operation_count
-            if operation_count > 0
-            else 0,
-        }
-
-
 # Session-level flag to avoid repeated cleanup scans per table
 _staging_cleanup_done_this_session = False
-
-
-class StagingCleanupManager:
-    """
-    Manages cleanup of staging tables with crash resilience using Delta table registry.
-    Provides ACID-compliant registry to prevent race conditions in multi-pipeline environments.
-    """
-
-    def __init__(self, registry_table: str | None = None):
-        # Use Delta table for registry instead of JSON file to prevent race conditions
-        if registry_table is None:
-            registry_table = os.getenv(
-                "KIMBALL_CLEANUP_REGISTRY_TABLE", "default.kimball_staging_registry"
-            )
-
-        self.registry_table = registry_table
-        self._ensure_registry_table()
-
-    def _ensure_registry_table(self):
-        """Ensure the registry Delta table exists."""
-        if not spark.catalog.tableExists(self.registry_table):
-            # Create registry table with proper schema using DataFrame API
-            from pyspark.sql.types import StringType, TimestampType
-
-            schema = StructType(
-                [
-                    StructField("pipeline_id", StringType(), True),
-                    StructField("staging_table", StringType(), True),
-                    StructField("created_at", TimestampType(), True),
-                    StructField("batch_id", StringType(), True),
-                ]
-            )
-            empty_df = spark.createDataFrame([], schema)
-            empty_df.write.format("delta").saveAsTable(self.registry_table)
-            print(f"Created staging cleanup registry table: {self.registry_table}")
-
-    def register_staging_table(
-        self,
-        staging_table: str,
-        pipeline_id: str | None = None,
-        batch_id: str | None = None,
-    ):
-        """Register a staging table for cleanup using Delta table."""
-        from delta.tables import DeltaTable
-        from pyspark.sql.functions import current_timestamp
-
-        # Create DataFrame for the new entry
-        new_entry = spark.createDataFrame(
-            [(pipeline_id or "unknown", staging_table, batch_id or "unknown")],
-            ["pipeline_id", "staging_table", "batch_id"],
-        ).withColumn("created_at", current_timestamp())
-
-        # Use DeltaTable API for atomic registration
-        registry_table = DeltaTable.forName(spark, self.registry_table)
-        registry_table.alias("target").merge(
-            new_entry.alias("source"), "target.staging_table = source.staging_table"
-        ).whenNotMatchedInsertAll().execute()
-
-        print(f"Registered staging table for cleanup: {staging_table}")
-
-    def unregister_staging_table(self, staging_table: str):
-        """Unregister a staging table after successful cleanup."""
-        # Use DeltaTable API to avoid SQL injection
-        from delta.tables import DeltaTable
-
-        registry_table = DeltaTable.forName(spark, self.registry_table)
-        registry_table.delete(col("staging_table") == staging_table)
-        print(f"Unregistered staging table from cleanup: {staging_table}")
-
-    def cleanup_staging_tables(
-        self,
-        spark_session=None,
-        pipeline_id: str | None = None,
-        max_age_hours: int = 24,
-    ):
-        """Clean up orphaned staging tables using atomic TTL-based filtering."""
-        if spark_session is None:
-            spark_session = spark
-
-        # Use atomic DeltaTable operations to avoid race conditions
-        # Perform cleanup in a single transaction per table to prevent TOCTOU bugs
-        from delta.tables import DeltaTable
-
-        registry_table = DeltaTable.forName(spark_session, self.registry_table)
-
-        # Build condition for cleanup (age + optional pipeline filter)
-        conditions = []
-        if max_age_hours > 0:
-            conditions.append(
-                f"current_timestamp() - created_at > INTERVAL {max_age_hours} HOURS"
-            )
-        if pipeline_id:
-            conditions.append(f"pipeline_id = '{pipeline_id}'")
-
-        where_clause = " AND ".join(conditions) if conditions else "1=1"
-
-        # Get tables to clean up atomically
-        cleanup_query = f"""
-        SELECT staging_table, pipeline_id, batch_id
-        FROM {self.registry_table}
-        WHERE {where_clause}
-        """
-
-        cleanup_df = spark_session.sql(cleanup_query)
-
-        # Use foreachPartition for distributed cleanup
-        def cleanup_partition(rows):
-            for row in rows:
-                staging_table = row.staging_table
-                try:
-                    # Drop physical table first (best effort)
-                    spark_session.catalog.dropTable(
-                        staging_table, ignoreIfNotExists=True
-                    )
-
-                    # Then remove from registry atomically
-                    # Use MERGE for atomic conditional delete
-                    registry_table.alias("target").merge(
-                        spark_session.createDataFrame(
-                            [(staging_table,)], ["staging_table"]
-                        ).alias("source"),
-                        "target.staging_table = source.staging_table",
-                    ).whenMatchedDelete().execute()
-
-                    print(f"Cleaned up orphaned staging table: {staging_table}")
-                except Exception as e:
-                    print(f"Failed to clean up {staging_table}: {e}")
-
-        # Execute cleanup in distributed manner
-        cleanup_df.foreachPartition(cleanup_partition)
-
-        # Count results (Note: evaluates DataFrame twice, but cache() not supported on serverless)
-        total_count = cleanup_df.count()
-        print(f"Atomic TTL-based staging cleanup completed for {total_count} tables")
-        return total_count, 0
-
-
-class StagingTableManager:
-    """
-    Context manager for staging tables that ensures cleanup regardless of execution outcome.
-    Prevents workspace pollution from failed ETL operations.
-    """
-
-    def __init__(self, cleanup_manager: StagingCleanupManager):
-        self.cleanup_manager = cleanup_manager
-        self.staging_tables = []
-
-    def register_staging_table(
-        self,
-        staging_table: str,
-        pipeline_id: str | None = None,
-        batch_id: str | None = None,
-    ):
-        """Register a staging table for management and cleanup."""
-        self.staging_tables.append(staging_table)
-        self.cleanup_manager.register_staging_table(
-            staging_table, pipeline_id, batch_id
-        )
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, _exc_type, _exc_val, _exc_tb):
-        """Ensure staging tables are cleaned up even if an exception occurs."""
-        for staging_table in self.staging_tables:
-            try:
-                # Use spark.catalog.dropTable for safe cleanup
-                spark.catalog.dropTable(staging_table, ignoreIfNotExists=True)
-                self.cleanup_manager.unregister_staging_table(staging_table)
-                print(
-                    f"Cleaned up staging table during exception recovery: {staging_table}"
-                )
-            except Exception as e:
-                print(f"Warning: Failed to clean up staging table {staging_table}: {e}")
-
-
-class PipelineCheckpoint:
-    """
-    Handles checkpointing for complex DAG pipelines using Delta table for ACID compliance.
-    Saves and restores pipeline state to enable resumability with atomic guarantees.
-    """
-
-    def __init__(self, checkpoint_table: str | None = None):
-        # Use Delta table for atomic checkpoint storage
-        if checkpoint_table is None:
-            checkpoint_table = os.getenv(
-                "KIMBALL_CHECKPOINT_TABLE", "default.kimball_pipeline_checkpoints"
-            )
-
-        self.checkpoint_table = checkpoint_table
-        self._ensure_checkpoint_table()
-
-    def _ensure_checkpoint_table(self):
-        """Ensure the checkpoint Delta table exists."""
-        if not spark.catalog.tableExists(self.checkpoint_table):
-            # Create checkpoint table with proper schema using DataFrame API
-            from pyspark.sql.types import StringType, TimestampType
-
-            schema = StructType(
-                [
-                    StructField("pipeline_id", StringType(), True),
-                    StructField("stage", StringType(), True),
-                    StructField("timestamp", TimestampType(), True),
-                    StructField("state", StringType(), True),
-                ]
-            )
-            empty_df = spark.createDataFrame([], schema)
-            empty_df.write.format("delta").partitionBy("pipeline_id").saveAsTable(
-                self.checkpoint_table
-            )
-            print(f"Created pipeline checkpoint table: {self.checkpoint_table}")
-
-    def save_checkpoint(self, pipeline_id: str, stage: str, state: dict[str, Any]):
-        """Save pipeline state at a specific stage using atomic Delta operations."""
-        from delta.tables import DeltaTable
-        from pyspark.sql.functions import current_timestamp
-
-        state_json = json.dumps(state)
-
-        # Create DataFrame for the checkpoint entry
-        checkpoint_entry = spark.createDataFrame(
-            [(pipeline_id, stage, state_json)], ["pipeline_id", "stage", "state"]
-        ).withColumn("timestamp", current_timestamp())
-
-        # Use DeltaTable API for atomic checkpoint updates
-        checkpoint_table = DeltaTable.forName(spark, self.checkpoint_table)
-        checkpoint_table.alias("target").merge(
-            checkpoint_entry.alias("source"),
-            "target.pipeline_id = source.pipeline_id AND target.stage = source.stage",
-        ).whenMatchedUpdate(
-            set={"timestamp": "source.timestamp", "state": "source.state"}
-        ).whenNotMatchedInsertAll().execute()
-
-        print(f"Checkpoint saved: {pipeline_id} -> {stage}")
-
-    def load_checkpoint(self, pipeline_id: str, stage: str) -> dict[str, Any] | None:
-        """Load pipeline state from Delta table checkpoint."""
-
-        # Use DataFrame API to safely query checkpoint
-        checkpoint_df = spark.table(self.checkpoint_table)
-        result_df = (
-            checkpoint_df.filter(
-                (col("pipeline_id") == pipeline_id) & (col("stage") == stage)
-            )
-            .orderBy(col("timestamp").desc())
-            .limit(1)
-        )
-
-        if result_df.isEmpty():
-            return None
-
-        try:
-            state_json = result_df.first()["state"]
-            state = json.loads(state_json)
-            print(f"Checkpoint loaded: {pipeline_id} -> {stage}")
-            return state
-        except Exception as e:
-            print(f"Failed to load checkpoint {pipeline_id}:{stage}: {e}")
-            return None
-
-    def clear_checkpoint(self, pipeline_id: str, stage: str):
-        """Clear a checkpoint from Delta table."""
-        from delta.tables import DeltaTable
-
-        # Use DeltaTable API to safely delete checkpoint
-        checkpoint_table = DeltaTable.forName(spark, self.checkpoint_table)
-        checkpoint_table.delete(
-            (col("pipeline_id") == pipeline_id) & (col("stage") == stage)
-        )
-
-        print(f"Checkpoint cleared: {pipeline_id} -> {stage}")
-
-    def list_checkpoints(self, pipeline_id: str | None = None) -> DataFrame:
-        """List all checkpoints, optionally filtered by pipeline_id."""
-        # Use DataFrame API to avoid SQL injection
-        checkpoint_df = spark.table(self.checkpoint_table)
-        if pipeline_id:
-            checkpoint_df = checkpoint_df.filter(col("pipeline_id") == pipeline_id)
-        return checkpoint_df.orderBy("pipeline_id", "stage", desc("timestamp"))
 
 
 class Orchestrator:
@@ -575,6 +210,9 @@ class Orchestrator:
         print(f"Checking for orphaned staging tables (max age: {max_age_hours}h)...")
 
         # Use TTL-based cleanup to avoid interfering with concurrent pipelines
+        if self.cleanup_manager is None:
+            print("Warning: cleanup_manager not initialized, skipping cleanup")
+            return
         cleaned, failed = self.cleanup_manager.cleanup_staging_tables(
             pipeline_id=pipeline_id, max_age_hours=max_age_hours
         )

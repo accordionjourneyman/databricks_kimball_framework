@@ -383,8 +383,11 @@ class DeltaMerger:
         )
         rows_no_keys = staged_source.filter(col("__merge_action") == "UPDATE_EXPIRE")
 
-        # Initialize Key Generator
+        # Initialize Key Generator with proper typing
+        from kimball.key_generator import KeyGenerator
+
         max_key = 0  # Initialize max_key before conditional blocks
+        key_gen: KeyGenerator
         if surrogate_key_strategy == "identity":
             key_gen = IdentityKeyGenerator()
         elif surrogate_key_strategy == "hash":

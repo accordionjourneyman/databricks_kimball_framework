@@ -188,7 +188,8 @@ class ETLControlManager:
         )
 
         if result:
-            return result["last_processed_version"]
+            version = result["last_processed_version"]
+            return int(version) if version is not None else None
         return None
 
     def update_watermark(self, target_table: str, source_table: str, version: int):

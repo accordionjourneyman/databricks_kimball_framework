@@ -227,7 +227,7 @@ class ConfigLoader:
             return TableConfig(
                 table_name=config["table_name"],
                 table_type=table_type,
-                surrogate_key=keys_cfg.get("surrogate_key"),
+                surrogate_key=keys_cfg.get("surrogate_key") or "",
                 natural_keys=keys_cfg.get("natural_keys", []),
                 sources=sources,
                 transformation_sql=config.get("transformation_sql"),
