@@ -1,11 +1,9 @@
 # Databricks notebook source
 # pyright: reportUndefinedVariable=false
-# type: ignore
 # Kimball Framework - Installation Cell
 # Installs directly from the repo source (no pre-built wheel needed)
 
 import subprocess
-# type: ignore
 import os
 
 # Install from source (builds and installs the package)
@@ -325,7 +323,7 @@ print("Running fact_sales...")
 Orchestrator(f"{CONFIG_PATH}/fact_sales.yml").run()
 _day1_transform_time = time.perf_counter() - _t_transform_start
 
-_day1_rows = spark.table("demo_gold.fact_sales").count()  # type: ignore
+_day1_rows = spark.table("demo_gold.fact_sales").count() 
 benchmark_metrics.append(
     {
         "framework": "pyspark",
@@ -342,9 +340,8 @@ print(f"Day 1 Pipeline Complete in {_day1_transform_time:.2f}s ({_day1_rows} row
 # COMMAND ----------
 
 # Verify Day 1 Results
-display(spark.table("demo_gold.dim_customer"))  # type: ignore
-display(spark.table("demo_gold.fact_sales"))  # type: ignore
-
+display(spark.table("demo_gold.dim_customer"))
+display(spark.table("demo_gold.fact_sales")) 
 # COMMAND ----------
 
 # MAGIC %md
@@ -432,7 +429,7 @@ print("Running fact_sales (Day 2)...")
 Orchestrator(f"{CONFIG_PATH}/fact_sales.yml").run()
 _day2_transform_time = time.perf_counter() - _t_transform_start
 
-_day2_rows = spark.table("demo_gold.fact_sales").count()  # type: ignore
+_day2_rows = spark.table("demo_gold.fact_sales").count()
 benchmark_metrics.append(
     {
         "framework": "pyspark",

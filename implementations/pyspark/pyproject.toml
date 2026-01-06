@@ -12,9 +12,7 @@ dependencies = [
     "pyyaml",
     "jinja2",
     "jsonschema>=4.0.0",
-    "pydantic>=2.0.0",
-    "pyspark>=3.4.0",
-    "delta-spark>=2.4.0"
+    "pydantic>=2.0.0"
 ]
 
 
@@ -23,7 +21,9 @@ dev = [
     "pytest",
     "black",
     "isort",
-    "mypy"
+    "mypy",
+    "pyspark>=3.4.0",
+    "delta-spark>=2.4.0"
 ]
 
 [tool.ruff]

@@ -27,13 +27,13 @@ class SkeletonGenerator:
         """
         Identifies missing keys in the dimension table and inserts skeleton rows.
         """
-        if not self.spark.catalog.tableExists(dim_table_name):  # type: ignore
+        if not self.spark.catalog.tableExists(dim_table_name):
             print(
                 f"Dimension table {dim_table_name} does not exist. Skipping skeleton generation."
             )
             return
 
-        dim_table = DeltaTable.forName(self.spark, dim_table_name)  # type: ignore
+        dim_table = DeltaTable.forName(self.spark, dim_table_name)
         dim_df = dim_table.toDF()
 
         # 1. Identify Distinct Keys in Fact

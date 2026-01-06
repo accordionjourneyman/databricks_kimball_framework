@@ -38,8 +38,7 @@ except ImportError:
     # Fallback for older Databricks Runtime versions
     import pyspark.sql.utils
 
-    PYSPARK_EXCEPTION_BASE = pyspark.sql.utils.AnalysisException  # type: ignore
-
+    PYSPARK_EXCEPTION_BASE = pyspark.sql.utils.AnalysisException
 
 # Session-level flag to avoid repeated cleanup scans per table
 _staging_cleanup_done_this_session = False

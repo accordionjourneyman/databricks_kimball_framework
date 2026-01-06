@@ -1,6 +1,5 @@
 # Databricks notebook source
 # pyright: reportUndefinedVariable=false
-# type: ignore
 # MAGIC %md
 # MAGIC # dbt Kimball Framework Demo
 # MAGIC
@@ -20,7 +19,6 @@
 # COMMAND ----------
 
 import subprocess
-# type: ignore
 import os
 import time
 

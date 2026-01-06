@@ -439,9 +439,8 @@ class ETLControlManager:
                 field.name: r.get(field.name) for field in self._UPDATE_SCHEMA.fields
             }
             # Ensure mandatory keys are present
-            norm["target_table"] = r["target_table"]  # type: ignore
-            norm["source_table"] = r["source_table"]  # type: ignore
-            # Ensure updated_at
+            norm["target_table"] = r["target_table"]
+            norm["source_table"] = r["source_table"]  # Ensure updated_at
             if not norm.get("updated_at"):
                 norm["updated_at"] = datetime.now()
             normalized_records.append(norm)

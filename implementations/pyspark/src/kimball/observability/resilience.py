@@ -222,8 +222,7 @@ class StagingCleanupManager:
         from pyspark.sql.functions import expr
 
         # Use DataFrame API instead of SQL string building (fixes SQL injection)
-        registry_df = spark_session.table(self.registry_table)  # type: ignore
-
+        registry_df = spark_session.table(self.registry_table)
         # Apply age filter using DataFrame API
         if max_age_hours > 0:
             threshold = current_timestamp() - expr(f"INTERVAL {max_age_hours} HOURS")
@@ -245,7 +244,7 @@ class StagingCleanupManager:
         cleaned, failed = 0, 0
         for staging_table_name in tables_to_cleanup:
             try:
-                spark_session.sql(f"DROP TABLE IF EXISTS {staging_table_name}")  # type: ignore
+                spark_session.sql(f"DROP TABLE IF EXISTS {staging_table_name}")
                 self.unregister_staging_table(staging_table_name)
                 cleaned += 1
                 print(f"Cleaned up orphaned staging table: {staging_table_name}")
