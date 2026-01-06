@@ -12,8 +12,8 @@ dependencies = [
     "pyyaml",
     "jinja2",
     "jsonschema>=4.0.0",
-    "pydantic>=2.0.0",
-    "typing-extensions>=4.10.0"
+    "pydantic<2.10.0",
+    "typing-extensions>=4.6.0"
 ]
 
 
