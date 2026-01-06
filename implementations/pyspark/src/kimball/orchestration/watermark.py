@@ -20,10 +20,11 @@ import os
 import uuid
 import warnings
 from datetime import datetime
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
 from databricks.sdk.runtime import spark
 from delta.tables import DeltaTable
+from pyspark.sql import Column
 from pyspark.sql.functions import col
 from pyspark.sql.types import (
     LongType,
@@ -296,7 +297,7 @@ class ETLControlManager:
             )
 
         if updates_list:
-            self._upsert_control_records(updates_list)
+            self._upsert_control_records(cast(list[ETLControlRecord], updates_list))
 
         return batch_ids
 
@@ -438,8 +439,8 @@ class ETLControlManager:
                 field.name: r.get(field.name) for field in self._UPDATE_SCHEMA.fields
             }
             # Ensure mandatory keys are present
-            norm["target_table"] = r["target_table"]
-            norm["source_table"] = r["source_table"]
+            norm["target_table"] = r["target_table"]  # type: ignore
+            norm["source_table"] = r["source_table"]  # type: ignore
             # Ensure updated_at
             if not norm.get("updated_at"):
                 norm["updated_at"] = datetime.now()
@@ -482,7 +483,7 @@ class ETLControlManager:
                 update_df.alias("u"),
                 "w.target_table = u.target_table AND w.source_table = u.source_table",
             )
-            .whenMatchedUpdate(set=update_set)
-            .whenNotMatchedInsert(values=insert_values)
+            .whenMatchedUpdate(set=cast(dict[str, str | Column], update_set))
+            .whenNotMatchedInsert(values=cast(dict[str, str | Column], insert_values))
             .execute()
         )

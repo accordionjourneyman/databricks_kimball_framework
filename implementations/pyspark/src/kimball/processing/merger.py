@@ -3,11 +3,12 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from datetime import date, datetime
-from functools import wraps
-from typing import Any, Protocol
+from functools import reduce, wraps
+from typing import Any, Protocol, cast
 
+from databricks.sdk.runtime import spark
 from delta.tables import DeltaTable
-from pyspark.sql import DataFrame
+from pyspark.sql import Column, DataFrame
 from pyspark.sql.functions import col, current_timestamp, lit, row_number
 from pyspark.sql.types import (
     BooleanType,
@@ -22,20 +23,6 @@ from pyspark.sql.types import (
     TimestampType,
 )
 from pyspark.sql.window import Window
-
-try:
-    # Databricks Runtime 13+ - errors moved to pyspark.errors
-    from pyspark.errors import PySparkException
-
-    PYSPARK_EXCEPTION_BASE = PySparkException
-except ImportError:
-    # Fallback for older Databricks Runtime versions
-    import pyspark.sql.utils
-
-    PYSPARK_EXCEPTION_BASE = pyspark.sql.utils.AnalysisException
-from functools import reduce
-
-from databricks.sdk.runtime import spark
 
 from kimball.common.constants import (
     DEFAULT_START_DATE,
@@ -52,6 +39,20 @@ from kimball.processing.key_generator import (
     KeyGenerator,
     SequenceKeyGenerator,
 )
+
+# Handle PySpark exception location changes between Runtime versions
+PYSPARK_EXCEPTION_BASE: type[Exception]
+
+try:
+    # Databricks Runtime 13+ - errors moved to pyspark.errors
+    from pyspark.errors import PySparkException
+
+    PYSPARK_EXCEPTION_BASE = PySparkException
+except ImportError:
+    # Fallback for older Databricks Runtime versions
+    import pyspark.sql.utils
+
+    PYSPARK_EXCEPTION_BASE = pyspark.sql.utils.AnalysisException  # type: ignore
 
 
 def retry_on_concurrent_exception(
@@ -186,15 +187,16 @@ class SCD1Strategy:
                     condition="source._change_type = 'delete'"
                 )
             elif self.delete_strategy == "soft":
+                update_set: dict[str, str | Column] = {
+                    "__is_deleted": "true",
+                    "__etl_processed_at": "current_timestamp()",
+                }
                 merge_builder = merge_builder.whenMatchedUpdate(
                     condition="source._change_type = 'delete'",
-                    set={
-                        "__is_deleted": "true",
-                        "__etl_processed_at": "current_timestamp()",
-                    },
+                    set=update_set,
                 )
 
-        update_condition = (
+        update_condition_col: str | Column | None = (
             "source._change_type != 'delete'"
             if "_change_type" in source_df.columns
             else None
@@ -202,13 +204,13 @@ class SCD1Strategy:
 
         source_cols_map = {c: f"source.{c}" for c in source_df.columns}
 
-        update_map = {
+        update_map: dict[str, str | Column] = {
             c: f"source.{c}" for c in source_df.columns if c != self.surrogate_key_col
         }
         update_map["__is_deleted"] = "false"
         update_map["__etl_processed_at"] = "current_timestamp()"
 
-        insert_map = {
+        insert_map: dict[str, str | Column] = {
             **source_cols_map,
             "__is_deleted": "false",
             "__etl_processed_at": "current_timestamp()",
@@ -221,11 +223,11 @@ class SCD1Strategy:
             del insert_map[self.surrogate_key_col]
 
         merge_builder = merge_builder.whenMatchedUpdate(
-            condition=update_condition, set=update_map
+            condition=cast(Column, update_condition_col), set=update_map
         )
 
         merge_builder = merge_builder.whenNotMatchedInsert(
-            condition=update_condition, values=insert_map
+            condition=cast(Column, update_condition_col), values=insert_map
         )
 
         merge_builder.execute()
@@ -440,7 +442,9 @@ class SCD2Strategy:
                 "__valid_to": "source.__etl_processed_at",
                 "__etl_processed_at": "current_timestamp()",
             },
-        ).whenNotMatchedInsert(values=insert_values).execute()
+        ).whenNotMatchedInsert(
+            values=cast(dict[str, str | Column], insert_values)
+        ).execute()
 
 
 class DeltaMerger:
@@ -607,14 +611,14 @@ class DeltaMerger:
                         row[col_name] = default_values[col_name]
                     else:
                         # Infer based on type
-                        dtype = str(field.dataType)
-                        if "String" in dtype:
+                        dtype_str = field.dataType.simpleString()
+                        if "string" in dtype_str:
                             row[col_name] = label
-                        elif "Int" in dtype or "Long" in dtype or "Double" in dtype:
+                        elif any(x in dtype_str for x in ["int", "long", "double"]):
                             row[col_name] = -1
-                        elif "Timestamp" in dtype:
+                        elif "timestamp" in dtype_str:
                             row[col_name] = DEFAULT_VALID_FROM
-                        elif "Date" in dtype:
+                        elif "date" in dtype_str:
                             row[col_name] = DEFAULT_START_DATE
                         else:
                             row[col_name] = None
@@ -702,14 +706,14 @@ class DeltaMerger:
                     if default_values and col_name in default_values:
                         row[col_name] = default_values[col_name]
                     else:
-                        dtype = str(field.dataType)
-                        if "String" in dtype:
+                        dtype_str = field.dataType.simpleString()
+                        if "string" in dtype_str:
                             row[col_name] = label
-                        elif "Int" in dtype or "Long" in dtype or "Double" in dtype:
+                        elif any(x in dtype_str for x in ["int", "long", "double"]):
                             row[col_name] = -1
-                        elif "Timestamp" in dtype:
+                        elif "timestamp" in dtype_str:
                             row[col_name] = DEFAULT_VALID_FROM
-                        elif "Date" in dtype:
+                        elif "date" in dtype_str:
                             row[col_name] = DEFAULT_START_DATE
                         else:
                             row[col_name] = None

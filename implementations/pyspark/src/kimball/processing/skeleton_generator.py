@@ -27,13 +27,13 @@ class SkeletonGenerator:
         """
         Identifies missing keys in the dimension table and inserts skeleton rows.
         """
-        if not self.spark.catalog.tableExists(dim_table_name):
+        if not self.spark.catalog.tableExists(dim_table_name):  # type: ignore
             print(
                 f"Dimension table {dim_table_name} does not exist. Skipping skeleton generation."
             )
             return
 
-        dim_table = DeltaTable.forName(self.spark, dim_table_name)
+        dim_table = DeltaTable.forName(self.spark, dim_table_name)  # type: ignore
         dim_df = dim_table.toDF()
 
         # 1. Identify Distinct Keys in Fact
@@ -72,9 +72,12 @@ class SkeletonGenerator:
         # Add other columns from schema as NULL (except SK and Join Key)
         # Optimization: Build projection list for missing columns instead of looping withColumn
         # This prevents Catalyst plan explosion for wide tables
+        # Also cache columns in a set to avoid repeated JNI calls in the loop
         select_exprs = [col(c) for c in skeletons.columns]
+        existing_cols = set(skeletons.columns)
+
         for field in target_schema.fields:
-            if field.name not in skeletons.columns and field.name != surrogate_key_col:
+            if field.name not in existing_cols and field.name != surrogate_key_col:
                 select_exprs.append(lit(None).cast(field.dataType).alias(field.name))
 
         skeletons = skeletons.select(*select_exprs)

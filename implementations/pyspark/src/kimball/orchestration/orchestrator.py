@@ -8,6 +8,11 @@ from databricks.sdk.runtime import spark
 from pyspark.sql.functions import col
 
 from kimball.common.config import ConfigLoader
+from kimball.common.constants import (
+    SPARK_CONF_AQE_COALESCE,
+    SPARK_CONF_AQE_ENABLED,
+    SPARK_CONF_AQE_SKEW_JOIN,
+)
 from kimball.common.errors import NonRetriableError, RetriableError
 from kimball.observability.resilience import (
     PipelineCheckpoint,
@@ -15,16 +20,14 @@ from kimball.observability.resilience import (
     StagingCleanupManager,
     _feature_enabled,
 )
-from kimball.common.constants import (
-    SPARK_CONF_AQE_COALESCE,
-    SPARK_CONF_AQE_ENABLED,
-    SPARK_CONF_AQE_SKEW_JOIN,
-)
 from kimball.orchestration.watermark import ETLControlManager, get_etl_schema
 from kimball.processing.loader import DataLoader
 from kimball.processing.merger import DeltaMerger
 from kimball.processing.skeleton_generator import SkeletonGenerator
 from kimball.processing.table_creator import TableCreator
+
+# Handle PySpark exception location changes between Runtime versions
+PYSPARK_EXCEPTION_BASE: type[Exception]
 
 try:
     # Databricks Runtime 13+ - errors moved to pyspark.errors
@@ -35,7 +38,7 @@ except ImportError:
     # Fallback for older Databricks Runtime versions
     import pyspark.sql.utils
 
-    PYSPARK_EXCEPTION_BASE = pyspark.sql.utils.AnalysisException
+    PYSPARK_EXCEPTION_BASE = pyspark.sql.utils.AnalysisException  # type: ignore
 
 
 # Session-level flag to avoid repeated cleanup scans per table
@@ -444,7 +447,7 @@ class Orchestrator:
                         self.merger.ensure_scd2_defaults(
                             self.config.table_name,
                             target_schema,
-                            self.config.surrogate_key,
+                            self.config.surrogate_key or "surrogate_key",
                             self.config.default_rows,
                             self.config.surrogate_key_strategy,
                         )

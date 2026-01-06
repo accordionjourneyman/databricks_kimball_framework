@@ -1,4 +1,6 @@
 # Databricks notebook source
+# pyright: reportUndefinedVariable=false
+# type: ignore
 # MAGIC %md
 # MAGIC # dbt Kimball Framework Demo
 # MAGIC
@@ -18,6 +20,7 @@
 # COMMAND ----------
 
 import subprocess
+# type: ignore
 import os
 import time
 
@@ -87,7 +90,14 @@ def ingest_silver(table_name, data, schema, merge_keys):
         )
 
 
-# COMMAND ----------
+def get_row_count_efficiently(table_name: str) -> int:
+    """Gets row count using Delta metadata if available, falling back to count()."""
+    try:
+        # Optimization: Use Delta metadata for row count
+        return spark.sql(f"DESCRIBE DETAIL {table_name}").select("numOutputRows").first()["numOutputRows"]
+    except Exception:
+        # Fallback to count() for non-Delta tables or if metadata read fails
+        return spark.table(table_name).count()
 
 # --- Day 1 Data ---
 customers_data = [
@@ -297,7 +307,7 @@ print("✓ dbt profile configured")
 
 # Install dbt packages
 # Install dbt packages
-os.chdir(DBT_PROJECT_PATH)
+# Install dbt packages
 print("Running dbt deps...")
 subprocess.run(
     ["dbt", "deps", "--profiles-dir", dbt_profiles_dir],
@@ -313,7 +323,7 @@ _t_transform_start = time.perf_counter()
 
 # First load seed data (default Kimball dimension rows)
 # First load seed data (default Kimball dimension rows)
-dbt_vars = f'{{"source_catalog": "{catalog}"}}'
+dbt_vars = f'{{"source_catalog": "{catalog}", "gold_schema": "demo_gold"}}'
 print("Running dbt seed...")
 subprocess.run(
     ["dbt", "seed", "--profiles-dir", dbt_profiles_dir, "--vars", dbt_vars],
@@ -343,14 +353,8 @@ print("✓ dbt run complete")
 _day1_transform_time = time.perf_counter() - _t_transform_start
 
 # Optimization: Use Delta metadata for row count to avoid full table scan overhead
-try:
-    _day1_rows = (
-        spark.sql("DESCRIBE DETAIL demo_gold.fact_sales")
-        .select("numOutputRows")
-        .collect()[0][0]
-    )
-except Exception:
-    _day1_rows = spark.table("demo_gold.fact_sales").count()
+# Optimization: Use Delta metadata for row count to avoid full table scan overhead
+_day1_rows = get_row_count_efficiently("demo_gold.fact_sales")
 
 
 benchmark_metrics.append(
@@ -451,13 +455,16 @@ spark.sql("SELECT * FROM demo_silver.customers WHERE customer_id = 1").show()
 print("DEBUG: Checking for duplicates in demo_silver.customers (customer_id)...")
 dup_check = spark.sql(
     "SELECT customer_id, count(*) as cnt FROM demo_silver.customers GROUP BY customer_id HAVING cnt > 1"
-)
+).cache()
+
 # Optimization: Check first row to avoid double scan (count + show)
 if not dup_check.limit(1).isEmpty():
     print("🚨 DUPLICATES FOUND IN SILVER!")
     dup_check.show()
 else:
     print("✓ No duplicates in Silver.")
+
+dup_check.unpersist()
 
 # COMMAND ----------
 
@@ -486,14 +493,8 @@ print("✓ dbt run complete")
 _day2_transform_time = time.perf_counter() - _t_transform_start
 
 # Optimization: Use Delta metadata for row count
-try:
-    _day2_rows = (
-        spark.sql("DESCRIBE DETAIL demo_gold.fact_sales")
-        .select("numOutputRows")
-        .collect()[0][0]
-    )
-except Exception:
-    _day2_rows = spark.table("demo_gold.fact_sales").count()
+# Optimization: Use Delta metadata for row count
+_day2_rows = get_row_count_efficiently("demo_gold.fact_sales")
 
 
 benchmark_metrics.append(

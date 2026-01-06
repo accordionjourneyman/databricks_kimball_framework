@@ -1,3 +1,5 @@
+from typing import cast
+
 from databricks.sdk.runtime import spark
 from delta.tables import DeltaTable
 from pyspark.sql import DataFrame
@@ -27,12 +29,12 @@ class DataLoader:
         # For Delta tables in catalog, use .table()
         # For files (path inputs) or other formats, use .load()
         if format == "delta" and "/" not in table_name:
-            return reader.table(table_name)
+            return cast(DataFrame, reader.table(table_name))
 
         # For paths or non-catalog sources
         # Note: JDBC requires 'url'/'dbtable' in options, table_name passed to load() is often ignored or path
         # But for spark.read.jdbc, usage is different. format("jdbc").options(...).load()
-        return reader.load(table_name)
+        return cast(DataFrame, reader.load(table_name))
 
     def load_cdf(
         self,
@@ -55,11 +57,12 @@ class DataLoader:
         Note: We filter out 'update_preimage' rows as they represent the state
         before the update and would cause duplicate key matches during merge.
         """
-        df = (
+        df = cast(
+            DataFrame,
             spark.read.format("delta")
             .option("readChangeFeed", "true")
             .option("startingVersion", starting_version)
-            .table(table_name)
+            .table(table_name),
         )
 
         # Filter out update_preimage - we only need insert, update_postimage, and delete

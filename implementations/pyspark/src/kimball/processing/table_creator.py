@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
@@ -9,10 +10,22 @@ from pyspark.sql import DataFrame
 from kimball.common.constants import SPARK_CONF_AUTO_MERGE
 from kimball.common.utils import quote_table_name
 
+logger = logging.getLogger(__name__)
+
 
 def _is_valid_identifier(name: str) -> bool:
     """Validate that a name is a safe SQL identifier."""
     return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name))
+
+
+def _is_safe_sql_expression(expr: str) -> bool:
+    """
+    Validate that a SQL expression contains only safe characters.
+    Allows alphanumeric, whitespace, and common SQL operators/syntax: (), =<> .
+    Rejecting semicolons -- and /* is handled implicitly by the whitelist.
+    """
+    # Whitelist: alphanumeric, underscore, whitespace, parens, dot, comparison ops
+    return bool(re.match(r"^[a-zA-Z0-9_().=<>\s']+$", expr))
 
 
 class TableCreator:
@@ -96,7 +109,7 @@ class TableCreator:
             partition_by = None  # Don't use partitioning with liquid clustering
             print(f"Using Liquid Clustering from config: {cluster_by}")
         elif cluster_by:
-            print(f"Using provided cluster_by: {cluster_by}")
+            logger.info(f"Using provided cluster_by: {cluster_by}")
 
         # Validate clustering columns to prevent SQL injection
         if cluster_by:
@@ -151,23 +164,25 @@ class TableCreator:
         if surrogate_key_col and surrogate_key_strategy == "identity":
             print(f"  - Surrogate key '{surrogate_key_col}' using IDENTITY column")
         if cluster_by:
-            print(f"  - Liquid Clustering on {cluster_by}")
+            logger.info(f"  - Liquid Clustering on {cluster_by}")
         spark.sql(create_sql)
-        print(f"Table {table_name} created successfully.")
+        logger.info(f"Table {table_name} created successfully.")
 
         # Enable Delta optimizations after table creation (optional features, may fail on Free Edition)
         try:
             self.enable_predictive_optimization(table_name)
         except Exception as e:
-            print(
-                f"Notice: Predictive Optimization not enabled (expected on Community Edition): {e}"
+            logger.warning(
+                f"Notice: Predictive Optimization not enabled (expected on Community Edition): {e}",
+                exc_info=True,
             )
 
         try:
             self.enable_deletion_vectors(table_name)
         except Exception as e:
-            print(
-                f"Notice: Deletion Vectors not enabled (expected on Community Edition): {e}"
+            logger.warning(
+                f"Notice: Deletion Vectors not enabled (expected on Community Edition): {e}",
+                exc_info=True,
             )
 
         # Apply basic Delta constraints after table creation
@@ -222,18 +237,18 @@ class TableCreator:
         # Apply NOT NULL constraints for natural keys
         quoted_table_name = quote_table_name(table_name)
         # Handle both flat and nested config structures for natural keys
-        natural_keys = config.get("natural_keys") or config.get("keys", {}).get(
-            "natural_keys", []
-        )
+        # Use safe navigation to avoid AttributeError if 'keys' is None
+        keys_config = config.get("keys") or {}
+        natural_keys = config.get("natural_keys") or keys_config.get("natural_keys", [])
         for key in natural_keys:
             alter_sql = (
                 f"ALTER TABLE {quoted_table_name} ALTER COLUMN `{key}` SET NOT NULL"
             )
             try:
                 spark.sql(alter_sql)
-                print(f"Applied NOT NULL constraint to {key}")
+                logger.info(f"Applied NOT NULL constraint to {key}")
             except Exception as e:
-                print(f"Failed to apply NOT NULL to {key}: {e}")
+                logger.error(f"Failed to apply NOT NULL to {key}: {e}")
 
         # Apply business domain constraints
         constraints = config.get("constraints", [])
@@ -246,9 +261,8 @@ class TableCreator:
                     print(f"Skipping invalid constraint name: {constraint_name}")
                     continue
 
-                # Basic SQL injection guard for expression
-                # Reject semicolons and comment markers to prevent command chaining/hiding
-                if any(x in constraint_expr for x in [";", "--", "/*"]):
+                # Strict whitelist validation for constraints
+                if not _is_safe_sql_expression(constraint_expr):
                     raise ValueError(
                         f"Invalid characters in constraint expression: {constraint_expr}"
                     )
@@ -256,16 +270,16 @@ class TableCreator:
                 alter_sql = f"ALTER TABLE {quoted_table_name} ADD CONSTRAINT `{constraint_name}` CHECK ({constraint_expr})"
                 try:
                     spark.sql(alter_sql)
-                    print(f"Applied constraint {constraint_name}")
+                    logger.info(f"Applied constraint {constraint_name}")
                 except Exception as e:
-                    print(f"Failed to apply constraint {constraint_name}: {e}")
+                    logger.error(f"Failed to apply constraint {constraint_name}: {e}")
 
     def enable_schema_auto_merge(self) -> None:
         """
         Enable schema auto-merge for the current session.
         """
         spark.conf.set(SPARK_CONF_AUTO_MERGE, "true")
-        print("Enabled schema auto-merge for current session")
+        logger.info("Enabled schema auto-merge for current session")
 
     def enable_predictive_optimization(self, table_name: str) -> None:
         """

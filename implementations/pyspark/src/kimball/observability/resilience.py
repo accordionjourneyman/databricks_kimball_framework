@@ -21,7 +21,7 @@ import os
 import time
 import traceback
 from types import TracebackType
-from typing import Any
+from typing import Any, cast
 
 from databricks.sdk.runtime import spark
 from pyspark.sql import DataFrame, SparkSession
@@ -222,7 +222,7 @@ class StagingCleanupManager:
         from pyspark.sql.functions import expr
 
         # Use DataFrame API instead of SQL string building (fixes SQL injection)
-        registry_df = spark_session.table(self.registry_table)
+        registry_df = spark_session.table(self.registry_table)  # type: ignore
 
         # Apply age filter using DataFrame API
         if max_age_hours > 0:
@@ -245,9 +245,7 @@ class StagingCleanupManager:
         cleaned, failed = 0, 0
         for staging_table_name in tables_to_cleanup:
             try:
-                spark_session.catalog.dropTable(
-                    staging_table_name, ignoreIfNotExists=True
-                )
+                spark_session.sql(f"DROP TABLE IF EXISTS {staging_table_name}")  # type: ignore
                 self.unregister_staging_table(staging_table_name)
                 cleaned += 1
                 print(f"Cleaned up orphaned staging table: {staging_table_name}")
@@ -293,7 +291,7 @@ class StagingTableManager:
         """Ensure staging tables are cleaned up even if an exception occurs."""
         for staging_table in self.staging_tables:
             try:
-                spark.catalog.dropTable(staging_table, ignoreIfNotExists=True)
+                spark.sql(f"DROP TABLE IF EXISTS {staging_table}")
                 self.cleanup_manager.unregister_staging_table(staging_table)
                 print(
                     f"Cleaned up staging table during exception recovery: {staging_table}"
@@ -415,4 +413,6 @@ class PipelineCheckpoint:
         checkpoint_df = spark.table(self.checkpoint_table)
         if pipeline_id:
             checkpoint_df = checkpoint_df.filter(col("pipeline_id") == pipeline_id)
-        return checkpoint_df.orderBy("pipeline_id", "stage", desc("timestamp"))
+        return cast(
+            DataFrame, checkpoint_df.orderBy("pipeline_id", "stage", desc("timestamp"))
+        )
