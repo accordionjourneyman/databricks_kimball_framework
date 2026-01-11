@@ -386,7 +386,7 @@ class Orchestrator:
 
             # Run Data Quality Validation on TRANSFORMED data (if configured)
             # CRITICAL: Validation must run AFTER transformation to validate the output schema
-            if self.config.tests:
+            if getattr(self.config, "tests", None):
                 from kimball.validation import DataQualityValidator
 
                 print("Running data quality validation on transformed data...")
