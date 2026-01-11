@@ -152,6 +152,7 @@ class ETLControlManager:
                     target_table STRING NOT NULL,
                     source_table STRING NOT NULL,
                     last_processed_version LONG,
+                    target_version LONG,  -- V3.0: Track target table version for rollback
 
                     -- Batch audit columns (Kimball-style)
                     batch_id STRING,
@@ -168,6 +169,12 @@ class ETLControlManager:
                 PARTITIONED BY (target_table, source_table)
                 COMMENT 'Kimball ETL Control Table: watermarks + batch auditing. Partitioned for concurrent writes.'
             """)
+        else:
+            # Migration: Add target_version column if missing (for existing tables)
+            try:
+                spark.sql(f"ALTER TABLE {self.fq_table} ADD COLUMN target_version LONG")
+            except Exception:
+                pass  # Column already exists
 
     # ------------------------------------------------------------------
     # Watermark API (backward compatible)
@@ -242,21 +249,24 @@ class ETLControlManager:
         new_version: int,
         rows_read: int | None = None,
         rows_written: int | None = None,
+        target_version: int | None = None,
     ):
         """Mark a batch as successfully completed and update watermark.
 
         Args:
             target_table: Target table name
             source_table: Source table name
-            new_version: New watermark version to record
+            new_version: New watermark version (source version consumed)
             rows_read: Number of rows read from source (optional)
             rows_written: Number of rows written to target (optional)
+            target_version: Target table version created (for rollback support)
         """
         self._upsert_control_record(
             target_table=target_table,
             source_table=source_table,
             updates={
                 "last_processed_version": new_version,
+                "target_version": target_version,
                 "batch_completed_at": datetime.now(),
                 "batch_status": "SUCCESS",
                 "rows_read": rows_read,
@@ -264,6 +274,37 @@ class ETLControlManager:
                 "error_message": None,
             },
         )
+
+    def get_source_version_for_target(
+        self, target_table: str, target_version: int
+    ) -> int | None:
+        """Get the source version that produced a specific target version.
+
+        Used for coordinated rollback:
+        1. RESTORE TABLE target TO VERSION AS OF target_version
+        2. Query this method to get corresponding source_version
+        3. Next ETL run resumes from source_version + 1
+
+        Args:
+            target_table: Target table name
+            target_version: The target table version to query
+
+        Returns:
+            The source version that produced this target version, or None.
+        """
+        df = spark.table(self.fq_table)
+        result = (
+            df.filter(
+                (col("target_table") == target_table)
+                & (col("target_version") == target_version)
+            )
+            .select("last_processed_version", "source_table")
+            .first()
+        )
+
+        if result:
+            return result["last_processed_version"]
+        return None
 
     def batch_fail(self, target_table: str, source_table: str, error_message: str):
         """Mark a batch as failed.
@@ -326,6 +367,7 @@ class ETLControlManager:
             StructField("target_table", StringType(), False),
             StructField("source_table", StringType(), False),
             StructField("last_processed_version", LongType(), True),
+            StructField("target_version", LongType(), True),
             StructField("batch_id", StringType(), True),
             StructField("batch_started_at", TimestampType(), True),
             StructField("batch_completed_at", TimestampType(), True),
@@ -348,6 +390,7 @@ class ETLControlManager:
             "target_table": target_table,
             "source_table": source_table,
             "last_processed_version": updates.get("last_processed_version"),
+            "target_version": updates.get("target_version"),
             "batch_id": updates.get("batch_id"),
             "batch_started_at": updates.get("batch_started_at"),
             "batch_completed_at": updates.get("batch_completed_at"),

@@ -448,12 +448,14 @@ print("DEBUG: Checking Alice's address in silver.customers...")
 spark.sql("SELECT * FROM demo_silver.customers WHERE customer_id = 1").show()
 
 print("DEBUG: Checking for duplicates in demo_silver.customers (customer_id)...")
-dup_check = spark.sql(
+# Note: .cache() is NOT supported on Databricks serverless compute
+# Use limit(1) first to efficiently check for duplicates without caching
+dup_check_df = spark.sql(
     "SELECT customer_id, count(*) as cnt FROM demo_silver.customers GROUP BY customer_id HAVING cnt > 1"
 )
-if dup_check.count() > 0:
+if not dup_check_df.limit(1).isEmpty():
     print("🚨 DUPLICATES FOUND IN SILVER!")
-    dup_check.show()
+    dup_check_df.show()
 else:
     print("✓ No duplicates in Silver.")
 

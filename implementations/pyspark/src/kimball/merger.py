@@ -287,10 +287,16 @@ class DeltaMerger:
             from pyspark.sql.functions import row_number
             from pyspark.sql.window import Window
 
-            # Rank records by effective date within each natural key group
-            window = Window.partitionBy(*join_keys).orderBy(
-                col("__etl_processed_at").desc()
-            )
+            # Rank records by commit version (deterministic) or timestamp (fallback)
+            # _commit_version is available from CDF reads
+            if "_commit_version" in source_df.columns:
+                order_col = col("_commit_version").desc()
+            else:
+                # Fallback for full snapshots or non-CDF sources
+                order_col = col("__etl_processed_at").desc()
+
+            window = Window.partitionBy(*join_keys).orderBy(order_col)
+
             source_df = (
                 source_df.withColumn("_intra_batch_seq", row_number().over(window))
                 .filter(col("_intra_batch_seq") == 1)

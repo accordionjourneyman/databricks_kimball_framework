@@ -11,7 +11,8 @@ license = {text = "Apache-2.0"}
 dependencies = [
     "pyyaml",
     "jinja2",
-    "jsonschema>=4.0.0"
+    "jsonschema>=4.0.0",
+    "pydantic>=2.0.0"
 ]
 
 

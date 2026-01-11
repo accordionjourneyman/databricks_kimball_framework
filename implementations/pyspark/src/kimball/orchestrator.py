@@ -202,9 +202,23 @@ class StagingCleanupManager:
         pipeline_id: str | None = None,
         max_age_hours: int = 24,
     ):
-        """Clean up orphaned staging tables using atomic TTL-based filtering."""
+        """Clean up orphaned staging tables using atomic TTL-based filtering.
+
+        Note: Uses collect() to iterate on driver to avoid serialization issues
+        with DeltaTable and SparkSession on multi-node clusters.
+        """
         if spark_session is None:
             spark_session = spark
+
+        # Validate pipeline_id to prevent SQL injection
+        if pipeline_id is not None:
+            import re
+
+            if not re.match(r"^[a-zA-Z0-9_-]+$", pipeline_id):
+                raise ValueError(
+                    f"Invalid pipeline_id format: {pipeline_id}. "
+                    "Must be alphanumeric with underscores/hyphens only."
+                )
 
         # Use atomic DeltaTable operations to avoid race conditions
         # Perform cleanup in a single transaction per table to prevent TOCTOU bugs
@@ -219,6 +233,7 @@ class StagingCleanupManager:
                 f"current_timestamp() - created_at > INTERVAL {max_age_hours} HOURS"
             )
         if pipeline_id:
+            # Safe to use after validation above
             conditions.append(f"pipeline_id = '{pipeline_id}'")
 
         where_clause = " AND ".join(conditions) if conditions else "1=1"
@@ -232,9 +247,26 @@ class StagingCleanupManager:
 
         cleanup_df = spark_session.sql(cleanup_query)
 
-        # Use foreachPartition for distributed cleanup
-        def cleanup_partition(rows):
-            for row in rows:
+        cleanup_count = 0
+        failed_count = 0
+
+        # FIX: Loop until no candidates remain (with max iterations to prevent infinite loop)
+        # Previously only ran once, causing starvation if >1000 orphans existed
+        max_iterations = 10  # Safety limit: 10,000 tables max per cleanup run
+        iteration = 0
+
+        while iteration < max_iterations:
+            iteration += 1
+            print(
+                f"Cleanup iteration {iteration}: fetching up to 1000 stale staging tables..."
+            )
+            candidates = cleanup_df.limit(1000).collect()
+
+            if not candidates:
+                print("No more orphaned staging tables to clean up.")
+                break
+
+            for row in candidates:
                 staging_table = row.staging_table
                 try:
                     # Drop physical table first (best effort)
@@ -242,26 +274,29 @@ class StagingCleanupManager:
                         staging_table, ignoreIfNotExists=True
                     )
 
-                    # Then remove from registry atomically
-                    # Use MERGE for atomic conditional delete
-                    registry_table.alias("target").merge(
-                        spark_session.createDataFrame(
-                            [(staging_table,)], ["staging_table"]
-                        ).alias("source"),
-                        "target.staging_table = source.staging_table",
-                    ).whenMatchedDelete().execute()
+                    # Then remove from registry atomically using DELETE
+                    registry_table.delete(f"staging_table = '{staging_table}'")
 
                     print(f"Cleaned up orphaned staging table: {staging_table}")
+                    cleanup_count += 1
                 except Exception as e:
                     print(f"Failed to clean up {staging_table}: {e}")
+                    failed_count += 1
 
-        # Execute cleanup in distributed manner
-        cleanup_df.foreachPartition(cleanup_partition)
+            if len(candidates) < 1000:
+                # Less than 1000 means we've processed all candidates
+                break
 
-        # Count results (Note: evaluates DataFrame twice, but cache() not supported on serverless)
-        total_count = cleanup_df.count()
-        print(f"Atomic TTL-based staging cleanup completed for {total_count} tables")
-        return total_count, 0
+        print(
+            f"Staging cleanup completed: {cleanup_count} cleaned, {failed_count} failed in {iteration} iteration(s)."
+        )
+        if iteration >= max_iterations:
+            print(
+                "Warning: Cleanup hit max iteration limit (10,000 tables). "
+                "Run cleanup again if more orphans exist."
+            )
+
+        return cleanup_count, failed_count
 
 
 class StagingTableManager:
@@ -644,6 +679,14 @@ class Orchestrator:
                             print(
                                 f"Source {source.name} already at version {latest_v}. Skipping."
                             )
+                            # Register empty view to prevent SQL failures in transformation step
+                            # We just read the schema from the table with limit 0
+                            empty_df = (
+                                spark.read.format("delta").table(source.name).limit(0)
+                            )
+                            empty_df.createOrReplaceTempView(source.alias)
+                            active_dfs[source.name] = empty_df
+
                             # Mark batch complete with no changes
                             self.etl_control.batch_complete(
                                 self.config.table_name,
@@ -653,10 +696,16 @@ class Orchestrator:
                                 rows_written=0,
                             )
                             continue
-                        print(f"Loading {source.name} from version {wm + 1}")
+                        print(
+                            f"Loading {source.name} from version {wm + 1} to {latest_v}"
+                        )
                         # Pass primary_keys for deduplication to handle multiple updates to same row
+                        # Pass ending_version=latest_v to prevent processing data that arrived during the run
                         df = self.loader.load_cdf(
-                            source.name, wm + 1, deduplicate_keys=source.primary_keys
+                            source.name,
+                            wm + 1,
+                            deduplicate_keys=source.primary_keys,
+                            ending_version=latest_v,
                         )
                 else:
                     raise ValueError(f"Unknown CDC strategy: {source.cdc_strategy}")
@@ -769,6 +818,17 @@ class Orchestrator:
                     if sk_fill_map:
                         print(f"Filling NULL foreign keys with defaults: {sk_fill_map}")
                         transformed_df = transformed_df.fillna(sk_fill_map)
+
+            # Run Data Quality Validation on TRANSFORMED data (if configured)
+            # CRITICAL: Validation must run AFTER transformation to validate the output schema
+            if self.config.tests:
+                from kimball.validation import DataQualityValidator
+
+                print("Running data quality validation on transformed data...")
+                validator = DataQualityValidator()
+                report = validator.run_config_tests(self.config, df=transformed_df)
+                report.raise_on_failure()
+
             # Checkpoint: Transformation complete
             checkpoint_state = {
                 "stage": "transformation_complete",
