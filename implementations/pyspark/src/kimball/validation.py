@@ -545,3 +545,167 @@ class DataQualityValidator:
                     results.append(self.validate_expression(df, test["expression"]))
 
         return results
+
+    def validate_natural_key_uniqueness(
+        self,
+        df: DataFrame,
+        natural_keys: list[str],
+        table_name: str | None = None,
+        severity: TestSeverity = TestSeverity.ERROR,
+    ) -> TestResult:
+        """Validate that natural keys are unique in source data (pre-load gate).
+
+        This is a critical Kimball integrity check that prevents SK corruption.
+        For SCD1: count(distinct NK) must equal row count
+        For SCD2: count(distinct NK) must equal row count (per batch)
+
+        Args:
+            df: Source DataFrame to validate BEFORE loading.
+            natural_keys: Natural key columns that must be unique together.
+            table_name: Optional table name for clearer error messages.
+            severity: Test severity level.
+
+        Returns:
+            TestResult with validation outcome.
+        """
+        test_name = f"natural_key_uniqueness({', '.join(natural_keys)})"
+        if table_name:
+            test_name = f"{table_name}: {test_name}"
+
+        try:
+            total_rows = df.count()
+            distinct_keys = df.select(*natural_keys).distinct().count()
+            duplicate_count = total_rows - distinct_keys
+
+            details = None
+            sample_failures: list[dict[str, Any]] = []
+
+            if duplicate_count > 0:
+                # Find the actual duplicates for debugging
+                duplicates = (
+                    df.groupBy(*natural_keys)
+                    .agg(F.count("*").alias("_dup_count"))
+                    .filter(F.col("_dup_count") > 1)
+                    .orderBy(F.col("_dup_count").desc())
+                    .limit(5)
+                )
+                sample_failures = [row.asDict() for row in duplicates.collect()]
+                details = (
+                    f"CRITICAL: {duplicate_count} duplicate natural keys found! "
+                    f"Total rows: {total_rows}, Distinct keys: {distinct_keys}. "
+                    f"This will corrupt surrogate keys."
+                )
+
+            return TestResult(
+                test_name=test_name,
+                passed=duplicate_count == 0,
+                failed_rows=duplicate_count,
+                total_rows=total_rows,
+                severity=severity,
+                details=details,
+                sample_failures=sample_failures,
+            )
+        except Exception as e:
+            return TestResult(
+                test_name=test_name,
+                passed=False,
+                severity=severity,
+                details=f"Test error: {e}",
+            )
+
+    def validate_fact_fk_integrity(
+        self,
+        df: DataFrame,
+        foreign_keys: list[dict[str, Any]],
+        exclude_seeds: bool = True,
+        severity: TestSeverity = TestSeverity.ERROR,
+    ) -> ValidationReport:
+        """Validate all FK columns in a fact table reference valid dimension SKs.
+
+        This is a critical integrity check for fact tables. Each FK column
+        is validated separately so you know WHICH dimension has the problem.
+
+        Args:
+            df: Fact DataFrame to validate BEFORE loading.
+            foreign_keys: List of FK definitions, each with:
+                - column: FK column name in the fact table
+                - dimension_table: Target dimension table name
+                - dimension_key: SK column in the dimension (default: same as column)
+            exclude_seeds: If True, excludes seed values (-1, -2, -3) from validation.
+            severity: Test severity level.
+
+        Returns:
+            ValidationReport with per-dimension validation results.
+
+        Example:
+            foreign_keys = [
+                {"column": "customer_sk", "dimension_table": "gold.dim_customer"},
+                {"column": "product_sk", "dimension_table": "gold.dim_product"},
+            ]
+            report = validator.validate_fact_fk_integrity(fact_df, foreign_keys)
+            report.raise_on_failure()  # Fails with "customer_sk: 15 orphan FKs"
+        """
+        results: list[TestResult] = []
+
+        for fk in foreign_keys:
+            fk_column = fk.get("column")
+            dim_table = fk.get("dimension_table")
+            dim_key = fk.get("dimension_key", fk_column)
+
+            if not fk_column or not dim_table:
+                continue
+
+            test_name = f"fk_integrity({fk_column} -> {dim_table}.{dim_key})"
+
+            try:
+                # Get distinct FK values from fact
+                fact_fks = df.select(fk_column).distinct()
+                if exclude_seeds:
+                    fact_fks = fact_fks.filter(F.col(fk_column) > 0)
+
+                # Get valid SKs from dimension (current rows only for SCD2)
+                dim_df = self.spark.table(dim_table)
+                if "__is_current" in dim_df.columns:
+                    dim_df = dim_df.filter(F.col("__is_current") == True)  # noqa: E712
+                if exclude_seeds:
+                    dim_df = dim_df.filter(F.col(dim_key) > 0)
+
+                valid_sks = dim_df.select(dim_key).distinct()
+
+                # Left anti-join to find orphan FKs
+                orphans = fact_fks.join(
+                    valid_sks,
+                    fact_fks[fk_column] == valid_sks[dim_key],
+                    "left_anti",
+                )
+                orphan_count = orphans.count()
+
+                sample_failures: list[dict[str, Any]] = []
+                if orphan_count > 0:
+                    samples = orphans.limit(5).collect()
+                    sample_failures = [row.asDict() for row in samples]
+
+                results.append(
+                    TestResult(
+                        test_name=test_name,
+                        passed=orphan_count == 0,
+                        failed_rows=orphan_count,
+                        total_rows=fact_fks.count(),
+                        severity=severity,
+                        details=f"Found {orphan_count} FK values with no matching dimension SK"
+                        if orphan_count > 0
+                        else None,
+                        sample_failures=sample_failures,
+                    )
+                )
+            except Exception as e:
+                results.append(
+                    TestResult(
+                        test_name=test_name,
+                        passed=False,
+                        severity=severity,
+                        details=f"Test error: {e}",
+                    )
+                )
+
+        return ValidationReport(results=results)

@@ -394,6 +394,53 @@ class Orchestrator:
                 report = validator.run_config_tests(self.config, df=transformed_df)
                 report.raise_on_failure()
 
+            # BUILT-IN: Natural Key Uniqueness Validation (Dimension tables)
+            # This is a critical Kimball integrity check that prevents SK corruption
+            if self.config.table_type == "dimension" and self.config.natural_keys:
+                from kimball.validation import DataQualityValidator
+
+                print("Validating natural key uniqueness (pre-merge gate)...")
+                validator = DataQualityValidator()
+                nk_result = validator.validate_natural_key_uniqueness(
+                    transformed_df,
+                    self.config.natural_keys,
+                    table_name=self.config.table_name,
+                )
+                print(str(nk_result))
+                if not nk_result.passed:
+                    from kimball.common.errors import DataQualityError
+
+                    raise DataQualityError(
+                        f"Natural key uniqueness violation in {self.config.table_name}: "
+                        f"{nk_result.failed_rows} duplicate keys. Details: {nk_result.details}",
+                        details={"sample_failures": nk_result.sample_failures},
+                    )
+
+            # BUILT-IN: FK Integrity Validation (Fact tables)
+            # Validates that all FK columns reference valid dimension SKs
+            if self.config.table_type == "fact" and self.config.foreign_keys:
+                from kimball.validation import DataQualityValidator
+
+                print("Validating FK integrity against dimensions (pre-merge gate)...")
+                validator = DataQualityValidator()
+                # Build FK definitions from config
+                fk_defs = [
+                    {
+                        "column": fk.column,
+                        "dimension_table": fk.references,
+                        "dimension_key": fk.column,  # Assumes FK name matches dim SK name
+                    }
+                    for fk in self.config.foreign_keys
+                    if hasattr(fk, "references") and fk.references
+                ]
+                if fk_defs:
+                    fk_report = validator.validate_fact_fk_integrity(
+                        transformed_df, fk_defs
+                    )
+                    for result in fk_report.results:
+                        print(str(result))
+                    fk_report.raise_on_failure()
+
             # Checkpoint: Transformation complete
             checkpoint_state = {
                 "stage": "transformation_complete",

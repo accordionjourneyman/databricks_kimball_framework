@@ -172,17 +172,15 @@ class TableCreator:
         try:
             self.enable_predictive_optimization(table_name)
         except Exception as e:
-            logger.warning(
-                f"Notice: Predictive Optimization not enabled (expected on Community Edition): {e}",
-                exc_info=True,
+            print(
+                f"Notice: Predictive Optimization not enabled (expected on Community Edition): {e}"
             )
 
         try:
             self.enable_deletion_vectors(table_name)
         except Exception as e:
-            logger.warning(
-                f"Notice: Deletion Vectors not enabled (expected on Community Edition): {e}",
-                exc_info=True,
+            print(
+                f"Notice: Deletion Vectors not enabled (expected on Community Edition): {e}"
             )
 
         # Apply basic Delta constraints after table creation
