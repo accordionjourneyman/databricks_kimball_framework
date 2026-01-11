@@ -31,6 +31,7 @@ from kimball.common.constants import (
     SQL_DEFAULT_VALID_FROM,
     SQL_DEFAULT_VALID_TO,
 )
+from kimball.common.exceptions import PYSPARK_EXCEPTION_BASE
 from kimball.common.utils import quote_table_name
 from kimball.processing.hashing import compute_hashdiff
 from kimball.processing.key_generator import (
@@ -39,20 +40,6 @@ from kimball.processing.key_generator import (
     KeyGenerator,
     SequenceKeyGenerator,
 )
-
-# Handle PySpark exception location changes between Runtime versions
-PYSPARK_EXCEPTION_BASE: type[Exception]
-
-try:
-    # Databricks Runtime 13+ - errors moved to pyspark.errors
-    from pyspark.errors import PySparkException
-
-    PYSPARK_EXCEPTION_BASE = PySparkException
-except ImportError:
-    # Fallback for older Databricks Runtime versions
-    import pyspark.sql.utils
-
-    PYSPARK_EXCEPTION_BASE = pyspark.sql.utils.AnalysisException
 
 
 def retry_on_concurrent_exception(
@@ -107,6 +94,88 @@ class MergeStrategy(Protocol):
     """Protocol defining the interface for SCD merge strategies."""
 
     def merge(self, source_df: DataFrame) -> None: ...
+
+
+# Strategy Registry for Open/Closed Principle compliance
+# New SCD types can be added without modifying existing code
+_STRATEGY_REGISTRY: dict[int, type] = {}
+
+
+def register_strategy(scd_type: int) -> Callable[[type], type]:
+    """Decorator to register a merge strategy for an SCD type."""
+
+    def decorator(cls: type) -> type:
+        _STRATEGY_REGISTRY[scd_type] = cls
+        return cls
+
+    return decorator
+
+
+def create_merge_strategy(
+    scd_type: int,
+    target_table_name: str,
+    join_keys: list[str],
+    delete_strategy: str = "hard",
+    track_history_columns: list[str] | None = None,
+    surrogate_key_col: str = "surrogate_key",
+    surrogate_key_strategy: str = "identity",
+    schema_evolution: bool = False,
+) -> MergeStrategy:
+    """
+    Factory function to create the appropriate merge strategy.
+
+    This follows the Open/Closed Principle - new SCD types can be added
+    by registering new strategy classes without modifying this function.
+
+    Args:
+        scd_type: SCD type (1 or 2)
+        target_table_name: Target Delta table name
+        join_keys: Natural key columns for matching
+        delete_strategy: "hard" or "soft" (SCD1 only)
+        track_history_columns: Columns to track for changes (SCD2 only)
+        surrogate_key_col: Surrogate key column name
+        surrogate_key_strategy: "identity", "hash", or "sequence"
+        schema_evolution: Enable schema auto-merge
+
+    Returns:
+        MergeStrategy implementation for the specified SCD type.
+
+    Raises:
+        ValueError: If SCD type is not supported.
+    """
+    if scd_type == 2:
+        return SCD2Strategy(
+            target_table_name,
+            join_keys,
+            track_history_columns or [],
+            surrogate_key_col,
+            surrogate_key_strategy,
+            schema_evolution,
+        )
+    elif scd_type == 1:
+        return SCD1Strategy(
+            target_table_name,
+            join_keys,
+            delete_strategy,
+            schema_evolution,
+            surrogate_key_col,
+            surrogate_key_strategy,
+        )
+    else:
+        # Check registry for custom strategies
+        if scd_type in _STRATEGY_REGISTRY:
+            strategy_cls = _STRATEGY_REGISTRY[scd_type]
+            return strategy_cls(
+                target_table_name,
+                join_keys,
+                track_history_columns or [],
+                surrogate_key_col,
+                surrogate_key_strategy,
+                schema_evolution,
+            )
+        raise ValueError(
+            f"Unsupported SCD type: {scd_type}. Supported: 1, 2, or register custom via @register_strategy"
+        )
 
 
 class SCD1Strategy:
@@ -481,25 +550,17 @@ class DeltaMerger:
         if batch_id:
             enriched_df = enriched_df.withColumn("__etl_batch_id", lit(batch_id))
 
-        strategy: MergeStrategy
-        if scd_type == 2:
-            strategy = SCD2Strategy(
-                target_table_name,
-                join_keys,
-                track_history_columns or [],
-                surrogate_key_col,
-                surrogate_key_strategy,
-                schema_evolution,
-            )
-        else:
-            strategy = SCD1Strategy(
-                target_table_name,
-                join_keys,
-                delete_strategy,
-                schema_evolution,
-                surrogate_key_col,
-                surrogate_key_strategy,
-            )
+        # Use factory function for OCP compliance
+        strategy = create_merge_strategy(
+            scd_type=scd_type,
+            target_table_name=target_table_name,
+            join_keys=join_keys,
+            delete_strategy=delete_strategy,
+            track_history_columns=track_history_columns,
+            surrogate_key_col=surrogate_key_col,
+            surrogate_key_strategy=surrogate_key_strategy,
+            schema_evolution=schema_evolution,
+        )
 
         strategy.merge(enriched_df)
 

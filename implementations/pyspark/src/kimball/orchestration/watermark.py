@@ -20,11 +20,10 @@ import os
 import uuid
 import warnings
 from datetime import datetime
-from typing import Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
-from databricks.sdk.runtime import spark
 from delta.tables import DeltaTable
-from pyspark.sql import Column
+from pyspark.sql import Column, SparkSession
 from pyspark.sql.functions import col
 from pyspark.sql.types import (
     LongType,
@@ -33,6 +32,9 @@ from pyspark.sql.types import (
     StructType,
     TimestampType,
 )
+
+if TYPE_CHECKING:
+    pass
 
 # Environment variable for default ETL schema
 KIMBALL_ETL_SCHEMA_ENV = "KIMBALL_ETL_SCHEMA"
@@ -88,6 +90,9 @@ class ETLControlManager:
         # Option 2: Explicit schema
         etl = ETLControlManager(etl_schema="gold")
 
+        # Option 3: With injected SparkSession (for testing)
+        etl = ETLControlManager(etl_schema="gold", spark_session=mock_spark)
+
         # Start a batch
         batch_id = etl.batch_start("gold.dim_customer", "silver.customers")
 
@@ -108,6 +113,8 @@ class ETLControlManager:
         table_name: str = DEFAULT_TABLE_NAME,
         # Deprecated parameter - for backward compatibility
         database: str | None = None,
+        # DIP: allow SparkSession injection for testability
+        spark_session: SparkSession | None = None,
     ):
         """
         Args:
@@ -118,7 +125,11 @@ class ETLControlManager:
                         If a fully-qualified name (db.table) is provided, `etl_schema`
                         is ignored.
             database: **Deprecated** - Use etl_schema instead.
+            spark_session: Optional SparkSession for dependency injection.
+                          If not provided, uses global spark from databricks.sdk.runtime.
         """
+        self._spark = spark_session
+
         # Handle deprecated 'database' parameter
         if database is not None:
             warnings.warn(
@@ -153,6 +164,15 @@ class ETLControlManager:
 
         self._ensure_table_exists()
 
+    @property
+    def spark(self) -> SparkSession:
+        """Lazy-load SparkSession from Databricks runtime if not injected."""
+        if self._spark is None:
+            from databricks.sdk.runtime import spark
+
+            self._spark = spark
+        return self._spark
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -163,10 +183,10 @@ class ETLControlManager:
         The table is partitioned by (target_table, source_table) to enable
         zero-contention concurrent writes from parallel pipelines.
         """
-        spark.sql(f"CREATE DATABASE IF NOT EXISTS {self.schema}")
+        self.spark.sql(f"CREATE DATABASE IF NOT EXISTS {self.schema}")
 
-        if not spark.catalog.tableExists(self.fq_table):
-            spark.sql(f"""
+        if not self.spark.catalog.tableExists(self.fq_table):
+            self.spark.sql(f"""
                 CREATE TABLE {self.fq_table} (
                     -- Watermark columns
                     target_table STRING NOT NULL,
@@ -197,7 +217,7 @@ class ETLControlManager:
         """Retrieve the last processed version for a (target, source) pair.
         Returns None if no watermark exists (first run).
         """
-        df = spark.table(self.fq_table)
+        df = self.spark.table(self.fq_table)
         result = (
             df.filter(
                 (col("target_table") == target_table)
@@ -367,7 +387,7 @@ class ETLControlManager:
             dict with batch_id, batch_status, batch_started_at, etc.
             None if no record exists.
         """
-        df = spark.table(self.fq_table)
+        df = self.spark.table(self.fq_table)
         result = df.filter(
             (col("target_table") == target_table)
             & (col("source_table") == source_table)
@@ -428,7 +448,7 @@ class ETLControlManager:
         if not records:
             return
 
-        delta_table = DeltaTable.forName(spark, self.fq_table)
+        delta_table = DeltaTable.forName(self.spark, self.fq_table)
 
         # 1. Normalize records to match schema
         # We need to ensure all fields in _UPDATE_SCHEMA are present (or None)
@@ -446,7 +466,7 @@ class ETLControlManager:
             normalized_records.append(norm)
 
         # 2. Create DataFrame
-        update_df = spark.createDataFrame(
+        update_df = self.spark.createDataFrame(
             normalized_records, schema=self._UPDATE_SCHEMA
         )
 

@@ -1,16 +1,44 @@
-from typing import cast
+"""
+Data loading utilities for Kimball ETL pipelines.
 
-from databricks.sdk.runtime import spark
+Provides strategies for loading data from source tables:
+- Full snapshot loading
+- Change Data Feed (CDF) incremental loading
+"""
+
+from typing import TYPE_CHECKING, cast
+
 from delta.tables import DeltaTable
-from pyspark.sql import DataFrame
+from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import col, row_number
 from pyspark.sql.window import Window
+
+if TYPE_CHECKING:
+    pass
 
 
 class DataLoader:
     """
     Handles reading data from source tables using various strategies (CDF, Snapshot).
+
+    Supports dependency injection of SparkSession for testability.
+
+    Args:
+        spark_session: Optional SparkSession. If not provided, uses global spark
+                       from databricks.sdk.runtime (for Databricks compatibility).
     """
+
+    def __init__(self, spark_session: SparkSession | None = None):
+        self._spark = spark_session
+
+    @property
+    def spark(self) -> SparkSession:
+        """Lazy-load SparkSession from Databricks runtime if not injected."""
+        if self._spark is None:
+            from databricks.sdk.runtime import spark
+
+            self._spark = spark
+        return self._spark
 
     def load_full_snapshot(
         self,
@@ -22,7 +50,7 @@ class DataLoader:
         Reads the full snapshot of a source table/file.
         Supports Delta (default), Parquet, CSV, JDBC, etc.
         """
-        reader = spark.read.format(format)
+        reader = self.spark.read.format(format)
         if options:
             reader = reader.options(**options)
 
@@ -32,8 +60,6 @@ class DataLoader:
             return cast(DataFrame, reader.table(table_name))
 
         # For paths or non-catalog sources
-        # Note: JDBC requires 'url'/'dbtable' in options, table_name passed to load() is often ignored or path
-        # But for spark.read.jdbc, usage is different. format("jdbc").options(...).load()
         return cast(DataFrame, reader.load(table_name))
 
     def load_cdf(
@@ -56,7 +82,7 @@ class DataLoader:
                           during processing.
         """
         reader = (
-            spark.read.format("delta")
+            self.spark.read.format("delta")
             .option("readChangeFeed", "true")
             .option("startingVersion", starting_version)
         )
@@ -88,6 +114,6 @@ class DataLoader:
         Gets the latest commit version of a Delta table.
         Useful for updating the watermark after a successful load.
         """
-        dt = DeltaTable.forName(spark, table_name)
+        dt = DeltaTable.forName(self.spark, table_name)
         row = dt.history(1).select("version").first()
         return row["version"] if row else 0

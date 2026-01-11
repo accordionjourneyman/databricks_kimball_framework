@@ -14,6 +14,7 @@ from kimball.common.constants import (
     SPARK_CONF_AQE_SKEW_JOIN,
 )
 from kimball.common.errors import NonRetriableError, RetriableError
+from kimball.common.exceptions import PYSPARK_EXCEPTION_BASE
 from kimball.observability.resilience import (
     PipelineCheckpoint,
     QueryMetricsCollector,
@@ -25,20 +26,6 @@ from kimball.processing.loader import DataLoader
 from kimball.processing.merger import DeltaMerger
 from kimball.processing.skeleton_generator import SkeletonGenerator
 from kimball.processing.table_creator import TableCreator
-
-# Handle PySpark exception location changes between Runtime versions
-PYSPARK_EXCEPTION_BASE: type[Exception]
-
-try:
-    # Databricks Runtime 13+ - errors moved to pyspark.errors
-    from pyspark.errors import PySparkException
-
-    PYSPARK_EXCEPTION_BASE = PySparkException
-except ImportError:
-    # Fallback for older Databricks Runtime versions
-    import pyspark.sql.utils
-
-    PYSPARK_EXCEPTION_BASE = pyspark.sql.utils.AnalysisException
 
 # Session-level flag to avoid repeated cleanup scans per table
 _staging_cleanup_done_this_session = False
