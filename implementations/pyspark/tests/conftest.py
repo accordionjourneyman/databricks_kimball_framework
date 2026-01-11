@@ -6,12 +6,12 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 
 # Mock databricks.sdk.runtime to allow local testing without credentials
-# This must be done before any imports that trigger the auth check
-if not importlib.util.find_spec("databricks.sdk.runtime"):
-    mock_db_sdk = MagicMock()
-    mock_db_sdk.spark = MagicMock()
-    mock_db_sdk.dbutils = MagicMock()
-    sys.modules["databricks.sdk.runtime"] = mock_db_sdk
+# Always mock it, regardless of whether package exists - the real SDK tries to auth
+# at import time which fails without Databricks environment
+mock_db_sdk = MagicMock()
+mock_db_sdk.spark = MagicMock()
+mock_db_sdk.dbutils = MagicMock()
+sys.modules["databricks.sdk.runtime"] = mock_db_sdk
 
 import pytest
 from pyspark.sql import SparkSession

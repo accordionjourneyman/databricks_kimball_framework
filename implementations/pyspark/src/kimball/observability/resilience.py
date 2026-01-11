@@ -232,27 +232,49 @@ class StagingCleanupManager:
         if pipeline_id:
             registry_df = registry_df.filter(col("pipeline_id") == pipeline_id)
 
-        # Single Spark action: collect with limit+1 to detect overflow
+        # FIX: Loop until no candidates remain (with max iterations to prevent infinite loop)
+        # Previously only ran once, causing starvation if >1000 orphans existed
         MAX_CLEANUP_BATCH = 1000
-        rows = registry_df.limit(MAX_CLEANUP_BATCH + 1).collect()
-        if len(rows) > MAX_CLEANUP_BATCH:
-            print(f"Warning: Registry exceeds {MAX_CLEANUP_BATCH} entries, truncating")
-            rows = rows[:MAX_CLEANUP_BATCH]
-        tables_to_cleanup = [row.staging_table for row in rows]
-
-        # Cleanup on driver side (single pass, no double evaluation)
+        max_iterations = 10  # Safety limit: 10,000 tables max per cleanup run
         cleaned, failed = 0, 0
-        for staging_table_name in tables_to_cleanup:
-            try:
-                spark_session.sql(f"DROP TABLE IF EXISTS {staging_table_name}")
-                self.unregister_staging_table(staging_table_name)
-                cleaned += 1
-                print(f"Cleaned up orphaned staging table: {staging_table_name}")
-            except Exception as e:
-                print(f"Failed to cleanup {staging_table_name}: {e}")
-                failed += 1
+        iteration = 0
 
-        print(f"Staging cleanup completed: {cleaned} cleaned, {failed} failed")
+        while iteration < max_iterations:
+            iteration += 1
+            print(
+                f"Cleanup iteration {iteration}: fetching up to {MAX_CLEANUP_BATCH} stale staging tables..."
+            )
+
+            rows = registry_df.limit(MAX_CLEANUP_BATCH).collect()
+            if not rows:
+                print("No more orphaned staging tables to clean up.")
+                break
+
+            tables_to_cleanup = [row.staging_table for row in rows]
+
+            # Cleanup on driver side (single pass, no double evaluation)
+            for staging_table_name in tables_to_cleanup:
+                try:
+                    spark_session.sql(f"DROP TABLE IF EXISTS {staging_table_name}")
+                    self.unregister_staging_table(staging_table_name)
+                    cleaned += 1
+                    print(f"Cleaned up orphaned staging table: {staging_table_name}")
+                except Exception as e:
+                    print(f"Failed to cleanup {staging_table_name}: {e}")
+                    failed += 1
+
+            if len(rows) < MAX_CLEANUP_BATCH:
+                # Less than batch size means we've processed all candidates
+                break
+
+        print(
+            f"Staging cleanup completed: {cleaned} cleaned, {failed} failed in {iteration} iteration(s)."
+        )
+        if iteration >= max_iterations:
+            print(
+                "Warning: Cleanup hit max iteration limit (10,000 tables). "
+                "Run cleanup again if more orphans exist."
+            )
         return cleaned, failed
 
 

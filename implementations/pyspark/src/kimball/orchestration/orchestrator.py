@@ -264,10 +264,13 @@ class Orchestrator:
                                 rows_written=0,
                             )
                             continue
-                        print(f"Loading {source.name} from version {wm + 1}")
                         # Pass primary_keys for deduplication to handle multiple updates to same row
+                        # Pass ending_version=latest_v to prevent processing data that arrived during the run
                         df = self.loader.load_cdf(
-                            source.name, wm + 1, deduplicate_keys=source.primary_keys
+                            source.name,
+                            wm + 1,
+                            deduplicate_keys=source.primary_keys,
+                            ending_version=latest_v,
                         )
                 else:
                     raise ValueError(f"Unknown CDC strategy: {source.cdc_strategy}")
@@ -380,6 +383,17 @@ class Orchestrator:
                     if sk_fill_map:
                         print(f"Filling NULL foreign keys with defaults: {sk_fill_map}")
                         transformed_df = transformed_df.fillna(sk_fill_map)
+
+            # Run Data Quality Validation on TRANSFORMED data (if configured)
+            # CRITICAL: Validation must run AFTER transformation to validate the output schema
+            if self.config.tests:
+                from kimball.validation import DataQualityValidator
+
+                print("Running data quality validation on transformed data...")
+                validator = DataQualityValidator()
+                report = validator.run_config_tests(self.config, df=transformed_df)
+                report.raise_on_failure()
+
             # Checkpoint: Transformation complete
             checkpoint_state = {
                 "stage": "transformation_complete",

@@ -291,9 +291,15 @@ class SCD2Strategy:
         )
 
         if self.join_keys and "__etl_processed_at" in source_df.columns:
-            window = Window.partitionBy(*self.join_keys).orderBy(
-                col("__etl_processed_at").desc()
-            )
+            # Rank records by commit version (deterministic) or timestamp (fallback)
+            # _commit_version is available from CDF reads and is deterministic
+            if "_commit_version" in source_df.columns:
+                order_col = col("_commit_version").desc()
+            else:
+                # Fallback for full snapshots or non-CDF sources
+                order_col = col("__etl_processed_at").desc()
+
+            window = Window.partitionBy(*self.join_keys).orderBy(order_col)
             source_df = (
                 source_df.withColumn("_intra_batch_seq", row_number().over(window))
                 .filter(col("_intra_batch_seq") == 1)

@@ -1,0 +1,547 @@
+"""
+Data Quality Validator - dbt-like data quality testing for Kimball Framework.
+
+Provides post-merge data quality assertions:
+- Unique constraint validation
+- Not null validation
+- Accepted values validation
+- Referential integrity validation (FK checks)
+
+Usage:
+    from kimball.validation import DataQualityValidator
+
+    validator = DataQualityValidator()
+
+    # Individual tests
+    result = validator.validate_unique(df, ["customer_sk"])
+    result = validator.validate_not_null(df, ["customer_id", "email"])
+    result = validator.validate_accepted_values(df, "status", ["active", "inactive"])
+
+    # Run all tests from config
+    results = validator.run_config_tests(config, df)
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import TYPE_CHECKING, Any
+
+from kimball.common.errors import DataQualityError
+
+# Import PySpark functions at module level for testability
+# This allows tests to patch kimball.validation.F
+try:
+    from pyspark.sql import functions as F
+except ImportError:
+    F = None  # type: ignore[assignment]
+
+if TYPE_CHECKING:
+    from pyspark.sql import DataFrame, SparkSession
+
+    from kimball.config import TableConfig
+
+
+class TestSeverity(str, Enum):
+    """Severity level for data quality tests."""
+
+    WARN = "warn"
+    ERROR = "error"
+
+
+@dataclass
+class TestResult:
+    """Result of a data quality test."""
+
+    test_name: str
+    passed: bool
+    failed_rows: int = 0
+    total_rows: int = 0
+    severity: TestSeverity = TestSeverity.ERROR
+    details: str | None = None
+    sample_failures: list[dict[str, Any]] = field(default_factory=list)
+
+    def __str__(self) -> str:
+        icon = (
+            "✅"
+            if self.passed
+            else ("⚠️" if self.severity == TestSeverity.WARN else "❌")
+        )
+        status = "PASSED" if self.passed else f"FAILED ({self.failed_rows} rows)"
+        return f"{icon} {self.test_name}: {status}"
+
+
+@dataclass
+class ValidationReport:
+    """Aggregated report of all validation tests."""
+
+    results: list[TestResult]
+
+    @property
+    def passed(self) -> bool:
+        """True if all ERROR-severity tests passed."""
+        return all(r.passed or r.severity == TestSeverity.WARN for r in self.results)
+
+    @property
+    def all_passed(self) -> bool:
+        """True if all tests (including warnings) passed."""
+        return all(r.passed for r in self.results)
+
+    @property
+    def error_count(self) -> int:
+        """Count of failed ERROR-severity tests."""
+        return sum(
+            1 for r in self.results if not r.passed and r.severity == TestSeverity.ERROR
+        )
+
+    @property
+    def warning_count(self) -> int:
+        """Count of failed WARN-severity tests."""
+        return sum(
+            1 for r in self.results if not r.passed and r.severity == TestSeverity.WARN
+        )
+
+    def __str__(self) -> str:
+        lines = ["Data Quality Validation Report", "=" * 40]
+        for result in self.results:
+            lines.append(str(result))
+        lines.append("=" * 40)
+        lines.append(
+            f"Summary: {self.error_count} errors, {self.warning_count} warnings"
+        )
+        return "\n".join(lines)
+
+    def raise_on_failure(self) -> None:
+        """Raise DataQualityError if any ERROR-severity tests failed."""
+        if not self.passed:
+            failed = [
+                r
+                for r in self.results
+                if not r.passed and r.severity == TestSeverity.ERROR
+            ]
+            messages = [f"{r.test_name}: {r.failed_rows} failures" for r in failed]
+            raise DataQualityError(
+                f"Data quality validation failed: {'; '.join(messages)}",
+                details={"failed_tests": [r.test_name for r in failed]},
+            )
+
+
+class DataQualityValidator:
+    """Run data quality tests on DataFrames.
+
+    Provides dbt-like data quality assertions for the Kimball Framework.
+    Tests can be run individually or automatically based on TableConfig.
+    """
+
+    def __init__(self, spark: SparkSession | None = None):
+        """Initialize validator.
+
+        Args:
+            spark: SparkSession for table lookups. If None, will attempt
+                   to get from databricks.sdk.runtime.
+        """
+        self._spark = spark
+
+    @property
+    def spark(self) -> SparkSession:
+        """Lazy-load SparkSession."""
+        if self._spark is None:
+            from databricks.sdk.runtime import spark
+
+            self._spark = spark
+        return self._spark
+
+    def validate_unique(
+        self,
+        df: DataFrame,
+        columns: list[str],
+        severity: TestSeverity = TestSeverity.ERROR,
+        sample_size: int = 5,
+    ) -> TestResult:
+        """Validate that column(s) contain unique values.
+
+        Args:
+            df: DataFrame to validate.
+            columns: Column(s) that should be unique together.
+            severity: Test severity level.
+            sample_size: Number of sample failures to include.
+
+        Returns:
+            TestResult with validation outcome.
+        """
+        test_name = f"unique({', '.join(columns)})"
+
+        try:
+            total_rows = df.count()
+
+            # Find duplicates: group by columns and count > 1
+            duplicates = (
+                df.groupBy(*columns)
+                .agg(F.count("*").alias("_dq_count"))
+                .filter(F.col("_dq_count") > 1)
+            )
+
+            dup_count = duplicates.count()
+
+            # Get sample of duplicate values
+            sample_failures: list[dict[str, Any]] = []
+            if dup_count > 0 and sample_size > 0:
+                samples = duplicates.limit(sample_size).collect()
+                sample_failures = [row.asDict() for row in samples]
+
+            return TestResult(
+                test_name=test_name,
+                passed=dup_count == 0,
+                failed_rows=dup_count,
+                total_rows=total_rows,
+                severity=severity,
+                details=f"Found {dup_count} duplicate key combinations"
+                if dup_count > 0
+                else None,
+                sample_failures=sample_failures,
+            )
+        except Exception as e:
+            return TestResult(
+                test_name=test_name,
+                passed=False,
+                severity=severity,
+                details=f"Test error: {e}",
+            )
+
+    def validate_not_null(
+        self,
+        df: DataFrame,
+        columns: list[str],
+        severity: TestSeverity = TestSeverity.ERROR,
+        sample_size: int = 5,
+    ) -> TestResult:
+        """Validate that column(s) do not contain NULL values.
+
+        Args:
+            df: DataFrame to validate.
+            columns: Column(s) that should not be null.
+            severity: Test severity level.
+            sample_size: Number of sample failures to include.
+
+        Returns:
+            TestResult with validation outcome.
+        """
+        test_name = f"not_null({', '.join(columns)})"
+
+        try:
+            total_rows = df.count()
+
+            # Build filter for any null in specified columns
+            null_condition = F.lit(False)
+            for col in columns:
+                null_condition = null_condition | F.col(col).isNull()
+
+            null_rows = df.filter(null_condition)
+            null_count = null_rows.count()
+
+            # Get sample of null rows
+            sample_failures: list[dict[str, Any]] = []
+            if null_count > 0 and sample_size > 0:
+                samples = null_rows.select(*columns).limit(sample_size).collect()
+                sample_failures = [row.asDict() for row in samples]
+
+            return TestResult(
+                test_name=test_name,
+                passed=null_count == 0,
+                failed_rows=null_count,
+                total_rows=total_rows,
+                severity=severity,
+                details=f"Found {null_count} rows with NULL values"
+                if null_count > 0
+                else None,
+                sample_failures=sample_failures,
+            )
+        except Exception as e:
+            return TestResult(
+                test_name=test_name,
+                passed=False,
+                severity=severity,
+                details=f"Test error: {e}",
+            )
+
+    def validate_accepted_values(
+        self,
+        df: DataFrame,
+        column: str,
+        values: list[Any],
+        severity: TestSeverity = TestSeverity.ERROR,
+        sample_size: int = 5,
+    ) -> TestResult:
+        """Validate that column contains only accepted values.
+
+        Args:
+            df: DataFrame to validate.
+            column: Column to check.
+            values: List of accepted values.
+            severity: Test severity level.
+            sample_size: Number of sample failures to include.
+
+        Returns:
+            TestResult with validation outcome.
+        """
+        test_name = f"accepted_values({column})"
+
+        try:
+            total_rows = df.count()
+
+            # Find rows with values not in accepted list
+            invalid_rows = df.filter(~F.col(column).isin(values))
+            invalid_count = invalid_rows.count()
+
+            # Get sample of invalid values
+            sample_failures: list[dict[str, Any]] = []
+            if invalid_count > 0 and sample_size > 0:
+                # Get distinct invalid values
+                samples = (
+                    invalid_rows.select(column).distinct().limit(sample_size).collect()
+                )
+                sample_failures = [row.asDict() for row in samples]
+
+            return TestResult(
+                test_name=test_name,
+                passed=invalid_count == 0,
+                failed_rows=invalid_count,
+                total_rows=total_rows,
+                severity=severity,
+                details=f"Found {invalid_count} rows with values not in {values}"
+                if invalid_count > 0
+                else None,
+                sample_failures=sample_failures,
+            )
+        except Exception as e:
+            return TestResult(
+                test_name=test_name,
+                passed=False,
+                severity=severity,
+                details=f"Test error: {e}",
+            )
+
+    def validate_relationships(
+        self,
+        df: DataFrame,
+        fk_column: str,
+        reference_table: str,
+        reference_column: str,
+        severity: TestSeverity = TestSeverity.ERROR,
+        sample_size: int = 5,
+    ) -> TestResult:
+        """Validate referential integrity (FK references exist in dimension).
+
+        Args:
+            df: Fact DataFrame to validate.
+            fk_column: Foreign key column in the fact table.
+            reference_table: Dimension table name.
+            reference_column: Column in dimension table that FK references.
+            severity: Test severity level.
+            sample_size: Number of sample failures to include.
+
+        Returns:
+            TestResult with validation outcome.
+        """
+        test_name = (
+            f"relationships({fk_column} -> {reference_table}.{reference_column})"
+        )
+
+        try:
+            total_rows = df.count()
+
+            # Load dimension table
+            dim_df = self.spark.table(reference_table)
+
+            # Find orphan FKs using LEFT ANTI JOIN
+            # These are FK values that don't exist in the dimension
+            orphans = df.join(
+                dim_df.select(F.col(reference_column).alias("_ref_col")),
+                df[fk_column] == F.col("_ref_col"),
+                "left_anti",
+            )
+
+            # Exclude nulls (nulls are handled by not_null test)
+            orphans = orphans.filter(F.col(fk_column).isNotNull())
+            orphan_count = orphans.count()
+
+            # Get sample of orphan FK values
+            sample_failures: list[dict[str, Any]] = []
+            if orphan_count > 0 and sample_size > 0:
+                samples = (
+                    orphans.select(fk_column).distinct().limit(sample_size).collect()
+                )
+                sample_failures = [row.asDict() for row in samples]
+
+            return TestResult(
+                test_name=test_name,
+                passed=orphan_count == 0,
+                failed_rows=orphan_count,
+                total_rows=total_rows,
+                severity=severity,
+                details=f"Found {orphan_count} orphan FK values not in {reference_table}"
+                if orphan_count > 0
+                else None,
+                sample_failures=sample_failures,
+            )
+        except Exception as e:
+            return TestResult(
+                test_name=test_name,
+                passed=False,
+                severity=severity,
+                details=f"Test error: {e}",
+            )
+
+    def validate_expression(
+        self,
+        df: DataFrame,
+        expression: str,
+        test_name: str | None = None,
+        severity: TestSeverity = TestSeverity.ERROR,
+        sample_size: int = 5,
+    ) -> TestResult:
+        """Validate a custom SQL expression.
+
+        The expression should evaluate to true for valid rows.
+
+        Args:
+            df: DataFrame to validate.
+            expression: SQL expression that should be true for all rows.
+            test_name: Optional name for the test.
+            severity: Test severity level.
+            sample_size: Number of sample failures to include.
+
+        Returns:
+            TestResult with validation outcome.
+        """
+        test_name = test_name or f"expression({expression[:30]}...)"
+
+        try:
+            total_rows = df.count()
+
+            # Find rows where expression is false
+            invalid_rows = df.filter(~F.expr(expression))
+            invalid_count = invalid_rows.count()
+
+            # Get sample of failing rows
+            sample_failures: list[dict[str, Any]] = []
+            if invalid_count > 0 and sample_size > 0:
+                samples = invalid_rows.limit(sample_size).collect()
+                sample_failures = [row.asDict() for row in samples]
+
+            return TestResult(
+                test_name=test_name,
+                passed=invalid_count == 0,
+                failed_rows=invalid_count,
+                total_rows=total_rows,
+                severity=severity,
+                details=f"Found {invalid_count} rows failing: {expression}"
+                if invalid_count > 0
+                else None,
+                sample_failures=sample_failures,
+            )
+        except Exception as e:
+            return TestResult(
+                test_name=test_name,
+                passed=False,
+                severity=severity,
+                details=f"Test error: {e}",
+            )
+
+    def run_config_tests(
+        self,
+        config: TableConfig,
+        df: DataFrame,
+    ) -> ValidationReport:
+        """Run all tests defined in a TableConfig.
+
+        Automatically runs:
+        - Unique test on surrogate_key (for dimensions)
+        - Not null test on natural_keys
+        - Relationship tests based on foreign_keys
+        - Any custom tests defined in config.tests
+
+        Args:
+            config: TableConfig with test definitions.
+            df: DataFrame to validate.
+
+        Returns:
+            ValidationReport with all test results.
+        """
+        results: list[TestResult] = []
+
+        # Auto-test: Dimension surrogate key should be unique
+        if config.table_type == "dimension" and config.surrogate_key:
+            results.append(self.validate_unique(df, [config.surrogate_key]))
+
+        # Auto-test: Natural keys should not be null
+        if config.natural_keys:
+            results.append(self.validate_not_null(df, config.natural_keys))
+
+        # Auto-test: Foreign key relationships
+        if config.foreign_keys:
+            for fk in config.foreign_keys:
+                if fk.references:
+                    # Assume the FK column references the same-named column in dimension
+                    # Or extract from references if it contains column info
+                    ref_column = fk.column  # Default: same column name
+                    results.append(
+                        self.validate_relationships(
+                            df,
+                            fk_column=fk.column,
+                            reference_table=fk.references,
+                            reference_column=ref_column,
+                        )
+                    )
+
+        # Custom tests from config.tests (if present)
+        if hasattr(config, "tests") and config.tests:
+            for test_def in config.tests:
+                results.extend(self._run_test_definition(df, test_def))
+
+        return ValidationReport(results=results)
+
+    def _run_test_definition(self, df: DataFrame, test_def: Any) -> list[TestResult]:
+        """Run a single test definition from config.
+
+        Handles both string tests ("unique", "not_null") and dict tests
+        ({"accepted_values": [1, 2, 3]}).
+        """
+        results: list[TestResult] = []
+
+        # test_def should have 'column' and 'tests' attributes
+        column = getattr(test_def, "column", None)
+        tests = getattr(test_def, "tests", [])
+
+        if not column or not tests:
+            return results
+
+        for test in tests:
+            if isinstance(test, str):
+                # Simple test: "unique", "not_null"
+                if test == "unique":
+                    results.append(self.validate_unique(df, [column]))
+                elif test == "not_null":
+                    results.append(self.validate_not_null(df, [column]))
+            elif isinstance(test, dict):
+                # Parameterized test
+                if "accepted_values" in test:
+                    results.append(
+                        self.validate_accepted_values(
+                            df, column, test["accepted_values"]
+                        )
+                    )
+                elif "relationships" in test:
+                    rel = test["relationships"]
+                    results.append(
+                        self.validate_relationships(
+                            df,
+                            fk_column=column,
+                            reference_table=rel.get("to", ""),
+                            reference_column=rel.get("field", column),
+                        )
+                    )
+                elif "expression" in test:
+                    results.append(self.validate_expression(df, test["expression"]))
+
+        return results
