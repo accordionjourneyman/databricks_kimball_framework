@@ -406,16 +406,16 @@ class ETLControlManager:
             }
         return None
 
-    def get_running_batches(self, target_table: str) -> list[str]:
-        """Get list of batch_ids that are currently marked as RUNNING for this target.
+    def get_running_batches(self, target_table: str) -> list[dict[str, str]]:
+        """Get list of running batches for this target.
 
-        Used by Orchestrator for zombie recovery (identifying crashed batches).
+        Used by Orchestrator for zombie recovery.
 
         Args:
             target_table: The target table name to check.
 
         Returns:
-            List of batch_id strings that are still in 'RUNNING' state.
+            List of dicts with keys 'batch_id' and 'source_table'.
         """
         try:
             df = self.spark.table(self.fq_table)
@@ -424,10 +424,14 @@ class ETLControlManager:
                     (col("target_table") == target_table)
                     & (col("batch_status") == "RUNNING")
                 )
-                .select("batch_id")
+                .select("batch_id", "source_table")
                 .collect()
             )
-            return [row["batch_id"] for row in rows if row["batch_id"]]
+            return [
+                {"batch_id": row["batch_id"], "source_table": row["source_table"]}
+                for row in rows
+                if row["batch_id"]
+            ]
         except Exception:
             # If table doesn't exist or other error, return empty list to safely skip recovery
             return []

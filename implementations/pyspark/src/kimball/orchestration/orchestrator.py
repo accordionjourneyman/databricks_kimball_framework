@@ -234,15 +234,20 @@ class Orchestrator:
                 print(
                     f"Found {len(running_batches)} incomplete batches. Attempting recovery..."
                 )
-                for bad_batch_id in running_batches:
+                for batch_info in running_batches:
+                    bad_batch_id = batch_info["batch_id"]
+                    source_table = batch_info["source_table"]
+
+                    # Attempt rollback (only needed once per batch_id, but idempotent)
                     self.transaction_manager.recover_zombies(
                         self.config.table_name, bad_batch_id
                     )
-                    # Mark as failed in control table
+
+                    # Mark specific source batch as failed in control table to prevent future "zombie found" msg
                     try:
                         self.etl_control.batch_fail(
                             self.config.table_name,
-                            "ALL_SOURCES",
+                            source_table,
                             "CRASH_RECOVERY: Rolled back",
                         )
                     except Exception:

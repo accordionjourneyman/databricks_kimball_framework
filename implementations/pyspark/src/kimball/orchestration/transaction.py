@@ -67,11 +67,12 @@ class TransactionManager:
             history = DeltaTable.forName(self.spark, table_name).history(10).collect()
 
             # Find commits made by this batch
+            # Row objects don't support .get(), so we use dictionary access
             zombie_commits = [
                 h
                 for h in history
-                if (h.get("userMetadata") or "") == batch_id
-                or (h.get("userMetadata") or "").endswith(f"batch_id={batch_id}")
+                if (h["userMetadata"] or "") == batch_id
+                or (h["userMetadata"] or "").endswith(f"batch_id={batch_id}")
             ]
 
             if not zombie_commits:
