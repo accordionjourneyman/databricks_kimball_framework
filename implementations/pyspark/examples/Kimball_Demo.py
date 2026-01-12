@@ -184,8 +184,8 @@ transformation_sql: |
   FROM oi
   JOIN o ON oi.order_id = o.order_id
   LEFT JOIN c ON o.customer_id = c.customer_id 
-             AND o.order_date >= c.__valid_from 
-             AND o.order_date < c.__valid_to
+             AND CAST(o.order_date AS DATE) >= CAST(c.__valid_from AS DATE)
+             AND (c.__valid_to IS NULL OR CAST(o.order_date AS DATE) < CAST(c.__valid_to AS DATE))
   LEFT JOIN p ON oi.product_id = p.product_id
 audit_columns: true
 """
