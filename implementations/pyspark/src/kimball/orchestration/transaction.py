@@ -58,6 +58,11 @@ class TransactionManager:
             True if rollback occurred, False otherwise.
         """
         try:
+            # Check if table exists first
+            if not self.spark.catalog.tableExists(table_name):
+                print(f"ZOMBIE RECOVERY SKIPPED: Table {table_name} does not exist.")
+                return False
+
             # Check history for commits tagged with this batch_id
             history = DeltaTable.forName(self.spark, table_name).history(10).collect()
 
@@ -65,8 +70,8 @@ class TransactionManager:
             zombie_commits = [
                 h
                 for h in history
-                if h["userMetadata"] == batch_id
-                or (h["userMetadata"] or "").endswith(f"batch_id={batch_id}")
+                if (h.get("userMetadata") or "") == batch_id
+                or (h.get("userMetadata") or "").endswith(f"batch_id={batch_id}")
             ]
 
             if not zombie_commits:
@@ -111,10 +116,13 @@ class TransactionManager:
         # Note: If start_version is -1 (table doesn't exist), we can't rollback to it easily.
         # But usually table creation is separate. If table exists, version >= 0.
 
-        # Set commit tagging
-        self.spark.conf.set(
-            "spark.databricks.delta.commitInfo.userMetadata", str(batch_id)
-        )
+        # Set commit tagging - lenient on errors (e.g. Serverless limitations)
+        try:
+            self.spark.conf.set(
+                "spark.databricks.delta.commitInfo.userMetadata", str(batch_id)
+            )
+        except Exception as e:
+            print(f"WARNING: Could not set commit info metadata: {e}")
 
         try:
             yield
@@ -131,4 +139,7 @@ class TransactionManager:
             raise e
         finally:
             # Always clear metadata to avoid polluting future commits
-            self.spark.conf.unset("spark.databricks.delta.commitInfo.userMetadata")
+            try:
+                self.spark.conf.unset("spark.databricks.delta.commitInfo.userMetadata")
+            except Exception:
+                pass
