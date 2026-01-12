@@ -186,28 +186,37 @@ class ETLControlManager:
         self.spark.sql(f"CREATE DATABASE IF NOT EXISTS {self.schema}")
 
         if not self.spark.catalog.tableExists(self.fq_table):
-            self.spark.sql(f"""
-                CREATE TABLE {self.fq_table} (
-                    -- Watermark columns
-                    target_table STRING NOT NULL,
-                    source_table STRING NOT NULL,
-                    last_processed_version LONG,
+            try:
+                self.spark.sql(f"""
+                    CREATE TABLE IF NOT EXISTS {self.fq_table} (
+                        -- Watermark columns
+                        target_table STRING NOT NULL,
+                        source_table STRING NOT NULL,
+                        last_processed_version LONG,
 
-                    -- Batch audit columns (Kimball-style)
-                    batch_id STRING,
-                    batch_started_at TIMESTAMP,
-                    batch_completed_at TIMESTAMP,
-                    batch_status STRING,
-                    rows_read LONG,
-                    rows_written LONG,
-                    error_message STRING,
+                        -- Batch audit columns (Kimball-style)
+                        batch_id STRING,
+                        batch_started_at TIMESTAMP,
+                        batch_completed_at TIMESTAMP,
+                        batch_status STRING,
+                        rows_read LONG,
+                        rows_written LONG,
+                        error_message STRING,
 
-                    updated_at TIMESTAMP NOT NULL
-                )
-                USING DELTA
-                PARTITIONED BY (target_table, source_table)
-                COMMENT 'Kimball ETL Control Table. Partitioned by (target_table, source_table) for concurrent pipeline isolation.'
-            """)
+                        updated_at TIMESTAMP NOT NULL
+                    )
+                    USING DELTA
+                    PARTITIONED BY (target_table, source_table)
+                    COMMENT 'Kimball ETL Control Table. Partitioned by (target_table, source_table) for concurrent pipeline isolation.'
+                """)
+            except Exception as e:
+                # Handle race condition where another concurrent pipeline created the table
+                if "TABLE_OR_VIEW_ALREADY_EXISTS" in str(e) or "already exists" in str(
+                    e
+                ):
+                    pass
+                else:
+                    raise e
 
     # ------------------------------------------------------------------
     # Watermark API (backward compatible)
