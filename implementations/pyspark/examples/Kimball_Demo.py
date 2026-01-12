@@ -229,7 +229,6 @@ def ingest_silver(table_name, data, schema, merge_keys):
             .whenMatchedUpdateAll()
             .whenNotMatchedInsertAll()
             .execute()
-            .execute()
         )
 
 

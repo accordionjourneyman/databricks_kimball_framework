@@ -121,8 +121,10 @@ class TransactionManager:
             self.spark.conf.set(
                 "spark.databricks.delta.commitInfo.userMetadata", str(batch_id)
             )
-        except Exception as e:
-            print(f"WARNING: Could not set commit info metadata: {e}")
+        except Exception:
+            print(
+                "WARNING: Could not set commit info metadata (likely Serverless restriction). Proceeding without commit tagging."
+            )
 
         try:
             yield
