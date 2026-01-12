@@ -331,22 +331,20 @@ print(f"Day 1 Data Ingested in {_day1_load_time:.2f}s")
 
 # COMMAND ----------
 
-from kimball import Orchestrator
+from kimball import PipelineExecutor
 
 # Set Environment Variable for Jinja
 os.environ["env"] = "demo"
 
-# Run Dimensions (ETL schema already configured via KIMBALL_ETL_SCHEMA env var)
+# Run Dimensions and Facts (PipelineExecutor handles dependency order automatically)
 _t_transform_start = time.perf_counter()
-print("Running dim_customer...")
-Orchestrator(f"{CONFIG_PATH}/dim_customer.yml").run()
 
-print("Running dim_product...")
-Orchestrator(f"{CONFIG_PATH}/dim_product.yml").run()
-
-# Run Fact
-print("Running fact_sales...")
-Orchestrator(f"{CONFIG_PATH}/fact_sales.yml").run()
+executor = PipelineExecutor([
+    f"{CONFIG_PATH}/dim_customer.yml",
+    f"{CONFIG_PATH}/dim_product.yml",
+    f"{CONFIG_PATH}/fact_sales.yml"
+])
+executor.run()
 _day1_transform_time = time.perf_counter() - _t_transform_start
 
 _day1_rows = spark.table("demo_gold.fact_sales").count() 
@@ -447,17 +445,15 @@ print(f"Day 2 Data Ingested in {_day2_load_time:.2f}s")
 
 # COMMAND ----------
 
-# Run Dimensions
+# Run Dimensions and Facts in parallel waves
 _t_transform_start = time.perf_counter()
-print("Running dim_customer (Day 2)...")
-Orchestrator(f"{CONFIG_PATH}/dim_customer.yml").run()
 
-print("Running dim_product (Day 2)...")
-Orchestrator(f"{CONFIG_PATH}/dim_product.yml").run()
-
-# Run Fact
-print("Running fact_sales (Day 2)...")
-Orchestrator(f"{CONFIG_PATH}/fact_sales.yml").run()
+executor = PipelineExecutor([
+    f"{CONFIG_PATH}/dim_customer.yml",
+    f"{CONFIG_PATH}/dim_product.yml",
+    f"{CONFIG_PATH}/fact_sales.yml"
+])
+executor.run()
 _day2_transform_time = time.perf_counter() - _t_transform_start
 
 _day2_rows = spark.table("demo_gold.fact_sales").count()
