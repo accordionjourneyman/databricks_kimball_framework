@@ -110,6 +110,7 @@ keys:
   surrogate_key: customer_sk
   natural_keys: [customer_id]
 surrogate_key_strategy: identity
+effective_at: updated_at  # Use business date for SCD2 validity, not processing time
 track_history_columns:
   - first_name
   - last_name

@@ -400,40 +400,38 @@ class Orchestrator:
                             "transformation_sql is required for multi-source pipelines"
                         )
 
-                    # Kimball-proper: Handle NULL foreign keys using explicit FK declarations
-                    # This replaces the old naming convention hack (endswith "_sk")
-                    if self.config.foreign_keys:
-                        from pyspark.sql.types import StringType
+                # Kimball-proper: Handle NULL foreign keys using explicit FK declarations
+                # This replaces the old naming convention hack (endswith "_sk")
+                if self.config.foreign_keys:
+                    from pyspark.sql.types import StringType
 
-                        sk_fill_map: dict[str, Any] = {}
-                        for fk in self.config.foreign_keys:
-                            col_name = fk.column
-                            default_val = fk.default_value
-                            # Check if column exists in the transformed DataFrame
-                            field = next(
-                                (
-                                    f
-                                    for f in transformed_df.schema.fields
-                                    if f.name == col_name
-                                ),
-                                None,
-                            )
-                            if field:
-                                # Use string default for string-typed SKs, numeric otherwise
-                                if isinstance(field.dataType, StringType):
-                                    sk_fill_map[col_name] = str(default_val)
-                                else:
-                                    sk_fill_map[col_name] = default_val
+                    sk_fill_map: dict[str, Any] = {}
+                    for fk in self.config.foreign_keys:
+                        col_name = fk.column
+                        default_val = fk.default_value
+                        # Check if column exists in the transformed DataFrame
+                        field = next(
+                            (
+                                f
+                                for f in transformed_df.schema.fields
+                                if f.name == col_name
+                            ),
+                            None,
+                        )
+                        if field:
+                            # Use string default for string-typed SKs, numeric otherwise
+                            if isinstance(field.dataType, StringType):
+                                sk_fill_map[col_name] = str(default_val)
                             else:
-                                print(
-                                    f"Warning: Foreign key column '{col_name}' not found in transformed DataFrame"
-                                )
-
-                        if sk_fill_map:
+                                sk_fill_map[col_name] = default_val
+                        else:
                             print(
-                                f"Filling NULL foreign keys with defaults: {sk_fill_map}"
+                                f"Warning: Foreign key column '{col_name}' not found in transformed DataFrame"
                             )
-                            transformed_df = transformed_df.fillna(sk_fill_map)
+
+                    if sk_fill_map:
+                        print(f"Filling NULL foreign keys with defaults: {sk_fill_map}")
+                        transformed_df = transformed_df.fillna(sk_fill_map)
 
                 # Run Data Quality Validation on TRANSFORMED data (if configured)
                 # CRITICAL: Validation must run AFTER transformation to validate the output schema
@@ -553,6 +551,7 @@ class Orchestrator:
                         self.table_creator.create_table_with_clustering(
                             table_name=self.config.table_name,
                             schema_df=schema_df,
+                            config=self.config.model_dump(),  # Pass full config for constraints
                             cluster_by=cluster_cols or [],
                             surrogate_key_col=self.config.surrogate_key,
                             surrogate_key_strategy=self.config.surrogate_key_strategy,
