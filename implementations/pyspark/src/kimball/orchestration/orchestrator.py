@@ -212,9 +212,10 @@ class Orchestrator:
         total_rows_written = 0
 
         # Start batch tracking for each source
-        # Start batch tracking for all sources (bulk)
-        source_names = [s.name for s in self.config.sources]
-        self.etl_control.batch_start_all(self.config.table_name, source_names)
+        # Only track incremental sources (CDF, timestamp) - full snapshot sources don't need watermarks
+        source_names = [s.name for s in self.config.sources if s.cdc_strategy != "full"]
+        if source_names:
+            self.etl_control.batch_start_all(self.config.table_name, source_names)
 
         # Stage timing
         stage_start = time.time()
