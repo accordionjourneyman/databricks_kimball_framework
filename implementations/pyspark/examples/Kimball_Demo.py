@@ -109,7 +109,7 @@ scd_type: 2
 keys:
   surrogate_key: customer_sk
   natural_keys: [customer_id]
-surrogate_key_strategy: hash
+surrogate_key_strategy: identity
 track_history_columns:
   - first_name
   - last_name
