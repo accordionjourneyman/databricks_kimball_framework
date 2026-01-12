@@ -14,8 +14,6 @@ from pyspark.sql.functions import (
     col,
     current_timestamp,
     lit,
-    max as max_,
-    when,
     row_number,
 )
 from pyspark.sql.types import (
@@ -27,7 +25,6 @@ from pyspark.sql.types import (
     IntegerType,
     LongType,
     ShortType,
-    StructField,
     StructType,
     TimestampType,
 )

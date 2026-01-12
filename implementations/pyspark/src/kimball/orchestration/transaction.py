@@ -1,14 +1,14 @@
 from __future__ import annotations
-import os
-import uuid
-import warnings
+
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any, Generator
+from typing import TYPE_CHECKING
 
 from databricks.sdk.runtime import spark
 from delta.tables import DeltaTable
-from pyspark.sql import SparkSession
-from pyspark.sql.utils import AnalysisException
+
+if TYPE_CHECKING:
+    from pyspark.sql import SparkSession
 
 
 class TransactionManager:
