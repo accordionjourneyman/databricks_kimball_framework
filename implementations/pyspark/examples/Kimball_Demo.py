@@ -69,6 +69,8 @@ os.environ["KIMBALL_MODE"] = "full"  # <-- Comment this line for lite mode
 # os.environ["KIMBALL_ENABLE_STAGING_CLEANUP"] = "1"  # Orphaned staging cleanup
 # os.environ["KIMBALL_ENABLE_METRICS"] = "1"          # Query metrics collection
 # os.environ["KIMBALL_ENABLE_AUTO_CLUSTER"] = "1"     # Auto Liquid Clustering
+# os.environ["KIMBALL_ENABLE_DEV_CHECKS"] = "1"       # Strict Dev Checks (Counts, Grain Validations)
+# os.environ["KIMBALL_ENABLE_INLINE_OPTIMIZE"] = "1"  # Inline OPTIMIZE after merge (Expensive)
 # ============================================================================
 
 # Setup Paths
@@ -227,7 +229,27 @@ def ingest_silver(table_name, data, schema, merge_keys):
             .whenMatchedUpdateAll()
             .whenNotMatchedInsertAll()
             .execute()
+            .execute()
         )
+
+
+from concurrent.futures import ThreadPoolExecutor
+
+def ingest_parallel(tasks):
+    """
+    Executes multiple ingest_silver calls in parallel.
+    tasks: list of tuples (table_name, data, schema, merge_keys)
+    """
+    print(f"Ingesting {len(tasks)} tables in parallel...")
+    with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
+        futures = [
+            executor.submit(ingest_silver, *task)
+            for task in tasks
+        ]
+        # Wait for all to complete and raise any exceptions
+        for future in futures:
+            future.result()
+
 
 
 # COMMAND ----------
@@ -289,10 +311,15 @@ order_items_schema = (
 
 # --- Ingest Day 1 ---
 _t_load_start = time.perf_counter()
-ingest_silver("customers", customers_data, customers_schema, ["customer_id"])
-ingest_silver("products", products_data, products_schema, ["product_id"])
-ingest_silver("orders", orders_data, orders_schema, ["order_id"])
-ingest_silver("order_items", order_items_data, order_items_schema, ["order_item_id"])
+
+day1_tasks = [
+    ("customers", customers_data, customers_schema, ["customer_id"]),
+    ("products", products_data, products_schema, ["product_id"]),
+    ("orders", orders_data, orders_schema, ["order_id"]),
+    ("order_items", order_items_data, order_items_schema, ["order_item_id"]),
+]
+ingest_parallel(day1_tasks)
+
 _day1_load_time = time.perf_counter() - _t_load_start
 
 print(f"Day 1 Data Ingested in {_day1_load_time:.2f}s")
@@ -400,10 +427,15 @@ order_items_day2 = [
 
 # --- Ingest Day 2 ---
 _t_load_start = time.perf_counter()
-ingest_silver("customers", customers_day2, customers_schema, ["customer_id"])
-ingest_silver("products", products_day2, products_schema, ["product_id"])
-ingest_silver("orders", orders_day2, orders_schema, ["order_id"])
-ingest_silver("order_items", order_items_day2, order_items_schema, ["order_item_id"])
+
+day2_tasks = [
+    ("customers", customers_day2, customers_schema, ["customer_id"]),
+    ("products", products_day2, products_schema, ["product_id"]),
+    ("orders", orders_day2, orders_schema, ["order_id"]),
+    ("order_items", order_items_day2, order_items_schema, ["order_item_id"]),
+]
+ingest_parallel(day2_tasks)
+
 _day2_load_time = time.perf_counter() - _t_load_start
 
 print(f"Day 2 Data Ingested in {_day2_load_time:.2f}s")

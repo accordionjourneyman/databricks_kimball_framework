@@ -8,13 +8,14 @@
    ================================================================ #}
 
 {% macro load_cdf(source_table, target_table, deduplicate_keys=none) %}
-    {# Get starting version from watermark #}
-    {%- set control_table = ref('etl_control') -%}
+    {# Get starting version from watermark table (NOT etl_control which has different schema) #}
+    {%- set schema = var('etl_control_schema', 'demo_gold') -%}
+    {%- set watermark_table = schema ~ '.etl_watermarks' -%}
     
     {% set get_version_sql %}
     SELECT COALESCE(last_processed_version, 0) as starting_version,
            last_processed_timestamp
-    FROM {{ control_table }}
+    FROM {{ watermark_table }}
     WHERE target_table = '{{ target_table }}'
       AND source_table = '{{ source_table }}'
     {% endset %}

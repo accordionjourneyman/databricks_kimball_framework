@@ -89,5 +89,5 @@ def test_skeleton_generator_logic():
             "identity",
         )
 
-        # Verify write was called
-        skeletons.write.format.assert_called_with("delta")
+        # Verify atomic MERGE was called (not append)
+        mock_table.alias.assert_called_with("target")

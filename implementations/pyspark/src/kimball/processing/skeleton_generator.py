@@ -90,20 +90,16 @@ class SkeletonGenerator:
             # Usually safest to omit it and let Delta handle it.
             pass
         elif surrogate_key_strategy == "hash":
-            # Hash the natural key
-            # We need to import compute_hashdiff or implement simple hash
-            # Let's reuse the strategy logic or just hash the key
-            from pyspark.sql.functions import xxhash64
+            # Use centralized HashKeyGenerator for consistency with main key generation
+            from kimball.processing.key_generator import HashKeyGenerator
 
-            skeletons = skeletons.withColumn(
-                surrogate_key_col, xxhash64(col(dim_join_key).cast("string"))
-            )
+            key_gen = HashKeyGenerator([dim_join_key])
+            skeletons = key_gen.generate_keys(skeletons, surrogate_key_col)
         elif surrogate_key_strategy == "sequence":
             # Not implemented safely for concurrent runs yet
             pass
 
-        # 6. Insert Skeletons
-        # We use append.
+        # 6. Insert Skeletons via atomic MERGE (prevents duplicates on concurrent runs)
         # Note: If using Identity Columns, we must ensure the SK col is NOT in the DF if it's ALWAYS generated.
 
         cols_to_write = [f.name for f in target_schema.fields]
@@ -116,5 +112,10 @@ class SkeletonGenerator:
         # Select only columns that exist in target (schema evolution might handle others if enabled, but let's be safe)
         final_skeletons = skeletons.select(*cols_to_write)
 
-        final_skeletons.write.format("delta").mode("append").saveAsTable(dim_table_name)
-        print(f"Inserted skeleton rows into {dim_table_name}.")
+        # Use atomic MERGE instead of APPEND to prevent duplicate skeletons
+        # when multiple fact pipelines run concurrently
+        dim_table.alias("target").merge(
+            final_skeletons.alias("source"),
+            f"target.{dim_join_key} <=> source.{dim_join_key}",
+        ).whenNotMatchedInsertAll().execute()
+        print(f"Inserted skeleton rows into {dim_table_name} (via atomic MERGE).")

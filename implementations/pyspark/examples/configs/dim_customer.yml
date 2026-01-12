@@ -15,6 +15,10 @@ track_history_columns:
   - email
   - address
 
+# Optional: Business-time SCD2 - use source timestamp for __valid_from/__valid_to
+# If not set, uses processing time (__etl_processed_at)
+# effective_at: updated_at
+
 # Default rows to seed into the dimension
 default_rows:
   -1: "Unknown"

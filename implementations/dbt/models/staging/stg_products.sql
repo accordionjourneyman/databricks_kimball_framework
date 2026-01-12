@@ -1,11 +1,15 @@
 -- Staging model for products
--- Supports CDF (Change Data Feed) with timestamp fallback
+-- Supports CDF (Change Data Feed) with watermark tracking
+-- After successful run, call update_watermark() to advance the watermark
 
 {% set target_table = 'demo_gold.dim_product' %}
 {% set source_table = 'demo_silver.products' %}
+{# Get last processed version (cast to integer for arithmetic) #}
+{% set last_version = get_watermark(target_table, source_table, 'version') | int %}
 {# CRITICAL: Add 1 to avoid reprocessing the last version #}
-{% set last_version = get_watermark(target_table, source_table, 'version') %}
-{% set next_version = last_version ~ ' + 1' %}
+{% set next_version = last_version + 1 %}
+{# Get ending version to bound the CDF query #}
+{% set ending_version = get_latest_version(source_table) | int %}
 
 {% if var('use_cdf', true) and is_incremental() %}
 -- CDF Mode: Read from table_changes view
@@ -19,7 +23,7 @@ WITH source_cdf AS (
         _change_type,
         _commit_version,
         current_timestamp() as _loaded_at
-    FROM table_changes('{{ source_table }}', {{ next_version }})
+    FROM table_changes('{{ source_table }}', {{ next_version }}, {{ ending_version }})
     WHERE _change_type != 'update_preimage'
 )
 {{ deduplicate_cdf('source_cdf', ['product_id']) }}
@@ -37,4 +41,3 @@ SELECT
     current_timestamp() as _loaded_at
 FROM {{ source('silver', 'products') }}
 {% endif %}
-

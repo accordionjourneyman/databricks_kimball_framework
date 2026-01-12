@@ -205,8 +205,8 @@ class ETLControlManager:
                     updated_at TIMESTAMP NOT NULL
                 )
                 USING DELTA
-                PARTITIONED BY (target_table)
-                COMMENT 'Kimball ETL Control Table. Partitioned by target_table for concurrent pipeline isolation.'
+                PARTITIONED BY (target_table, source_table)
+                COMMENT 'Kimball ETL Control Table. Partitioned by (target_table, source_table) for concurrent pipeline isolation.'
             """)
 
     # ------------------------------------------------------------------

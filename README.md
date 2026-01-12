@@ -41,6 +41,7 @@ Both implementations support:
 - **Surrogate Keys**: Hash or identity-based
 - **Change Data Feed (CDF)**: Incremental processing
 - **Foreign Key Lookups**: With Kimball-style defaults (-1 for unknown)
+- **Performance Optimized**: Configurable "lite" validations vs "strict" dev checks
 
 ## Documentation
 
@@ -49,6 +50,7 @@ See [docs/](docs/) for detailed documentation:
 - [Getting Started](docs/GETTING_STARTED.md)
 - [Configuration](docs/CONFIGURATION.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [Known Limitations (PySpark)](implementations/pyspark/KNOWN_LIMITATIONS.md)
 
 ## Benchmarking
 

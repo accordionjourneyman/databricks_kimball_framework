@@ -53,9 +53,29 @@ class IdentityKeyGenerator(KeyGenerator):
 class HashKeyGenerator(KeyGenerator):
     """
     Generates deterministic keys using xxhash64 of natural keys.
+
+    ⚠️ COLLISION WARNING ⚠️
+    xxhash64 produces 64-bit hashes which have birthday paradox collisions
+    at approximately 4 billion rows (2^32). For production use at high scale,
+    prefer IdentityKeyGenerator which uses Delta Lake Identity Columns.
+
+    Use cases for HashKeyGenerator:
+    - Deterministic key generation across environments (dev/prod same keys)
+    - Small to medium datasets (< 1 billion rows)
+    - Re-processing scenarios where consistent keys are required
+
+    For most production Kimball warehouses, use IdentityKeyGenerator instead.
     """
 
     def __init__(self, natural_keys: list[str]):
+        import warnings
+
+        warnings.warn(
+            "HashKeyGenerator uses xxhash64 which has collision risk at scale (~4B rows). "
+            "For production workloads, consider IdentityKeyGenerator instead.",
+            UserWarning,
+            stacklevel=2,
+        )
         self.natural_keys = natural_keys
 
     def generate_keys(
@@ -91,15 +111,23 @@ class SequenceKeyGenerator(KeyGenerator):
     def generate_keys(
         self, df: DataFrame, key_col_name: str, existing_max_key: int = 0
     ) -> DataFrame:
-        # DEPRECATED: Do not use in production
+        warn_msg = (
+            "SequenceKeyGenerator is deprecated and UNSAFE for production usage. "
+            "It forces a global sort (Window.orderBy(lit(1))) which causes OOM on large datasets. "
+            "Use IdentityKeyGenerator (Delta Identity Columns) instead."
+        )
+
+        import os
+
+        # Allow unsafe usage only if explicitly overridden (e.g. for small unit tests)
+        if os.environ.get("KIMBALL_ALLOW_UNSAFE_SEQUENCE_KEY", "0") != "1":
+            raise RuntimeError(
+                f"BLOCKED: {warn_msg} Set KIMBALL_ALLOW_UNSAFE_SEQUENCE_KEY=1 to override (NOT RECOMMENDED)."
+            )
+
         import warnings
 
-        warnings.warn(
-            "SequenceKeyGenerator is deprecated and unsafe for production use. "
-            "Use IdentityKeyGenerator for scalable surrogate key generation.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        warnings.warn(warn_msg, DeprecationWarning, stacklevel=2)
 
         # This implementation is fundamentally broken for scale
         # Forces all data to single partition = OOM guaranteed

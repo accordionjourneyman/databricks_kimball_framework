@@ -23,6 +23,8 @@ Usage:
 
 from __future__ import annotations
 
+import os
+
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -174,6 +176,9 @@ class DataQualityValidator:
         try:
             total_rows = df.count()
 
+            # Performance: Use lightweight existence check unless in DEV/Strict mode
+            is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
+
             # Find duplicates: group by columns and count > 1
             duplicates = (
                 df.groupBy(*columns)
@@ -181,13 +186,29 @@ class DataQualityValidator:
                 .filter(F.col("_dq_count") > 1)
             )
 
-            dup_count = duplicates.count()
+            if is_dev_mode:
+                dup_count = duplicates.count()
+            else:
+                # Fast existence check (limit 1)
+                # We save the shuffle of counting all duplicates
+                if duplicates.limit(1).isEmpty():
+                    dup_count = 0
+                else:
+                    dup_count = -1  # Flag as failed but count unknown
 
             # Get sample of duplicate values
             sample_failures: list[dict[str, Any]] = []
-            if dup_count > 0 and sample_size > 0:
+            if dup_count != 0 and sample_size > 0:
                 samples = duplicates.limit(sample_size).collect()
                 sample_failures = [row.asDict() for row in samples]
+
+            # Construct failure details
+            if dup_count > 0:
+                details = f"Found {dup_count} duplicate key combinations"
+            elif dup_count == -1:
+                details = "Found duplicate key combinations (count skipped for speed)"
+            else:
+                details = None
 
             return TestResult(
                 test_name=test_name,
@@ -195,9 +216,7 @@ class DataQualityValidator:
                 failed_rows=dup_count,
                 total_rows=total_rows,
                 severity=severity,
-                details=f"Found {dup_count} duplicate key combinations"
-                if dup_count > 0
-                else None,
+                details=details,
                 sample_failures=sample_failures,
             )
         except Exception as e:
@@ -237,11 +256,22 @@ class DataQualityValidator:
                 null_condition = null_condition | F.col(col).isNull()
 
             null_rows = df.filter(null_condition)
-            null_count = null_rows.count()
+
+            # Performance: Use lightweight existence check unless in DEV/Strict mode
+            is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
+
+            if is_dev_mode:
+                null_count = null_rows.count()
+            else:
+                # Fast existence check
+                if null_rows.limit(1).isEmpty():
+                    null_count = 0
+                else:
+                    null_count = -1
 
             # Get sample of null rows
             sample_failures: list[dict[str, Any]] = []
-            if null_count > 0 and sample_size > 0:
+            if null_count != 0 and sample_size > 0:
                 samples = null_rows.select(*columns).limit(sample_size).collect()
                 sample_failures = [row.asDict() for row in samples]
 
@@ -253,7 +283,11 @@ class DataQualityValidator:
                 severity=severity,
                 details=f"Found {null_count} rows with NULL values"
                 if null_count > 0
-                else None,
+                else (
+                    "Found rows with NULL values (count skipped for speed)"
+                    if null_count == -1
+                    else None
+                ),
                 sample_failures=sample_failures,
             )
         except Exception as e:
@@ -291,11 +325,21 @@ class DataQualityValidator:
 
             # Find rows with values not in accepted list
             invalid_rows = df.filter(~F.col(column).isin(values))
-            invalid_count = invalid_rows.count()
+
+            # Performance: Use lightweight existence check unless in DEV/Strict mode
+            is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
+
+            if is_dev_mode:
+                invalid_count = invalid_rows.count()
+            else:
+                if invalid_rows.limit(1).isEmpty():
+                    invalid_count = 0
+                else:
+                    invalid_count = -1
 
             # Get sample of invalid values
             sample_failures: list[dict[str, Any]] = []
-            if invalid_count > 0 and sample_size > 0:
+            if invalid_count != 0 and sample_size > 0:
                 # Get distinct invalid values
                 samples = (
                     invalid_rows.select(column).distinct().limit(sample_size).collect()
@@ -310,7 +354,11 @@ class DataQualityValidator:
                 severity=severity,
                 details=f"Found {invalid_count} rows with values not in {values}"
                 if invalid_count > 0
-                else None,
+                else (
+                    f"Found rows with values not in {values} (count skipped)"
+                    if invalid_count == -1
+                    else None
+                ),
                 sample_failures=sample_failures,
             )
         except Exception as e:
@@ -363,11 +411,21 @@ class DataQualityValidator:
 
             # Exclude nulls (nulls are handled by not_null test)
             orphans = orphans.filter(F.col(fk_column).isNotNull())
-            orphan_count = orphans.count()
+
+            # Performance: Use lightweight existence check unless in DEV/Strict mode
+            is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
+
+            if is_dev_mode:
+                orphan_count = orphans.count()
+            else:
+                if orphans.limit(1).isEmpty():
+                    orphan_count = 0
+                else:
+                    orphan_count = -1
 
             # Get sample of orphan FK values
             sample_failures: list[dict[str, Any]] = []
-            if orphan_count > 0 and sample_size > 0:
+            if orphan_count != 0 and sample_size > 0:
                 samples = (
                     orphans.select(fk_column).distinct().limit(sample_size).collect()
                 )
@@ -381,7 +439,11 @@ class DataQualityValidator:
                 severity=severity,
                 details=f"Found {orphan_count} orphan FK values not in {reference_table}"
                 if orphan_count > 0
-                else None,
+                else (
+                    f"Found orphan FK values not in {reference_table} (count skipped)"
+                    if orphan_count == -1
+                    else None
+                ),
                 sample_failures=sample_failures,
             )
         except Exception as e:
@@ -421,11 +483,21 @@ class DataQualityValidator:
 
             # Find rows where expression is false
             invalid_rows = df.filter(~F.expr(expression))
-            invalid_count = invalid_rows.count()
+
+            # Performance: Use lightweight existence check unless in DEV/Strict mode
+            is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
+
+            if is_dev_mode:
+                invalid_count = invalid_rows.count()
+            else:
+                if invalid_rows.limit(1).isEmpty():
+                    invalid_count = 0
+                else:
+                    invalid_count = -1
 
             # Get sample of failing rows
             sample_failures: list[dict[str, Any]] = []
-            if invalid_count > 0 and sample_size > 0:
+            if invalid_count != 0 and sample_size > 0:
                 samples = invalid_rows.limit(sample_size).collect()
                 sample_failures = [row.asDict() for row in samples]
 
@@ -437,7 +509,11 @@ class DataQualityValidator:
                 severity=severity,
                 details=f"Found {invalid_count} rows failing: {expression}"
                 if invalid_count > 0
-                else None,
+                else (
+                    f"Found rows failing: {expression} (count skipped)"
+                    if invalid_count == -1
+                    else None
+                ),
                 sample_failures=sample_failures,
             )
         except Exception as e:
@@ -573,14 +649,26 @@ class DataQualityValidator:
             test_name = f"{table_name}: {test_name}"
 
         try:
-            total_rows = df.count()
-            distinct_keys = df.select(*natural_keys).distinct().count()
-            duplicate_count = total_rows - distinct_keys
+            is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
+            if is_dev_mode:
+                total_rows = df.count()
+                distinct_keys = df.select(*natural_keys).distinct().count()
+                duplicate_count = total_rows - distinct_keys
+            else:
+                # Fast path: Check for duplicates by grouping
+                duplicates_check = (
+                    df.groupBy(*natural_keys).count().filter(F.col("count") > 1)
+                )
+                if duplicates_check.limit(1).isEmpty():
+                    duplicate_count = 0
+                else:
+                    duplicate_count = -1
+                total_rows = -1  # Unknown in fast mode
 
             details = None
             sample_failures: list[dict[str, Any]] = []
 
-            if duplicate_count > 0:
+            if duplicate_count != 0:
                 # Find the actual duplicates for debugging
                 duplicates = (
                     df.groupBy(*natural_keys)
@@ -591,8 +679,8 @@ class DataQualityValidator:
                 )
                 sample_failures = [row.asDict() for row in duplicates.collect()]
                 details = (
-                    f"CRITICAL: {duplicate_count} duplicate natural keys found! "
-                    f"Total rows: {total_rows}, Distinct keys: {distinct_keys}. "
+                    f"CRITICAL: {duplicate_count if duplicate_count > 0 else 'Found'} duplicate natural keys found! "
+                    f"Total rows: {total_rows if total_rows > 0 else 'Skipped'}, Distinct keys: {distinct_keys if is_dev_mode else 'Skipped'}. "
                     f"This will corrupt surrogate keys."
                 )
 
@@ -647,65 +735,89 @@ class DataQualityValidator:
         """
         results: list[TestResult] = []
 
-        for fk in foreign_keys:
-            fk_column = fk.get("column")
-            dim_table = fk.get("dimension_table")
-            dim_key = fk.get("dimension_key", fk_column)
+        # Cache the input DataFrame to prevent re-computation for each FK check
+        # This is critical when df comes from an expensive transformation SQL
+        df_cached = df.cache()
 
-            if not fk_column or not dim_table:
-                continue
+        try:
+            for fk in foreign_keys:
+                fk_column = fk.get("column")
+                dim_table = fk.get("dimension_table")
+                dim_key = fk.get("dimension_key", fk_column)
 
-            test_name = f"fk_integrity({fk_column} -> {dim_table}.{dim_key})"
+                if not fk_column or not dim_table:
+                    continue
 
-            try:
-                # Get distinct FK values from fact
-                fact_fks = df.select(fk_column).distinct()
-                if exclude_seeds:
-                    fact_fks = fact_fks.filter(F.col(fk_column) > 0)
+                test_name = f"fk_integrity({fk_column} -> {dim_table}.{dim_key})"
 
-                # Get valid SKs from dimension (current rows only for SCD2)
-                dim_df = self.spark.table(dim_table)
-                if "__is_current" in dim_df.columns:
-                    dim_df = dim_df.filter(F.col("__is_current") == True)  # noqa: E712
-                if exclude_seeds:
-                    dim_df = dim_df.filter(F.col(dim_key) > 0)
+                try:
+                    # Get distinct FK values from fact (use cached df)
+                    fact_fks = df_cached.select(fk_column).distinct()
+                    if exclude_seeds:
+                        fact_fks = fact_fks.filter(F.col(fk_column) > 0)
 
-                valid_sks = dim_df.select(dim_key).distinct()
+                    # Get valid SKs from dimension (current rows only for SCD2)
+                    dim_df = self.spark.table(dim_table)
+                    if "__is_current" in dim_df.columns:
+                        dim_df = dim_df.filter(F.col("__is_current") == True)  # noqa: E712
+                    if exclude_seeds:
+                        dim_df = dim_df.filter(F.col(dim_key) > 0)
 
-                # Left anti-join to find orphan FKs
-                orphans = fact_fks.join(
-                    valid_sks,
-                    fact_fks[fk_column] == valid_sks[dim_key],
-                    "left_anti",
-                )
-                orphan_count = orphans.count()
+                    valid_sks = dim_df.select(dim_key).distinct()
 
-                sample_failures: list[dict[str, Any]] = []
-                if orphan_count > 0:
-                    samples = orphans.limit(5).collect()
-                    sample_failures = [row.asDict() for row in samples]
-
-                results.append(
-                    TestResult(
-                        test_name=test_name,
-                        passed=orphan_count == 0,
-                        failed_rows=orphan_count,
-                        total_rows=fact_fks.count(),
-                        severity=severity,
-                        details=f"Found {orphan_count} FK values with no matching dimension SK"
-                        if orphan_count > 0
-                        else None,
-                        sample_failures=sample_failures,
+                    # Left anti-join to find orphan FKs
+                    orphans = fact_fks.join(
+                        valid_sks,
+                        fact_fks[fk_column] == valid_sks[dim_key],
+                        "left_anti",
                     )
-                )
-            except Exception as e:
-                results.append(
-                    TestResult(
-                        test_name=test_name,
-                        passed=False,
-                        severity=severity,
-                        details=f"Test error: {e}",
+
+                    # Performance: Use lightweight existence check unless in DEV/Strict mode
+                    is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
+
+                    if is_dev_mode:
+                        orphan_count = orphans.count()
+                        fk_total = fact_fks.count()
+                    else:
+                        if orphans.limit(1).isEmpty():
+                            orphan_count = 0
+                        else:
+                            orphan_count = -1
+                        fk_total = -1  # Skip count
+
+                    sample_failures: list[dict[str, Any]] = []
+                    if orphan_count != 0:
+                        samples = orphans.limit(5).collect()
+                        sample_failures = [row.asDict() for row in samples]
+
+                    results.append(
+                        TestResult(
+                            test_name=test_name,
+                            passed=orphan_count == 0,
+                            failed_rows=orphan_count,
+                            total_rows=fk_total,
+                            severity=severity,
+                            details=f"Found {orphan_count} FK values with no matching dimension SK"
+                            if orphan_count > 0
+                            else (
+                                "Found FK values with no matching dimension SK (count skipped)"
+                                if orphan_count == -1
+                                else None
+                            ),
+                            sample_failures=sample_failures,
+                        )
                     )
-                )
+                except Exception as e:
+                    results.append(
+                        TestResult(
+                            test_name=test_name,
+                            passed=False,
+                            severity=severity,
+                            details=f"Test error: {e}",
+                        )
+                    )
+        finally:
+            # Always unpersist to free memory
+            df_cached.unpersist()
 
         return ValidationReport(results=results)

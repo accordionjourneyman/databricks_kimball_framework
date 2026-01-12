@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Callable
 from datetime import date, datetime
@@ -9,7 +10,14 @@ from typing import Any, Protocol, cast
 from databricks.sdk.runtime import spark
 from delta.tables import DeltaTable
 from pyspark.sql import Column, DataFrame
-from pyspark.sql.functions import col, current_timestamp, lit, row_number
+from pyspark.sql.functions import (
+    col,
+    current_timestamp,
+    lit,
+    max as max_,
+    when,
+    row_number,
+)
 from pyspark.sql.types import (
     BooleanType,
     DateType,
@@ -19,6 +27,7 @@ from pyspark.sql.types import (
     IntegerType,
     LongType,
     ShortType,
+    StructField,
     StructType,
     TimestampType,
 )
@@ -120,6 +129,7 @@ def create_merge_strategy(
     surrogate_key_col: str = "surrogate_key",
     surrogate_key_strategy: str = "identity",
     schema_evolution: bool = False,
+    effective_at_column: str | None = None,
 ) -> MergeStrategy:
     """
     Factory function to create the appropriate merge strategy.
@@ -136,6 +146,8 @@ def create_merge_strategy(
         surrogate_key_col: Surrogate key column name
         surrogate_key_strategy: "identity", "hash", or "sequence"
         schema_evolution: Enable schema auto-merge
+        effective_at_column: Column containing business effective date for SCD2.
+                            If None, uses processing time (__etl_processed_at).
 
     Returns:
         MergeStrategy implementation for the specified SCD type.
@@ -151,6 +163,7 @@ def create_merge_strategy(
             surrogate_key_col,
             surrogate_key_strategy,
             schema_evolution,
+            effective_at_column,
         )
     elif scd_type == 1:
         return SCD1Strategy(
@@ -207,6 +220,25 @@ class SCD1Strategy:
         self.surrogate_key_strategy = surrogate_key_strategy
 
     def merge(self, source_df: DataFrame) -> None:
+        # Robustness: Deduplicate source data for SCD1
+        # If CDF is used ("_change_type" exists), we might have multiple ops per key (e.g. Delete then Insert).
+        # We must keep only the LATEST operation per key to prevent "Multiple source rows matched" error.
+        if "_change_type" in source_df.columns:
+            # Partition by join keys, order by commit version/timestamp desc
+            # Note: _commit_version is best, but if missing (unlikely in CDF), we might need fallback.
+            dedup_cols = (
+                ["_commit_version"] if "_commit_version" in source_df.columns else []
+            )
+            if dedup_cols:
+                window_spec = Window.partitionBy(*self.join_keys).orderBy(
+                    *[col(c).desc() for c in dedup_cols]
+                )
+                source_df = (
+                    source_df.withColumn("_rn", row_number().over(window_spec))
+                    .filter(col("_rn") == 1)
+                    .drop("_rn")
+                )
+
         # Construct Merge Condition
         merge_condition = " AND ".join(
             [f"target.{k} <=> source.{k}" for k in self.join_keys]
@@ -308,6 +340,10 @@ class SCD2Strategy:
     Tracks changes to `track_history_columns` by closing the current record
     and inserting a new active record.
     Preserves history with `__valid_from`, `__valid_to`, and `__is_current`.
+
+    Time Semantics:
+        - If effective_at_column is provided, uses business time for history.
+        - Otherwise, uses processing time (__etl_processed_at) as fallback.
     """
 
     def __init__(
@@ -318,6 +354,7 @@ class SCD2Strategy:
         surrogate_key_col: str,
         surrogate_key_strategy: str,
         schema_evolution: bool = False,
+        effective_at_column: str | None = None,
     ):
         if not join_keys:
             raise ValueError(
@@ -330,6 +367,7 @@ class SCD2Strategy:
         self.surrogate_key_col = surrogate_key_col
         self.surrogate_key_strategy = surrogate_key_strategy
         self.schema_evolution = schema_evolution
+        self.effective_at_column = effective_at_column
 
     def merge(self, source_df: DataFrame) -> None:
         """
@@ -359,24 +397,48 @@ class SCD2Strategy:
             "hashdiff", compute_hashdiff(self.track_history_columns)
         )
 
-        if self.join_keys and "__etl_processed_at" in source_df.columns:
-            # Rank records by commit version (deterministic) or timestamp (fallback)
-            # _commit_version is available from CDF reads and is deterministic
-            if "_commit_version" in source_df.columns:
-                order_col = col("_commit_version").desc()
-            else:
-                # Fallback for full snapshots or non-CDF sources
-                order_col = col("__etl_processed_at").desc()
-
-            window = Window.partitionBy(*self.join_keys).orderBy(order_col)
-            source_df = (
-                source_df.withColumn("_intra_batch_seq", row_number().over(window))
-                .filter(col("_intra_batch_seq") == 1)
-                .drop("_intra_batch_seq")
-            )
+        # Schema drift warning: Alert if source has columns not tracked for history
+        # This prevents silent loss of change detection when new columns are added
+        SYSTEM_COLS = {
+            "__etl_processed_at",
+            "__etl_batch_id",
+            "__is_current",
+            "__valid_from",
+            "__valid_to",
+            "__is_deleted",
+            "_change_type",
+            "_commit_version",
+            "_commit_timestamp",
+            "hashdiff",
+        }
+        source_cols = set(source_df.columns) - SYSTEM_COLS - set(self.join_keys or [])
+        tracked_cols = set(self.track_history_columns or [])
+        untracked = source_cols - tracked_cols
+        if untracked and self.schema_evolution:
             print(
-                "Applied intra-batch sequencing for SCD2 - removed duplicate keys within batch"
+                f"WARNING: Schema drift detected. Columns {sorted(untracked)} are NOT tracked "
+                f"for SCD2 history changes. Changes to these columns will NOT trigger new versions. "
+                f"Add to track_history_columns in config if history tracking is needed."
             )
+
+        if self.join_keys and "__etl_processed_at" in source_df.columns:
+            # Validate grain: Kimball methodology requires unique natural keys per batch
+            # Optimization: This is an expensive shuffle. Only run in DEV mode.
+            # In PROD, we rely on the Merge operation itself (or upstream constraints) to handle duplicates.
+            if os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1":
+                key_counts = source_df.groupBy(*self.join_keys).count()
+                duplicates = key_counts.filter(col("count") > 1)
+
+                # Check for duplicates (limit 1 is more efficient than count())
+                dup_sample = duplicates.limit(5).collect()
+                if dup_sample:
+                    dup_keys = [str(row.asDict()) for row in dup_sample]
+                    raise ValueError(
+                        f"GRAIN VIOLATION: Source data contains duplicate natural keys within batch. "
+                        f"Kimball methodology requires unique keys per batch. "
+                        f"Sample duplicates: {dup_keys[:3]}... "
+                        f"Fix the source data or adjust the grain definition in config."
+                    )
 
         source_keys = source_df.select(*self.join_keys).distinct()
         target_df = (
@@ -489,10 +551,21 @@ class SCD2Strategy:
             else:
                 insert_values[c] = f"source.{c}"
 
+        # Determine validity column: use business time if available, else processing time
+        if self.effective_at_column and self.effective_at_column in source_df.columns:
+            validity_col = f"source.{self.effective_at_column}"
+            validity_note = f"business time ({self.effective_at_column})"
+        else:
+            validity_col = "source.__etl_processed_at"
+            validity_note = "processing time (__etl_processed_at)"
+
+        print(f"SCD2 time semantics: using {validity_note} for history boundaries")
+
         insert_values.update(
             {
                 "__is_current": "true",
-                "__valid_from": f"CASE WHEN source.__merge_action = 'INSERT_NEW' THEN {SQL_DEFAULT_VALID_FROM} ELSE source.__etl_processed_at END",
+                # Use validity_col for all inserts; fallback to default only if NULL
+                "__valid_from": f"COALESCE({validity_col}, {SQL_DEFAULT_VALID_FROM})",
                 "__valid_to": SQL_DEFAULT_VALID_TO,
                 "__etl_processed_at": "current_timestamp()",
                 "__is_deleted": "false",
@@ -514,7 +587,7 @@ class SCD2Strategy:
             condition="source.__merge_action = 'UPDATE_EXPIRE'",
             set={
                 "__is_current": "false",
-                "__valid_to": "source.__etl_processed_at",
+                "__valid_to": validity_col,
                 "__etl_processed_at": "current_timestamp()",
             },
         ).whenNotMatchedInsert(
@@ -541,9 +614,24 @@ class DeltaMerger:
         surrogate_key_col: str = "surrogate_key",
         surrogate_key_strategy: str = "identity",
         schema_evolution: bool = False,
+        effective_at_column: str | None = None,
     ) -> None:
         """
         Executes the MERGE operation.
+
+        Args:
+            target_table_name: Target Delta table name.
+            source_df: Source DataFrame with changes.
+            join_keys: Natural key columns for matching.
+            delete_strategy: "hard" or "soft" delete handling.
+            batch_id: Optional batch ID for audit.
+            scd_type: SCD type (1 or 2).
+            track_history_columns: Columns to track for SCD2 changes.
+            surrogate_key_col: Surrogate key column name.
+            surrogate_key_strategy: "identity", "hash", or "sequence".
+            schema_evolution: Enable schema auto-merge.
+            effective_at_column: Column containing business effective date for SCD2.
+                                If None, uses processing time (__etl_processed_at).
         """
         # 1. Inject Audit Columns into Source DataFrame
         enriched_df = source_df.withColumn("__etl_processed_at", current_timestamp())
@@ -560,6 +648,7 @@ class DeltaMerger:
             surrogate_key_col=surrogate_key_col,
             surrogate_key_strategy=surrogate_key_strategy,
             schema_evolution=schema_evolution,
+            effective_at_column=effective_at_column,
         )
 
         strategy.merge(enriched_df)

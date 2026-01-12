@@ -61,6 +61,11 @@ class TableConfig(BaseModel):
     enable_audit_columns: bool = Field(alias="audit_columns", default=True)
     scd_type: Literal[1, 2] = 1  # Pydantic coerces int to Literal[1, 2] if specific
     track_history_columns: list[str] | None = None
+    effective_at: str | None = Field(
+        default=None,
+        description="Column name containing business effective date for SCD2. "
+        "If not set, uses processing time (__etl_processed_at).",
+    )
     default_rows: dict[str, Any] | None = None
     surrogate_key_strategy: Literal["identity", "hash", "sequence"] = "identity"
     schema_evolution: bool = False

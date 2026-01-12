@@ -42,9 +42,8 @@ Then in the next cell:
 
 ```python
 # Now you can import and use the framework
-from kimball.dimension import DimensionProcessor
-from kimball.fact import FactProcessor
-from kimball.hashing import generate_hash_key
+from kimball import Orchestrator, PipelineExecutor
+from kimball.processing.hashing import compute_hashdiffdiff
 
 print("✓ Kimball framework loaded successfully!")
 ```

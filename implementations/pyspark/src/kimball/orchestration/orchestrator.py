@@ -21,6 +21,7 @@ from kimball.observability.resilience import (
     StagingCleanupManager,
     _feature_enabled,
 )
+from kimball.orchestration.transaction import TransactionManager
 from kimball.orchestration.watermark import ETLControlManager, get_etl_schema
 from kimball.processing.loader import DataLoader
 from kimball.processing.merger import DeltaMerger
@@ -65,6 +66,7 @@ class Orchestrator:
         table_creator: TableCreator | None = None,
         skeleton_generator: SkeletonGenerator | None = None,
         cleanup_manager: StagingCleanupManager | None = None,
+        transaction_manager: TransactionManager | None = None,
     ):
         """
         Args:
@@ -133,8 +135,10 @@ class Orchestrator:
         self.etl_control = etl_control or ETLControlManager(etl_schema=etl_schema)
         self.loader = loader or DataLoader()
         self.merger = merger or DeltaMerger()
+        self.merger = merger or DeltaMerger()
         self.skeleton_generator = skeleton_generator or SkeletonGenerator()
         self.table_creator = table_creator or TableCreator()
+        self.transaction_manager = transaction_manager or TransactionManager(spark)
 
         # Initialize observability and resilience features (opt-in via feature flags)
         self.metrics_collector = (
@@ -202,6 +206,7 @@ class Orchestrator:
             self.metrics_collector.start_collection()
 
         source_versions = {}
+        source_row_counts: dict[str, int] = {}  # Track actual per-source row counts
         active_dfs = {}
         total_rows_read = 0
         total_rows_written = 0
@@ -214,457 +219,567 @@ class Orchestrator:
         # Stage timing
         stage_start = time.time()
 
-        try:
-            # 1. Load Sources
-            for source in self.config.sources:
-                # Get latest version for watermark commit later
-                latest_v = self.loader.get_latest_version(source.name)
-                source_versions[source.name] = latest_v
-
-                # Determine Load Strategy
-                if source.cdc_strategy == "full":
-                    df = self.loader.load_full_snapshot(
-                        source.name, format=source.format, options=source.options
+        # 0. Zombie Recovery (Crash Recovery)
+        # Check if previous run crashed and perform rollback if needed
+        # This ensures we get a clean slate before starting potential new transaction
+        if getattr(self.config, "enable_crash_recovery", True):
+            # We need a batch_id to check for. But how do we know the failing batch_id?
+            # The TransactionManager will scan history for ANY incomplete batch associated with this table.
+            # Actually, our recover_zombies implementation looks for tagged commits.
+            # We should scan etl_control for "RUNNING" batches for this table.
+            running_batches = self.etl_control.get_running_batches(
+                self.config.table_name
+            )
+            if running_batches:
+                print(
+                    f"Found {len(running_batches)} incomplete batches. Attempting recovery..."
+                )
+                for bad_batch_id in running_batches:
+                    self.transaction_manager.recover_zombies(
+                        self.config.table_name, bad_batch_id
                     )
-                elif source.cdc_strategy == "cdf":
-                    wm = self.etl_control.get_watermark(
-                        self.config.table_name, source.name
-                    )
-                    if wm is None:
-                        print(
-                            f"No watermark for {source.name}. Performing Full Snapshot."
+                    # Mark as failed in control table
+                    try:
+                        self.etl_control.batch_fail(
+                            self.config.table_name,
+                            "ALL_SOURCES",
+                            "CRASH_RECOVERY: Rolled back",
                         )
+                    except Exception:
+                        pass
+
+        try:
+            # Wrap execution in transaction (ACID-like rollback on failure)
+
+            # Since TransactionManager logic requires table to exist for getting version,
+            # we skip it for first run / table creation.
+
+            with self.transaction_manager.table_transaction(
+                self.config.table_name, batch_id
+            ):
+                # 1. Load Sources
+                for source in self.config.sources:
+                    # Get latest version for watermark commit later
+                    # NOTE: Only Delta tables with CDF support versioning
+                    if source.format == "delta" and source.cdc_strategy == "cdf":
+                        latest_v = self.loader.get_latest_version(source.name)
+                    else:
+                        # Non-Delta or full snapshot: versioning not applicable
+                        latest_v = 0
+                    source_versions[source.name] = latest_v
+
+                    # Determine Load Strategy
+                    if source.cdc_strategy == "full":
                         df = self.loader.load_full_snapshot(
                             source.name, format=source.format, options=source.options
                         )
-                    else:
-                        if wm >= latest_v:
+                    elif source.cdc_strategy == "cdf":
+                        wm = self.etl_control.get_watermark(
+                            self.config.table_name, source.name
+                        )
+                        if wm is None:
                             print(
-                                f"Source {source.name} already at version {latest_v}. Skipping."
+                                f"No watermark for {source.name}. Performing Full Snapshot."
                             )
-                            # Mark batch complete with no changes
-                            self.etl_control.batch_complete(
-                                self.config.table_name,
+                            df = self.loader.load_full_snapshot(
                                 source.name,
-                                new_version=latest_v,
-                                rows_read=0,
-                                rows_written=0,
+                                format=source.format,
+                                options=source.options,
                             )
-                            continue
-                        # Pass primary_keys for deduplication to handle multiple updates to same row
-                        # Pass ending_version=latest_v to prevent processing data that arrived during the run
-                        df = self.loader.load_cdf(
-                            source.name,
-                            wm + 1,
-                            deduplicate_keys=source.primary_keys,
-                            ending_version=latest_v,
-                        )
-                else:
-                    raise ValueError(f"Unknown CDC strategy: {source.cdc_strategy}")
-
-                # Note: We no longer call df.count() here as it forces eager evaluation.
-                # Row counts will be inferred from merge metrics after the operation completes.
-
-                # Register Temp View
-                df.createOrReplaceTempView(source.alias)
-                active_dfs[source.name] = df
-
-            # Track sources loaded timing
-            if self.metrics_collector:
-                self.metrics_collector.add_operation_metric(
-                    "sources_loaded",
-                    duration_ms=(time.time() - stage_start) * 1000,
-                    sources_count=len(active_dfs),
-                )
-                stage_start = time.time()
-
-            # 2. Early Arriving Facts (Skeleton Generation)
-            if self.config.early_arriving_facts:
-                print("Checking for Early Arriving Facts...")
-                for eaf in self.config.early_arriving_facts:
-                    # We need the fact dataframe.
-                    # The config doesn't explicitly say which source is the "fact" source,
-                    # but usually it's the one driving the pipeline or we can infer from the join key.
-                    # However, we need a DataFrame that has the 'fact_join_key'.
-                    # We can try to find it in the active_dfs.
-
-                    # For simplicity, we assume the 'fact_join_key' is available in at least one loaded source.
-                    # We'll search active_dfs for one that has the column.
-                    fact_source_df = None
-                    for df in active_dfs.values():
-                        if eaf["fact_join_key"] in df.columns:
-                            fact_source_df = df
-                            break
-
-                    if fact_source_df:
-                        # We also need to know the surrogate key strategy of the DIMENSION table.
-                        # This is tricky because we only have the config for the FACT table here.
-                        # We don't have the TableConfig for the dimension.
-                        # We might need to load it, or pass it in the eaf config.
-                        # For now, let's assume 'hash' or 'identity' based on a new config field or default.
-                        # Let's add 'surrogate_key_strategy' and 'surrogate_key_col' to the EAF config in YAML.
-
-                        self.skeleton_generator.generate_skeletons(
-                            fact_df=fact_source_df,
-                            dim_table_name=eaf["dimension_table"],
-                            fact_join_key=eaf["fact_join_key"],
-                            dim_join_key=eaf["dimension_join_key"],
-                            surrogate_key_col=eaf.get(
-                                "surrogate_key_col", "surrogate_key"
-                            ),
-                            surrogate_key_strategy=eaf.get(
-                                "surrogate_key_strategy", "identity"
-                            ),
+                        else:
+                            if wm >= latest_v:
+                                print(
+                                    f"Source {source.name} already at version {latest_v}. Skipping."
+                                )
+                                # Mark batch complete with no changes
+                                self.etl_control.batch_complete(
+                                    self.config.table_name,
+                                    source.name,
+                                    new_version=latest_v,
+                                    rows_read=0,
+                                    rows_written=0,
+                                )
+                                continue
+                            # Pass primary_keys for deduplication to handle multiple updates to same row
+                            # Pass ending_version=latest_v to prevent processing data that arrived during the run
+                            df = self.loader.load_cdf(
+                                source.name,
+                                wm + 1,
+                                deduplicate_keys=source.primary_keys,
+                                ending_version=latest_v,
+                            )
+                    elif source.cdc_strategy == "timestamp":
+                        raise NotImplementedError(
+                            f"cdc_strategy='timestamp' is not yet implemented for source '{source.name}'. "
+                            "Use 'cdf' (recommended) or 'full' instead."
                         )
                     else:
-                        print(
-                            f"Warning: Could not find source with column {eaf['fact_join_key']} for skeleton generation."
-                        )
+                        raise ValueError(f"Unknown CDC strategy: {source.cdc_strategy}")
 
-            # 3. Transformation
-            if self.config.transformation_sql:
-                print("Executing Transformation SQL...")
-                transformed_df = spark.sql(self.config.transformation_sql)
-            else:
-                # No transformation SQL - use source data directly
-                if len(self.config.sources) == 1:
-                    source_name = self.config.sources[0].name
-                    transformed_df = active_dfs[source_name]
-                    print(
-                        f"Using source data directly (no transformation): {source_name}"
+                    # Note: We no longer call df.count() here as it forces eager evaluation.
+                    # Row counts will be inferred from merge metrics after the operation completes.
+
+                    # Register Temp View
+                    df.createOrReplaceTempView(source.alias)
+                    active_dfs[source.name] = df
+                    # Initialize row count (will be updated later if we can count after checkpoint)
+                    source_row_counts[source.name] = 0
+
+                # Track sources loaded timing
+                if self.metrics_collector:
+                    self.metrics_collector.add_operation_metric(
+                        "sources_loaded",
+                        duration_ms=(time.time() - stage_start) * 1000,
+                        sources_count=len(active_dfs),
                     )
-                else:
-                    raise ValueError(
-                        "transformation_sql is required for multi-source pipelines"
-                    )
+                    stage_start = time.time()
 
-                # Kimball-proper: Handle NULL foreign keys using explicit FK declarations
-                # This replaces the old naming convention hack (endswith "_sk")
-                if self.config.foreign_keys:
-                    from pyspark.sql.types import StringType
+                # 2. Early Arriving Facts (Skeleton Generation)
+                if self.config.early_arriving_facts:
+                    print("Checking for Early Arriving Facts...")
+                    for eaf in self.config.early_arriving_facts:
+                        # We need the fact dataframe.
+                        # The config doesn't explicitly say which source is the "fact" source,
+                        # but usually it's the one driving the pipeline or we can infer from the join key.
+                        # However, we need a DataFrame that has the 'fact_join_key'.
+                        # We can try to find it in the active_dfs.
 
-                    sk_fill_map: dict[str, Any] = {}
-                    for fk in self.config.foreign_keys:
-                        col_name = fk.column
-                        default_val = fk.default_value
-                        # Check if column exists in the transformed DataFrame
-                        field = next(
-                            (
-                                f
-                                for f in transformed_df.schema.fields
-                                if f.name == col_name
-                            ),
-                            None,
-                        )
-                        if field:
-                            # Use string default for string-typed SKs, numeric otherwise
-                            if isinstance(field.dataType, StringType):
-                                sk_fill_map[col_name] = str(default_val)
-                            else:
-                                sk_fill_map[col_name] = default_val
+                        # For simplicity, we assume the 'fact_join_key' is available in at least one loaded source.
+                        # We'll search active_dfs for one that has the column.
+                        fact_source_df = None
+                        for df in active_dfs.values():
+                            if eaf["fact_join_key"] in df.columns:
+                                fact_source_df = df
+                                break
+
+                        if fact_source_df:
+                            # We also need to know the surrogate key strategy of the DIMENSION table.
+                            # This is tricky because we only have the config for the FACT table here.
+                            # We don't have the TableConfig for the dimension.
+                            # We might need to load it, or pass it in the eaf config.
+                            # For now, let's assume 'hash' or 'identity' based on a new config field or default.
+                            # Let's add 'surrogate_key_strategy' and 'surrogate_key_col' to the EAF config in YAML.
+
+                            self.skeleton_generator.generate_skeletons(
+                                fact_df=fact_source_df,
+                                dim_table_name=eaf["dimension_table"],
+                                fact_join_key=eaf["fact_join_key"],
+                                dim_join_key=eaf["dimension_join_key"],
+                                surrogate_key_col=eaf.get(
+                                    "surrogate_key_col", "surrogate_key"
+                                ),
+                                surrogate_key_strategy=eaf.get(
+                                    "surrogate_key_strategy", "identity"
+                                ),
+                            )
                         else:
                             print(
-                                f"Warning: Foreign key column '{col_name}' not found in transformed DataFrame"
+                                f"Warning: Could not find source with column {eaf['fact_join_key']} for skeleton generation."
                             )
 
-                    if sk_fill_map:
-                        print(f"Filling NULL foreign keys with defaults: {sk_fill_map}")
-                        transformed_df = transformed_df.fillna(sk_fill_map)
+                # 3. Transformation
+                if self.config.transformation_sql:
+                    print("Executing Transformation SQL...")
+                    transformed_df = spark.sql(self.config.transformation_sql)
+                else:
+                    # No transformation SQL - use source data directly
+                    if len(self.config.sources) == 1:
+                        source_name = self.config.sources[0].name
+                        transformed_df = active_dfs[source_name]
+                        print(
+                            f"Using source data directly (no transformation): {source_name}"
+                        )
+                    else:
+                        raise ValueError(
+                            "transformation_sql is required for multi-source pipelines"
+                        )
 
-            # Run Data Quality Validation on TRANSFORMED data (if configured)
-            # CRITICAL: Validation must run AFTER transformation to validate the output schema
-            if getattr(self.config, "tests", None):
-                from kimball.validation import DataQualityValidator
+                    # Kimball-proper: Handle NULL foreign keys using explicit FK declarations
+                    # This replaces the old naming convention hack (endswith "_sk")
+                    if self.config.foreign_keys:
+                        from pyspark.sql.types import StringType
 
-                print("Running data quality validation on transformed data...")
-                validator = DataQualityValidator()
-                report = validator.run_config_tests(self.config, df=transformed_df)
-                report.raise_on_failure()
+                        sk_fill_map: dict[str, Any] = {}
+                        for fk in self.config.foreign_keys:
+                            col_name = fk.column
+                            default_val = fk.default_value
+                            # Check if column exists in the transformed DataFrame
+                            field = next(
+                                (
+                                    f
+                                    for f in transformed_df.schema.fields
+                                    if f.name == col_name
+                                ),
+                                None,
+                            )
+                            if field:
+                                # Use string default for string-typed SKs, numeric otherwise
+                                if isinstance(field.dataType, StringType):
+                                    sk_fill_map[col_name] = str(default_val)
+                                else:
+                                    sk_fill_map[col_name] = default_val
+                            else:
+                                print(
+                                    f"Warning: Foreign key column '{col_name}' not found in transformed DataFrame"
+                                )
 
-            # BUILT-IN: Natural Key Uniqueness Validation (Dimension tables)
-            # This is a critical Kimball integrity check that prevents SK corruption
-            if self.config.table_type == "dimension" and self.config.natural_keys:
-                from kimball.validation import DataQualityValidator
+                        if sk_fill_map:
+                            print(
+                                f"Filling NULL foreign keys with defaults: {sk_fill_map}"
+                            )
+                            transformed_df = transformed_df.fillna(sk_fill_map)
 
-                print("Validating natural key uniqueness (pre-merge gate)...")
-                validator = DataQualityValidator()
-                nk_result = validator.validate_natural_key_uniqueness(
-                    transformed_df,
-                    self.config.natural_keys,
-                    table_name=self.config.table_name,
-                )
-                print(str(nk_result))
-                if not nk_result.passed:
-                    from kimball.common.errors import DataQualityError
+                # Run Data Quality Validation on TRANSFORMED data (if configured)
+                # CRITICAL: Validation must run AFTER transformation to validate the output schema
+                if getattr(self.config, "tests", None):
+                    from kimball.validation import DataQualityValidator
 
-                    raise DataQualityError(
-                        f"Natural key uniqueness violation in {self.config.table_name}: "
-                        f"{nk_result.failed_rows} duplicate keys. Details: {nk_result.details}",
-                        details={"sample_failures": nk_result.sample_failures},
-                    )
+                    print("Running data quality validation on transformed data...")
+                    validator = DataQualityValidator()
+                    report = validator.run_config_tests(self.config, df=transformed_df)
+                    report.raise_on_failure()
 
-            # BUILT-IN: FK Integrity Validation (Fact tables)
-            # Validates that all FK columns reference valid dimension SKs
-            if self.config.table_type == "fact" and self.config.foreign_keys:
-                from kimball.validation import DataQualityValidator
+                # BUILT-IN: Natural Key Uniqueness Validation (Dimension tables)
+                # This is a critical Kimball integrity check that prevents SK corruption
+                if self.config.table_type == "dimension" and self.config.natural_keys:
+                    from kimball.validation import DataQualityValidator
 
-                print("Validating FK integrity against dimensions (pre-merge gate)...")
-                validator = DataQualityValidator()
-                # Build FK definitions from config
-                fk_defs = [
-                    {
-                        "column": fk.column,
-                        "dimension_table": fk.references,
-                        "dimension_key": fk.column,  # Assumes FK name matches dim SK name
-                    }
-                    for fk in self.config.foreign_keys
-                    if hasattr(fk, "references") and fk.references
-                ]
-                if fk_defs:
-                    fk_report = validator.validate_fact_fk_integrity(
-                        transformed_df, fk_defs
-                    )
-                    for result in fk_report.results:
-                        print(str(result))
-                    fk_report.raise_on_failure()
-
-            # Checkpoint: Transformation complete
-            checkpoint_state = {
-                "stage": "transformation_complete",
-                "total_rows_read": total_rows_read,
-                "active_sources": list(active_dfs.keys()),
-            }
-            if self.checkpoint_manager:
-                self.checkpoint_manager.save_checkpoint(
-                    batch_id, "transformation_complete", checkpoint_state
-                )
-
-            # Track transformation timing
-            if self.metrics_collector:
-                self.metrics_collector.add_operation_metric(
-                    "transformation",
-                    duration_ms=(time.time() - stage_start) * 1000,
-                )
-                stage_start = time.time()
-
-            # 4. Stage-then-Merge for concurrency resilience
-            # Check if we have data to merge
-            if transformed_df.isEmpty():
-                print("No data to merge. Skipping.")
-            else:
-                # Ensure table exists and has defaults (if SCD2)
-                # We need to create the table if it doesn't exist to seed defaults
-                table_created = False
-                if not spark.catalog.tableExists(self.config.table_name):
-                    print(f"Creating table {self.config.table_name}...")
-                    # Add system columns to transformed_df schema for table creation
-                    schema_df = self.table_creator.add_system_columns(
-                        transformed_df.limit(0),
-                        self.config.scd_type,
-                        self.config.surrogate_key,
-                        self.config.surrogate_key_strategy,
-                    )
-
-                    # Auto-cluster dimensions on natural keys if no explicit cluster_by
-                    # This improves SCD2 merge performance via data skipping
-                    cluster_cols = self.config.cluster_by
-                    if (
-                        not cluster_cols
-                        and self.config.table_type == "dimension"
-                        and _feature_enabled("auto_cluster")
-                    ):
-                        cluster_cols = self.config.natural_keys or []
-                        if cluster_cols:
-                            print(f"Auto-clustering on natural keys: {cluster_cols}")
-
-                    # Create Delta table with optional Liquid Clustering
-                    self.table_creator.create_table_with_clustering(
+                    print("Validating natural key uniqueness (pre-merge gate)...")
+                    validator = DataQualityValidator()
+                    nk_result = validator.validate_natural_key_uniqueness(
+                        transformed_df,
+                        self.config.natural_keys,
                         table_name=self.config.table_name,
-                        schema_df=schema_df,
-                        cluster_by=cluster_cols or [],
+                    )
+                    print(str(nk_result))
+                    if not nk_result.passed:
+                        from kimball.common.errors import DataQualityError
+
+                        raise DataQualityError(
+                            f"Natural key uniqueness violation in {self.config.table_name}: "
+                            f"{nk_result.failed_rows} duplicate keys. Details: {nk_result.details}",
+                            details={"sample_failures": nk_result.sample_failures},
+                        )
+
+                # BUILT-IN: FK Integrity Validation (Fact tables)
+                # Validates that all FK columns reference valid dimension SKs
+                if self.config.table_type == "fact" and self.config.foreign_keys:
+                    from kimball.validation import DataQualityValidator
+
+                    print(
+                        "Validating FK integrity against dimensions (pre-merge gate)..."
+                    )
+                    validator = DataQualityValidator()
+                    # Build FK definitions from config
+                    fk_defs = [
+                        {
+                            "column": fk.column,
+                            "dimension_table": fk.references,
+                            "dimension_key": fk.column,  # Assumes FK name matches dim SK name
+                        }
+                        for fk in self.config.foreign_keys
+                        if hasattr(fk, "references") and fk.references
+                    ]
+                    if fk_defs:
+                        fk_report = validator.validate_fact_fk_integrity(
+                            transformed_df, fk_defs
+                        )
+                        for result in fk_report.results:
+                            print(str(result))
+                        fk_report.raise_on_failure()
+
+                # Checkpoint: Transformation complete
+                checkpoint_state = {
+                    "stage": "transformation_complete",
+                    "total_rows_read": total_rows_read,
+                    "active_sources": list(active_dfs.keys()),
+                }
+                if self.checkpoint_manager:
+                    self.checkpoint_manager.save_checkpoint(
+                        batch_id, "transformation_complete", checkpoint_state
+                    )
+
+                # Track transformation timing
+                if self.metrics_collector:
+                    self.metrics_collector.add_operation_metric(
+                        "transformation",
+                        duration_ms=(time.time() - stage_start) * 1000,
+                    )
+                    stage_start = time.time()
+
+                # 4. Stage-then-Merge for concurrency resilience
+                # Check if we have data to merge
+                if transformed_df.isEmpty():
+                    print("No data to merge. Skipping.")
+                    # CRITICAL: Do NOT fetch last merge metrics here - they would be stale
+                    # from a previous run and could incorrectly trigger watermark advancement
+                    merge_executed = False
+                else:
+                    merge_executed = True
+                    # Ensure table exists and has defaults (if SCD2)
+                    # We need to create the table if it doesn't exist to seed defaults
+                    table_created = False
+                    if not spark.catalog.tableExists(self.config.table_name):
+                        print(f"Creating table {self.config.table_name}...")
+                        # Add system columns to transformed_df schema for table creation
+                        schema_df = self.table_creator.add_system_columns(
+                            transformed_df.limit(0),
+                            self.config.scd_type,
+                            self.config.surrogate_key,
+                            self.config.surrogate_key_strategy,
+                        )
+
+                        # Auto-cluster dimensions on natural keys if no explicit cluster_by
+                        # This improves SCD2 merge performance via data skipping
+                        cluster_cols = self.config.cluster_by
+                        if (
+                            not cluster_cols
+                            and self.config.table_type == "dimension"
+                            and _feature_enabled("auto_cluster")
+                        ):
+                            cluster_cols = self.config.natural_keys or []
+                            if cluster_cols:
+                                print(
+                                    f"Auto-clustering on natural keys: {cluster_cols}"
+                                )
+
+                        # Create Delta table with optional Liquid Clustering
+                        self.table_creator.create_table_with_clustering(
+                            table_name=self.config.table_name,
+                            schema_df=schema_df,
+                            cluster_by=cluster_cols or [],
+                            surrogate_key_col=self.config.surrogate_key,
+                            surrogate_key_strategy=self.config.surrogate_key_strategy,
+                        )
+                        table_created = True
+
+                    # Seed default rows (-1, -2, -3) ONLY on table creation (not every run)
+                    if table_created and self.config.table_type == "dimension":
+                        target_schema = spark.table(self.config.table_name).schema
+                        if self.config.scd_type == 2:
+                            self.merger.ensure_scd2_defaults(
+                                self.config.table_name,
+                                target_schema,
+                                self.config.surrogate_key or "surrogate_key",
+                                self.config.default_rows,
+                                self.config.surrogate_key_strategy,
+                            )
+                        elif self.config.scd_type == 1 and self.config.surrogate_key:
+                            self.merger.ensure_scd1_defaults(
+                                self.config.table_name,
+                                target_schema,
+                                self.config.surrogate_key,
+                                self.config.default_rows,
+                                self.config.surrogate_key_strategy,
+                            )
+
+                    # Use DataFrame checkpointing instead of physical staging to minimize lock time
+                    # This provides fault tolerance without the 100% I/O overhead of physical staging
+                    print("Creating DataFrame checkpoint for merge operation...")
+
+                    # Checkpoint optimization: Only use expensive checkpoint() when explicitly enabled
+                    # Default to localCheckpoint() which is much more efficient for standard pipelines
+                    if getattr(self.config, "enable_lineage_truncation", False):
+                        # Use reliable checkpoint() only when lineage truncation is explicitly requested
+                        try:
+                            checkpoint_dir = spark.sparkContext.getCheckpointDir()
+                            if checkpoint_dir:
+                                print(
+                                    f"Using reliable checkpoint directory: {checkpoint_dir}"
+                                )
+                                checkpointed_df = transformed_df.checkpoint()
+                            else:
+                                print(
+                                    "No checkpoint directory configured, using local checkpoint"
+                                )
+                                checkpointed_df = transformed_df.localCheckpoint()
+                        except PYSPARK_EXCEPTION_BASE as e:
+                            # Log specific exception and fallback to local checkpoint
+                            print(
+                                f"Checkpoint directory access failed with PySpark error: {e}"
+                            )
+                            print("Using local checkpoint (less reliable)")
+                            checkpointed_df = transformed_df.localCheckpoint()
+                        except Exception as e:
+                            # Log any other unexpected errors and fallback to local checkpoint
+                            print(f"Unexpected error during checkpoint setup: {e}")
+                            print("Using local checkpoint (less reliable)")
+                            checkpointed_df = transformed_df.localCheckpoint()
+                    else:
+                        # Use efficient localCheckpoint() by default - no disk I/O overhead
+                        checkpointed_df = transformed_df.localCheckpoint()
+                        print(
+                            "Using local checkpoint (efficient, no lineage truncation)"
+                        )
+
+                    # Column pruning: Select only columns that exist in target schema
+                    # Only perform pruning if target table already exists AND schema evolution is disabled
+                    if (
+                        spark.catalog.tableExists(self.config.table_name)
+                        and not self.config.schema_evolution
+                    ):
+                        target_schema = spark.table(self.config.table_name).schema
+                        target_columns = [f.name for f in target_schema.fields]
+
+                        # System columns that must always be included for proper merge operations
+                        # Even if they don't exist in target yet (schema evolution will add them)
+                        SYSTEM_COLUMNS = {
+                            "__is_current",
+                            "__valid_from",
+                            "__valid_to",
+                            "__etl_processed_at",
+                            "__is_deleted",
+                        }
+
+                        # Include system columns even if not in target schema
+                        columns_to_select = []
+                        for c in checkpointed_df.columns:
+                            if c in target_columns or c in SYSTEM_COLUMNS:
+                                columns_to_select.append(c)
+
+                        source_df = checkpointed_df.select(
+                            *[col(c) for c in columns_to_select]
+                        )
+                        print(
+                            f"Applied column pruning: kept {len(columns_to_select)}/{len(checkpointed_df.columns)} columns (including system columns)"
+                        )
+                    else:
+                        # First run or schema evolution enabled - use all columns
+                        source_df = checkpointed_df
+
+                    print(
+                        f"Merging directly from checkpointed DataFrame into {self.config.table_name}..."
+                    )
+
+                    # Kimball: Dimensions use natural_keys for merge; Facts use merge_keys (degenerate dimensions)
+                    if self.config.table_type == "fact":
+                        join_keys = self.config.merge_keys or []
+                    else:
+                        join_keys = self.config.natural_keys or []
+
+                    self.merger.merge(
+                        target_table_name=self.config.table_name,
+                        source_df=source_df,
+                        join_keys=join_keys,
+                        delete_strategy=self.config.delete_strategy,
+                        batch_id=batch_id,
+                        scd_type=self.config.scd_type,
+                        track_history_columns=self.config.track_history_columns,
                         surrogate_key_col=self.config.surrogate_key,
                         surrogate_key_strategy=self.config.surrogate_key_strategy,
+                        schema_evolution=self.config.schema_evolution,
+                        effective_at_column=self.config.effective_at,
                     )
-                    table_created = True
 
-                # Seed default rows (-1, -2, -3) ONLY on table creation (not every run)
-                if table_created and self.config.table_type == "dimension":
-                    target_schema = spark.table(self.config.table_name).schema
-                    if self.config.scd_type == 2:
-                        self.merger.ensure_scd2_defaults(
-                            self.config.table_name,
-                            target_schema,
-                            self.config.surrogate_key or "surrogate_key",
-                            self.config.default_rows,
-                            self.config.surrogate_key_strategy,
-                        )
-                    elif self.config.scd_type == 1 and self.config.surrogate_key:
-                        self.merger.ensure_scd1_defaults(
-                            self.config.table_name,
-                            target_schema,
-                            self.config.surrogate_key,
-                            self.config.default_rows,
-                            self.config.surrogate_key_strategy,
-                        )
-
-                # Use DataFrame checkpointing instead of physical staging to minimize lock time
-                # This provides fault tolerance without the 100% I/O overhead of physical staging
-                print("Creating DataFrame checkpoint for merge operation...")
-
-                # Checkpoint optimization: Only use expensive checkpoint() when explicitly enabled
-                # Default to localCheckpoint() which is much more efficient for standard pipelines
-                if getattr(self.config, "enable_lineage_truncation", False):
-                    # Use reliable checkpoint() only when lineage truncation is explicitly requested
-                    try:
-                        checkpoint_dir = spark.sparkContext.getCheckpointDir()
-                        if checkpoint_dir:
-                            print(
-                                f"Using reliable checkpoint directory: {checkpoint_dir}"
+                    # 5. Optimize Table (if configured)
+                    if self.config.optimize_after_merge:
+                        # Optimization: Inline OPTIMIZE is expensive. Only run if explicitly enabled via env var.
+                        # Production systems should run OPTIMIZE/VACUUM in a separate async maintenance job.
+                        if os.environ.get("KIMBALL_ENABLE_INLINE_OPTIMIZE") == "1":
+                            self.merger.optimize_table(
+                                self.config.table_name, self.config.cluster_by or []
                             )
-                            checkpointed_df = transformed_df.checkpoint()
                         else:
                             print(
-                                "No checkpoint directory configured, using local checkpoint"
+                                "Skipping inline OPTIMIZE (Performance Optimization). "
+                                "Set KIMBALL_ENABLE_INLINE_OPTIMIZE=1 to enable, "
+                                "or use async maintenance jobs (Recommended)."
                             )
-                            checkpointed_df = transformed_df.localCheckpoint()
-                    except PYSPARK_EXCEPTION_BASE as e:
-                        # Log specific exception and fallback to local checkpoint
-                        print(
-                            f"Checkpoint directory access failed with PySpark error: {e}"
+
+                # Get row counts from Delta merge metrics (more accurate than counting)
+                # CRITICAL: Only fetch metrics if merge was actually executed
+                # Otherwise we'd get stale metrics from a previous run
+                if merge_executed:
+                    merge_metrics = self.merger.get_last_merge_metrics(
+                        self.config.table_name
+                    )
+                    total_rows_read = int(merge_metrics.get("numSourceRows", 0))
+                    total_rows_written = int(
+                        merge_metrics.get("numTargetRowsInserted", 0)
+                    ) + int(merge_metrics.get("numTargetRowsUpdated", 0))
+                else:
+                    # Merge was skipped - use zeros to prevent incorrect watermark advancement
+                    total_rows_read = 0
+                    total_rows_written = 0
+
+                # Track merge timing
+                if self.metrics_collector:
+                    self.metrics_collector.add_operation_metric(
+                        "merge",
+                        duration_ms=(time.time() - stage_start) * 1000,
+                        rows_read=total_rows_read,
+                        rows_written=total_rows_written,
+                    )
+
+                # 6. Commit Watermarks with batch completion
+                # CRITICAL: Only advance watermarks for sources that contributed to the pipeline
+                # This prevents silent data loss when transformation filters everything out
+                print("Completing batches and updating watermarks...")
+
+                # Determine which sources actually contributed rows
+                sources_with_data = set(active_dfs.keys())
+
+                for source_name, version in source_versions.items():
+                    if source_name not in sources_with_data:
+                        # Source was skipped (wm >= latest_v), already marked complete earlier
+                        continue
+
+                    # If we have actual per-source counts, use them; otherwise approximate
+                    per_source_rows = source_row_counts.get(source_name, 0)
+
+                    # Only advance watermark if we actually processed something
+                    # OR if total_rows_written > 0 (merge happened successfully)
+                    if total_rows_written > 0 or per_source_rows > 0:
+                        # Use actual per-source count if available, else distribute written rows
+                        if per_source_rows == 0 and total_rows_written > 0:
+                            # Fallback: distribute written rows among sources that contributed
+                            per_source_written = total_rows_written // max(
+                                len(sources_with_data), 1
+                            )
+                        else:
+                            per_source_written = per_source_rows
+
+                        self.etl_control.batch_complete(
+                            target_table=self.config.table_name,
+                            source_table=source_name,
+                            new_version=version,
+                            rows_read=per_source_rows
+                            if per_source_rows > 0
+                            else (total_rows_read // max(len(sources_with_data), 1)),
+                            rows_written=per_source_written,
                         )
-                        print("Using local checkpoint (less reliable)")
-                        checkpointed_df = transformed_df.localCheckpoint()
-                    except Exception as e:
-                        # Log any other unexpected errors and fallback to local checkpoint
-                        print(f"Unexpected error during checkpoint setup: {e}")
-                        print("Using local checkpoint (less reliable)")
-                        checkpointed_df = transformed_df.localCheckpoint()
-                else:
-                    # Use efficient localCheckpoint() by default - no disk I/O overhead
-                    checkpointed_df = transformed_df.localCheckpoint()
-                    print("Using local checkpoint (efficient, no lineage truncation)")
-
-                # Column pruning: Select only columns that exist in target schema
-                # Only perform pruning if target table already exists AND schema evolution is disabled
-                if (
-                    spark.catalog.tableExists(self.config.table_name)
-                    and not self.config.schema_evolution
-                ):
-                    target_schema = spark.table(self.config.table_name).schema
-                    target_columns = [f.name for f in target_schema.fields]
-
-                    # System columns that must always be included for proper merge operations
-                    # Even if they don't exist in target yet (schema evolution will add them)
-                    SYSTEM_COLUMNS = {
-                        "__is_current",
-                        "__valid_from",
-                        "__valid_to",
-                        "__etl_processed_at",
-                        "__is_deleted",
-                    }
-
-                    # Include system columns even if not in target schema
-                    columns_to_select = []
-                    for c in checkpointed_df.columns:
-                        if c in target_columns or c in SYSTEM_COLUMNS:
-                            columns_to_select.append(c)
-
-                    source_df = checkpointed_df.select(
-                        *[col(c) for c in columns_to_select]
-                    )
-                    print(
-                        f"Applied column pruning: kept {len(columns_to_select)}/{len(checkpointed_df.columns)} columns (including system columns)"
-                    )
-                else:
-                    # First run or schema evolution enabled - use all columns
-                    source_df = checkpointed_df
+                    else:
+                        # No rows written - do NOT advance watermark, mark batch as no-op
+                        print(
+                            f"WARNING: No rows written for {source_name}. Watermark NOT advanced to prevent data loss."
+                        )
 
                 print(
-                    f"Merging directly from checkpointed DataFrame into {self.config.table_name}..."
+                    f"Pipeline completed successfully. Read: {total_rows_read}, Written: {total_rows_written}"
                 )
 
-                # Kimball: Dimensions use natural_keys for merge; Facts use merge_keys (degenerate dimensions)
-                if self.config.table_type == "fact":
-                    join_keys = self.config.merge_keys or []
-                else:
-                    join_keys = self.config.natural_keys or []
+                # Collect final metrics
+                metrics_summary = {}
+                if self.metrics_collector:
+                    self.metrics_collector.stop_collection()
+                    metrics_summary = self.metrics_collector.get_summary()
+                    print(f"Query Metrics: {metrics_summary}")
 
-                self.merger.merge(
-                    target_table_name=self.config.table_name,
-                    source_df=source_df,
-                    join_keys=join_keys,
-                    delete_strategy=self.config.delete_strategy,
-                    batch_id=batch_id,
-                    scd_type=self.config.scd_type,
-                    track_history_columns=self.config.track_history_columns,
-                    surrogate_key_col=self.config.surrogate_key,
-                    surrogate_key_strategy=self.config.surrogate_key_strategy,
-                    schema_evolution=self.config.schema_evolution,
-                )
-
-                # 5. Optimize Table (if configured)
-                if self.config.optimize_after_merge:
-                    self.merger.optimize_table(
-                        self.config.table_name, self.config.cluster_by or []
+                # Clear checkpoints on success
+                if self.checkpoint_manager:
+                    self.checkpoint_manager.clear_checkpoint(batch_id, "sources_loaded")
+                    self.checkpoint_manager.clear_checkpoint(
+                        batch_id, "transformation_complete"
                     )
 
-            # Get row counts from Delta merge metrics (more accurate than counting)
-            merge_metrics = self.merger.get_last_merge_metrics(self.config.table_name)
-            total_rows_read = int(merge_metrics.get("numSourceRows", 0))
-            total_rows_written = int(
-                merge_metrics.get("numTargetRowsInserted", 0)
-            ) + int(merge_metrics.get("numTargetRowsUpdated", 0))
-
-            # Track merge timing
-            if self.metrics_collector:
-                self.metrics_collector.add_operation_metric(
-                    "merge",
-                    duration_ms=(time.time() - stage_start) * 1000,
-                    rows_read=total_rows_read,
-                    rows_written=total_rows_written,
-                )
-
-            # 6. Commit Watermarks with batch completion
-            print("Completing batches and updating watermarks...")
-            for source_name, version in source_versions.items():
-                # Calculate per-source rows (approximate: divide by number of sources)
-                per_source_rows = total_rows_read // max(len(source_versions), 1)
-                per_source_written = total_rows_written // max(len(source_versions), 1)
-
-                self.etl_control.batch_complete(
-                    target_table=self.config.table_name,
-                    source_table=source_name,
-                    new_version=version,
-                    rows_read=per_source_rows,
-                    rows_written=per_source_written,
-                )
-
-            print(
-                f"Pipeline completed successfully. Read: {total_rows_read}, Written: {total_rows_written}"
-            )
-
-            # Collect final metrics
-            metrics_summary = {}
-            if self.metrics_collector:
-                self.metrics_collector.stop_collection()
-                metrics_summary = self.metrics_collector.get_summary()
-                print(f"Query Metrics: {metrics_summary}")
-
-            # Clear checkpoints on success
-            if self.checkpoint_manager:
-                self.checkpoint_manager.clear_checkpoint(batch_id, "sources_loaded")
-                self.checkpoint_manager.clear_checkpoint(
-                    batch_id, "transformation_complete"
-                )
-
-            return {
-                "status": "SUCCESS",
-                "batch_id": batch_id,
-                "target_table": self.config.table_name,
-                "rows_read": total_rows_read,
-                "rows_written": total_rows_written,
-                "metrics": metrics_summary,
-            }
+                return {
+                    "status": "SUCCESS",
+                    "batch_id": batch_id,
+                    "target_table": self.config.table_name,
+                    "rows_read": total_rows_read,
+                    "rows_written": total_rows_written,
+                    "metrics": metrics_summary,
+                }
 
         except Exception as e:
             # Stop metrics collection on error
@@ -682,6 +797,9 @@ class Orchestrator:
                     )
                 except Exception:
                     pass  # Don't mask original error
+
+            # Re-raise exception to ensure TransactionManager context manager catches it and rolls back
+            raise e
 
             # Re-raise based on error type
             if isinstance(e, RetriableError) and max_retries > 0:
