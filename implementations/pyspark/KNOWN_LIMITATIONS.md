@@ -18,6 +18,8 @@ This document outlines known limitations, design choices, and potential edge cas
   - On startup, `Orchestrator` checks for "RUNNING" (zombie) batches.
   - If found, it performs a **Rollback** (`RESTORE TABLE`) to the state prior to the crashed batch using Delta Time Travel.
 - **Limitation:** If `VACUUM` has removed the history required for rollback, manual intervention is required.
+- **Serverless Limitation:** On Databricks Serverless, setting `spark.databricks.delta.commitInfo.userMetadata` is restricted.
+  - **Impact:** Crashed batches cannot be tagged, so Zombie Recovery will not find them to rollback automatically. The pipeline will proceed safely but without this protection.
 
 ## 3. Concurrency & Locking
 

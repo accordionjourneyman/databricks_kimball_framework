@@ -24,7 +24,6 @@ Usage:
 from __future__ import annotations
 
 import os
-
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -735,9 +734,8 @@ class DataQualityValidator:
         """
         results: list[TestResult] = []
 
-        # Cache the input DataFrame to prevent re-computation for each FK check
-        # This is critical when df comes from an expensive transformation SQL
-        df_cached = df.cache()
+        # Cache removed for Serverless compatibility (PERSIST TABLE not supported)
+        # df_cached = df.cache()
 
         try:
             for fk in foreign_keys:
@@ -751,8 +749,8 @@ class DataQualityValidator:
                 test_name = f"fk_integrity({fk_column} -> {dim_table}.{dim_key})"
 
                 try:
-                    # Get distinct FK values from fact (use cached df)
-                    fact_fks = df_cached.select(fk_column).distinct()
+                    # Get distinct FK values from fact (using df directly)
+                    fact_fks = df.select(fk_column).distinct()
                     if exclude_seeds:
                         fact_fks = fact_fks.filter(F.col(fk_column) > 0)
 
@@ -817,7 +815,6 @@ class DataQualityValidator:
                         )
                     )
         finally:
-            # Always unpersist to free memory
-            df_cached.unpersist()
+            pass  # No unpersist needed
 
         return ValidationReport(results=results)

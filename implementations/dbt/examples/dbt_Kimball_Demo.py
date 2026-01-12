@@ -482,7 +482,7 @@ spark.sql("SELECT * FROM demo_silver.customers WHERE customer_id = 1").show()
 print("DEBUG: Checking for duplicates in demo_silver.customers (customer_id)...")
 dup_check = spark.sql(
     "SELECT customer_id, count(*) as cnt FROM demo_silver.customers GROUP BY customer_id HAVING cnt > 1"
-).cache()
+)
 
 # Optimization: Check first row to avoid double scan (count + show)
 if not dup_check.limit(1).isEmpty():
@@ -491,7 +491,6 @@ if not dup_check.limit(1).isEmpty():
 else:
     print("✓ No duplicates in Silver.")
 
-dup_check.unpersist()
 
 # COMMAND ----------
 
