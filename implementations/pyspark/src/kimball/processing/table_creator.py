@@ -247,30 +247,31 @@ class TableCreator:
             except Exception as e:
                 logger.error(f"Failed to apply NOT NULL to {key}: {e}")
 
-        # Apply NOT NULL constraints for foreign keys (fact tables)
-        foreign_keys = config.get("foreign_keys", [])
-        for fk in foreign_keys:
-            fk_col = (
-                fk.get("column")
-                if isinstance(fk, dict)
-                else getattr(fk, "column", None)
-            )
-            if fk_col:
-                if not _is_valid_identifier(fk_col):
-                    print(f"Skipping invalid FK column name: {fk_col}")
-                    continue
-                constraint_name = f"fk_{fk_col}_not_null"
-                alter_sql = f"ALTER TABLE {quoted_table_name} ADD CONSTRAINT `{constraint_name}` CHECK (`{fk_col}` IS NOT NULL)"
-                try:
-                    spark.sql(alter_sql)
-                    print(f"Applied FK NOT NULL constraint: {constraint_name}")
-                except Exception as e:
-                    print(
-                        f"Warning: Could not apply FK constraint {constraint_name}: {e}"
-                    )
+        # Apply NOT NULL constraints for foreign keys (fact tables only)
+        if config.get("table_type") == "fact":
+            foreign_keys = config.get("foreign_keys") or []
+            for fk in foreign_keys:
+                fk_col = (
+                    fk.get("column")
+                    if isinstance(fk, dict)
+                    else getattr(fk, "column", None)
+                )
+                if fk_col:
+                    if not _is_valid_identifier(fk_col):
+                        print(f"Skipping invalid FK column name: {fk_col}")
+                        continue
+                    constraint_name = f"fk_{fk_col}_not_null"
+                    alter_sql = f"ALTER TABLE {quoted_table_name} ADD CONSTRAINT `{constraint_name}` CHECK (`{fk_col}` IS NOT NULL)"
+                    try:
+                        spark.sql(alter_sql)
+                        print(f"Applied FK NOT NULL constraint: {constraint_name}")
+                    except Exception as e:
+                        print(
+                            f"Warning: Could not apply FK constraint {constraint_name}: {e}"
+                        )
 
         # Apply business domain constraints
-        constraints = config.get("constraints", [])
+        constraints = config.get("constraints") or []
         for constraint in constraints:
             constraint_name = constraint.get("name")
             constraint_expr = constraint.get("expression")
