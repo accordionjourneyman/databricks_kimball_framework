@@ -211,23 +211,13 @@ class Orchestrator:
         total_rows_read = 0
         total_rows_written = 0
 
-        # Start batch tracking for each source
-        # Only track incremental sources (CDF, timestamp) - full snapshot sources don't need watermarks
-        source_names = [s.name for s in self.config.sources if s.cdc_strategy != "full"]
-        if source_names:
-            self.etl_control.batch_start_all(self.config.table_name, source_names)
-
         # Stage timing
         stage_start = time.time()
 
-        # 0. Zombie Recovery (Crash Recovery)
+        # 0. Zombie Recovery (Crash Recovery) - MUST run BEFORE batch_start_all
         # Check if previous run crashed and perform rollback if needed
         # This ensures we get a clean slate before starting potential new transaction
         if getattr(self.config, "enable_crash_recovery", True):
-            # We need a batch_id to check for. But how do we know the failing batch_id?
-            # The TransactionManager will scan history for ANY incomplete batch associated with this table.
-            # Actually, our recover_zombies implementation looks for tagged commits.
-            # We should scan etl_control for "RUNNING" batches for this table.
             running_batches = self.etl_control.get_running_batches(
                 self.config.table_name
             )
@@ -253,6 +243,12 @@ class Orchestrator:
                         )
                     except Exception:
                         pass
+
+        # Start batch tracking for each source (AFTER zombie recovery)
+        # Only track incremental sources (CDF, timestamp) - full snapshot sources don't need watermarks
+        source_names = [s.name for s in self.config.sources if s.cdc_strategy != "full"]
+        if source_names:
+            self.etl_control.batch_start_all(self.config.table_name, source_names)
 
         try:
             # Wrap execution in transaction (ACID-like rollback on failure)
