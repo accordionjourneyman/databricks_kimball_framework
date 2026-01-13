@@ -465,6 +465,8 @@ class DataQualityValidator:
 
         The expression should evaluate to true for valid rows.
 
+        FINDING-027: Validates expression for forbidden SQL patterns to prevent injection.
+
         Args:
             df: DataFrame to validate.
             expression: SQL expression that should be true for all rows.
@@ -478,10 +480,39 @@ class DataQualityValidator:
         test_name = test_name or f"expression({expression[:30]}...)"
 
         try:
+            # FINDING-027: Validate expression for forbidden SQL patterns
+            forbidden_patterns = [
+                "select",
+                "insert",
+                "update",
+                "delete",
+                "drop",
+                "create",
+                "alter",
+                "truncate",
+                "grant",
+                "revoke",
+                "exec",
+                "execute",
+            ]
+            expr_lower = expression.lower()
+            for pattern in forbidden_patterns:
+                # Check for pattern as a word boundary (not part of column name)
+                import re
+
+                if re.search(rf"\b{pattern}\b", expr_lower):
+                    return TestResult(
+                        test_name=test_name,
+                        passed=False,
+                        severity=severity,
+                        details=f"Expression contains forbidden SQL keyword: '{pattern}'. "
+                        f"Only boolean filter expressions are allowed.",
+                    )
+
             total_rows = df.count()
 
-            # Find rows where expression is false
-            invalid_rows = df.filter(~F.expr(expression))
+            # Find rows where expression is false - wrap in parens for safety
+            invalid_rows = df.filter(~F.expr(f"({expression})"))
 
             # Performance: Use lightweight existence check unless in DEV/Strict mode
             is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
@@ -554,12 +585,14 @@ class DataQualityValidator:
             results.append(self.validate_not_null(df, config.natural_keys))
 
         # Auto-test: Foreign key relationships
+        # FINDING-026: Use dimension_key if specified, otherwise fall back to column name
         if config.foreign_keys:
             for fk in config.foreign_keys:
                 if fk.references:
-                    # Assume the FK column references the same-named column in dimension
-                    # Or extract from references if it contains column info
-                    ref_column = fk.column  # Default: same column name
+                    # Use explicit dimension_key if provided, otherwise assume same name
+                    ref_column = (
+                        fk.dimension_key if fk.dimension_key else fk.column
+                    )
                     results.append(
                         self.validate_relationships(
                             df,

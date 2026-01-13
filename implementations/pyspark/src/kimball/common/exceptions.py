@@ -1,8 +1,11 @@
 """
 Common exception handling for Kimball Framework.
 
+FINDING-025: This module re-exports exceptions from errors.py to maintain
+backward compatibility while eliminating duplicate class definitions.
+
 Provides:
-- Custom exception hierarchy
+- Custom exception hierarchy (imported from errors.py)
 - PySpark exception base class compatibility across Runtime versions
 """
 
@@ -25,48 +28,32 @@ except ImportError:
     PYSPARK_EXCEPTION_BASE = pyspark.sql.utils.AnalysisException
 
 
-class KimballError(Exception):
-    """Base exception for all Kimball Framework errors."""
+# FINDING-025: Re-export exceptions from errors.py to avoid duplicate definitions
+# This maintains backward compatibility for code that imports from exceptions.py
+from kimball.common.errors import (
+    KimballError,
+    RetriableError,
+    NonRetriableError,
+    DataQualityError,
+    ConfigurationError,
+)
 
-    pass
-
-
-class RetriableError(KimballError):
-    """
-    Exception for errors that can be retried (e.g., transient network issues).
-    The Orchestrator can catch these and retry the operation.
-    """
-
-    pass
-
-
-class NonRetriableError(KimballError):
-    """
-    Exception for errors that should NOT be retried (e.g., data quality failures).
-    These indicate a fundamental problem that requires intervention.
-    """
-
-    pass
-
-
-class DataQualityError(NonRetriableError):
-    """
-    Raised when data quality validation fails.
-    Contains details about which tests failed and sample data.
-    """
-
-    def __init__(self, message: str, details: dict[str, Any] | None = None):
-        super().__init__(message)
-        self.details = details or {}
-
-
-class ConfigurationError(NonRetriableError):
-    """Raised when configuration is invalid or missing."""
-
-    pass
+# Also export SchemaEvolutionError for backward compatibility
+# (it was defined here but not in errors.py, so we create it here)
 
 
 class SchemaEvolutionError(RetriableError):
     """Raised when schema evolution fails but might succeed on retry."""
 
     pass
+
+
+__all__ = [
+    "PYSPARK_EXCEPTION_BASE",
+    "KimballError",
+    "RetriableError",
+    "NonRetriableError",
+    "DataQualityError",
+    "ConfigurationError",
+    "SchemaEvolutionError",
+]

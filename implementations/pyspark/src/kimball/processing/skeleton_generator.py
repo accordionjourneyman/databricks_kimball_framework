@@ -23,9 +23,19 @@ class SkeletonGenerator:
         dim_join_key: str,
         surrogate_key_col: str,
         surrogate_key_strategy: str,
+        batch_id: str | None = None,
     ) -> None:
         """
         Identifies missing keys in the dimension table and inserts skeleton rows.
+
+        Args:
+            fact_df: The fact DataFrame containing references to dimension keys.
+            dim_table_name: Full name of the dimension table.
+            fact_join_key: Column name in fact that references the dimension.
+            dim_join_key: Column name in dimension (natural key).
+            surrogate_key_col: Name of the surrogate key column in dimension.
+            surrogate_key_strategy: Strategy for SK generation ('identity', 'hash').
+            batch_id: Optional batch ID for audit trail (links skeleton to originating fact batch).
         """
         if not self.spark.catalog.tableExists(dim_table_name):
             print(
@@ -60,13 +70,22 @@ class SkeletonGenerator:
         # Start with the keys
         skeletons = missing_keys.withColumnRenamed("key", dim_join_key)
 
-        # Add standard SCD2 columns
+        # FINDING-010: Add proper audit trail for skeleton rows
+        # Use current_timestamp for __valid_from (dimension was discovered NOW, not 1900)
+        # Include batch_id to trace skeleton creation to originating fact batch
+        # Add __is_skeleton flag to identify skeleton rows for later processing
         skeletons = (
             skeletons.withColumn("__is_current", lit(True))
-            .withColumn("__valid_from", lit("1900-01-01 00:00:00").cast("timestamp"))
+            .withColumn(
+                "__valid_from", current_timestamp()
+            )  # Discovered NOW, not historical
             .withColumn("__valid_to", lit(None).cast("timestamp"))
             .withColumn("__etl_processed_at", current_timestamp())
-            .withColumn("__etl_batch_id", lit("SKELETON_GEN"))
+            .withColumn(
+                "__etl_batch_id", lit(batch_id if batch_id else "SKELETON_GEN")
+            )
+            .withColumn("__is_skeleton", lit(True))  # Flag for identification
+            .withColumn("__is_deleted", lit(False))
         )
 
         # Add other columns from schema as NULL (except SK and Join Key)

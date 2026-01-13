@@ -134,9 +134,16 @@ class TransactionManager:
             current_version = self._get_table_version(table_name)
 
             if current_version > start_version and start_version >= 0:
-                print(
-                    f"TRANSACTION FAILED: {e}. Initiating rollback from {current_version} to {start_version}."
-                )
+                # FINDING-019: Add messaging for version 0 rollback
+                if start_version == 0:
+                    print(
+                        f"TRANSACTION FAILED on first run. Restoring table to empty state (version 0). "
+                        f"You may want to DROP TABLE {table_name} and re-run if this persists."
+                    )
+                else:
+                    print(
+                        f"TRANSACTION FAILED: {e}. Initiating rollback from {current_version} to {start_version}."
+                    )
                 self._rollback(table_name, start_version)
 
             raise e

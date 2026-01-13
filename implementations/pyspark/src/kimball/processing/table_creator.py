@@ -22,10 +22,17 @@ def _is_safe_sql_expression(expr: str) -> bool:
     """
     Validate that a SQL expression contains only safe characters.
     Allows alphanumeric, whitespace, and common SQL operators/syntax: (), =<> .
+    FINDING-012: Removed single quotes to prevent SQL injection.
     Rejecting semicolons -- and /* is handled implicitly by the whitelist.
     """
+    # Check for quotes which could enable injection
+    if "'" in expr or '"' in expr:
+        raise ValueError(
+            f"SQL expression contains quotes, which are not allowed: {expr}. "
+            "Use column references only, no string literals."
+        )
     # Whitelist: alphanumeric, underscore, whitespace, parens, dot, comparison ops
-    return bool(re.match(r"^[a-zA-Z0-9_().=<>\s']+$", expr))
+    return bool(re.match(r"^[a-zA-Z0-9_().=<>\s]+$", expr))
 
 
 class TableCreator:
@@ -169,19 +176,32 @@ class TableCreator:
         logger.info(f"Table {table_name} created successfully.")
 
         # Enable Delta optimizations after table creation (optional features, may fail on Free Edition)
+        # FINDING-013: Improved error handling to distinguish edition limitations from real errors
         try:
             self.enable_predictive_optimization(table_name)
         except Exception as e:
-            print(
-                f"Notice: Predictive Optimization not enabled (expected on Community Edition): {e}"
-            )
+            error_str = str(e).lower()
+            if any(
+                x in error_str
+                for x in ["not supported", "premium", "serverless", "not enabled"]
+            ):
+                print(
+                    f"Notice: Predictive Optimization not available on this edition."
+                )
+            else:
+                print(f"Warning: Predictive Optimization failed: {e}")
 
         try:
             self.enable_deletion_vectors(table_name)
         except Exception as e:
-            print(
-                f"Notice: Deletion Vectors not enabled (expected on Community Edition): {e}"
-            )
+            error_str = str(e).lower()
+            if any(
+                x in error_str
+                for x in ["not supported", "premium", "serverless", "not enabled"]
+            ):
+                print(f"Notice: Deletion Vectors not available on this edition.")
+            else:
+                print(f"Warning: Deletion Vectors failed: {e}")
 
         # Apply basic Delta constraints after table creation
         self.apply_basic_constraints(table_name, surrogate_key_col, schema_df)

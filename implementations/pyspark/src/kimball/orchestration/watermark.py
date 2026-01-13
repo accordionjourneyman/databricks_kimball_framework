@@ -179,6 +179,7 @@ class ETLControlManager:
 
     def _ensure_table_exists(self) -> None:
         """Create schema and ETL control table if they don't exist.
+        FINDING-018: Includes schema migration for existing tables.
 
         The table is partitioned by (target_table, source_table) to enable
         zero-contention concurrent writes from parallel pipelines.
@@ -217,6 +218,45 @@ class ETLControlManager:
                     pass
                 else:
                     raise e
+        else:
+            # Table exists - check for schema migration
+            self._migrate_schema()
+
+    def _migrate_schema(self) -> None:
+        """Add any missing columns from the current schema to existing table.
+        FINDING-018: Handles schema evolution for ETL control table upgrades.
+        """
+        existing_df = self.spark.table(self.fq_table)
+        existing_cols = {f.name.lower() for f in existing_df.schema.fields}
+
+        # Define expected columns with their types
+        expected_columns = {
+            "target_table": "STRING",
+            "source_table": "STRING",
+            "last_processed_version": "LONG",
+            "batch_id": "STRING",
+            "batch_started_at": "TIMESTAMP",
+            "batch_completed_at": "TIMESTAMP",
+            "batch_status": "STRING",
+            "rows_read": "LONG",
+            "rows_written": "LONG",
+            "error_message": "STRING",
+            "updated_at": "TIMESTAMP",
+        }
+
+        for col_name, col_type in expected_columns.items():
+            if col_name.lower() not in existing_cols:
+                try:
+                    self.spark.sql(
+                        f"ALTER TABLE {self.fq_table} ADD COLUMN {col_name} {col_type}"
+                    )
+                    print(f"ETL control table migration: Added column {col_name}")
+                except Exception as e:
+                    # Column might already exist or other error
+                    if "already exists" not in str(e).lower():
+                        print(
+                            f"Warning: Could not add column {col_name} to {self.fq_table}: {e}"
+                        )
 
     # ------------------------------------------------------------------
     # Watermark API (backward compatible)

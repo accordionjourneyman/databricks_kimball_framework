@@ -59,23 +59,43 @@ class HashKeyGenerator(KeyGenerator):
     at approximately 4 billion rows (2^32). For production use at high scale,
     prefer IdentityKeyGenerator which uses Delta Lake Identity Columns.
 
-    Use cases for HashKeyGenerator:
-    - Deterministic key generation across environments (dev/prod same keys)
+    ⚠️ DIMENSION SURROGATE KEY WARNING ⚠️
+    Hash-based surrogate keys violate Kimball methodology for SCD2 dimensions:
+    - Same natural key always produces the same hash (no version tracking)
+    - Cannot distinguish between versions of the same business entity
+    For SCD2 dimensions, use IdentityKeyGenerator instead.
+
+    Appropriate use cases for HashKeyGenerator:
+    - Junk dimensions (deterministic keys for known value combinations)
+    - Degenerate dimensions in facts
     - Small to medium datasets (< 1 billion rows)
     - Re-processing scenarios where consistent keys are required
 
     For most production Kimball warehouses, use IdentityKeyGenerator instead.
     """
 
-    def __init__(self, natural_keys: list[str]):
+    def __init__(
+        self, natural_keys: list[str], allow_for_dimension_surrogates: bool = False
+    ):
+        """
+        Initialize HashKeyGenerator.
+
+        Args:
+            natural_keys: List of column names to use for hash computation.
+            allow_for_dimension_surrogates: If False (default), warns about improper usage.
+                Set to True only for junk dimensions or controlled scenarios.
+        """
         import warnings
 
-        warnings.warn(
-            "HashKeyGenerator uses xxhash64 which has collision risk at scale (~4B rows). "
-            "For production workloads, consider IdentityKeyGenerator instead.",
-            UserWarning,
-            stacklevel=2,
-        )
+        if not allow_for_dimension_surrogates:
+            warnings.warn(
+                "HashKeyGenerator should not be used for dimension surrogate keys. "
+                "Hash-based keys violate Kimball principles (collision risk at ~4B rows, "
+                "no version tracking for SCD2). Use 'identity' strategy instead. "
+                "Pass allow_for_dimension_surrogates=True only for junk dimensions.",
+                UserWarning,
+                stacklevel=2,
+            )
         self.natural_keys = natural_keys
 
     def generate_keys(

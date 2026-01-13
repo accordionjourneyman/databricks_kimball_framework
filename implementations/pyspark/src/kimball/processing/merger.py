@@ -55,6 +55,32 @@ def retry_on_concurrent_exception(
     Decorator to retry merge operations on ConcurrentAppendException with exponential backoff.
     Updated for Databricks Runtime 13+ compatibility.
     """
+    # FINDING-005: Try to import specific exception types for more reliable detection
+    try:
+        from pyspark.errors.exceptions.base import ConcurrentModificationException
+
+        CONCURRENT_EXCEPTIONS: tuple[type[Exception], ...] = (
+            ConcurrentModificationException,
+        )
+    except ImportError:
+        CONCURRENT_EXCEPTIONS = ()
+
+    def is_concurrent_exception(e: Exception) -> bool:
+        """Check if exception is a concurrent modification error."""
+        # First try type-based detection (more reliable)
+        if CONCURRENT_EXCEPTIONS and isinstance(e, CONCURRENT_EXCEPTIONS):
+            return True
+        # Fallback to string matching (fragile but necessary for older runtimes)
+        error_str = str(e)
+        return any(
+            x in error_str
+            for x in [
+                "ConcurrentAppendException",
+                "WriteConflictException",
+                "ConcurrentDeleteReadException",
+                "ConcurrentModificationException",
+            ]
+        )
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @wraps(func)
@@ -63,15 +89,8 @@ def retry_on_concurrent_exception(
                 try:
                     return func(*args, **kwargs)
                 except PYSPARK_EXCEPTION_BASE as e:
-                    # Check for concurrent write exceptions in modern Databricks Runtime
-                    error_str = str(e)
-                    is_concurrent = any(
-                        x in error_str
-                        for x in ["ConcurrentAppendException", "WriteConflictException"]
-                    )
-
                     # Only retry on concurrent exceptions, not all PySpark exceptions
-                    if is_concurrent and attempt < max_retries:
+                    if is_concurrent_exception(e) and attempt < max_retries:
                         wait_time = backoff_base**attempt
                         print(
                             f"Concurrent write detected, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries + 1})"
@@ -371,16 +390,61 @@ class SCD2Strategy:
         Executes SCD Type 2 Merge.
 
         Algorithm:
-        1. Deduplicates source data (intra-batch) using window functions.
-        2. Detects changes by comparing HashDiffs between Source and Target.
-        3. Classifies rows into:
+        1. Handles deletes (expires current version for deleted keys).
+        2. Deduplicates source data (intra-batch) using window functions.
+        3. Detects changes by comparing HashDiffs between Source and Target.
+        4. Classifies rows into:
            - INSERT_NEW: New business keys.
            - UPDATE_EXPIRE: Existing keys with changed data (to expire old version).
            - INSERT_VERSION: New version of changed keys (to become current).
-        4. Performs a single MERGE operation using a synthesized 'staged_source'.
+        5. Performs a single MERGE operation using a synthesized 'staged_source'.
         """
         if not self.track_history_columns:
             raise ValueError("track_history_columns must be provided for SCD Type 2")
+
+        # FINDING-003: Handle deletes first - expire current version for deleted keys
+        if "_change_type" in source_df.columns:
+            delete_rows = source_df.filter(col("_change_type") == "delete")
+            if not delete_rows.isEmpty():
+                from pyspark.sql import functions as F
+
+                print(
+                    f"SCD2: Processing deletes - expiring current versions for deleted keys"
+                )
+                delta_table = DeltaTable.forName(spark, self.target_table_name)
+
+                # Determine validity column for __valid_to
+                if (
+                    self.effective_at_column
+                    and self.effective_at_column in source_df.columns
+                ):
+                    validity_col = f"source.{self.effective_at_column}"
+                else:
+                    validity_col = "current_timestamp()"
+
+                # Build merge condition for deletes
+                delete_merge_cond = (
+                    " AND ".join(
+                        [f"target.{k} <=> source.{k}" for k in self.join_keys]
+                    )
+                    + " AND target.__is_current = true"
+                )
+
+                # Expire current versions for deleted keys
+                delta_table.alias("target").merge(
+                    delete_rows.alias("source"), delete_merge_cond
+                ).whenMatchedUpdate(
+                    set={
+                        "__is_current": "false",
+                        "__valid_to": validity_col,
+                        "__etl_processed_at": "current_timestamp()",
+                        "__is_deleted": "true",
+                    }
+                ).execute()
+                print(f"SCD2: Deleted keys expired successfully")
+
+            # Filter out deletes from main processing
+            source_df = source_df.filter(col("_change_type") != "delete")
 
         if self.schema_evolution:
             try:
@@ -419,23 +483,21 @@ class SCD2Strategy:
             )
 
         if self.join_keys and "__etl_processed_at" in source_df.columns:
-            # Validate grain: Kimball methodology requires unique natural keys per batch
-            # Optimization: This is an expensive shuffle. Only run in DEV mode.
-            # In PROD, we rely on the Merge operation itself (or upstream constraints) to handle duplicates.
-            if os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1":
-                key_counts = source_df.groupBy(*self.join_keys).count()
-                duplicates = key_counts.filter(col("count") > 1)
-
-                # Check for duplicates (limit 1 is more efficient than count())
-                dup_sample = duplicates.limit(5).collect()
-                if dup_sample:
-                    dup_keys = [str(row.asDict()) for row in dup_sample]
-                    raise ValueError(
-                        f"GRAIN VIOLATION: Source data contains duplicate natural keys within batch. "
-                        f"Kimball methodology requires unique keys per batch. "
-                        f"Sample duplicates: {dup_keys[:3]}... "
-                        f"Fix the source data or adjust the grain definition in config."
-                    )
+            # FINDING-007: Always validate grain - Kimball methodology requires unique natural keys per batch
+            # This prevents "Multiple source rows matched" merge errors and ensures data integrity
+            duplicates_check = (
+                source_df.groupBy(*self.join_keys).count().filter(col("count") > 1)
+            )
+            if not duplicates_check.limit(1).isEmpty():
+                # Get sample duplicates for error message
+                dup_sample = duplicates_check.limit(5).collect()
+                dup_keys = [str(row.asDict()) for row in dup_sample]
+                raise ValueError(
+                    f"GRAIN VIOLATION: Source data contains duplicate natural keys within batch. "
+                    f"Kimball methodology requires unique keys per batch. "
+                    f"Sample duplicates: {dup_keys[:3]}... "
+                    f"Fix the source data or adjust the grain definition in config."
+                )
 
         source_keys = source_df.select(*self.join_keys).distinct()
         target_df = (
@@ -491,17 +553,11 @@ class SCD2Strategy:
         elif self.surrogate_key_strategy == "hash":
             key_gen = HashKeyGenerator(self.join_keys)
         elif self.surrogate_key_strategy == "sequence":
-            try:
-                max_key_row = (
-                    delta_table.toDF().agg({self.surrogate_key_col: "max"}).first()
-                )
-                max_key = max_key_row[0] if max_key_row else 0
-            except PYSPARK_EXCEPTION_BASE as e:
-                print(
-                    f"Warning: Failed to retrieve max key for {self.surrogate_key_col}: {e}"
-                )
-                max_key = 0
-            key_gen = SequenceKeyGenerator()
+            # FINDING-006: Block sequence strategy with clear error
+            raise ValueError(
+                "surrogate_key_strategy='sequence' is blocked due to OOM risk at scale. "
+                "Use 'identity' (recommended) or 'hash'. See KNOWN_LIMITATIONS.md."
+            )
         else:
             raise ValueError(f"Unknown key strategy: {self.surrogate_key_strategy}")
 
@@ -549,12 +605,22 @@ class SCD2Strategy:
                 insert_values[c] = f"source.{c}"
 
         # Determine validity column: use business time if available, else processing time
+        # FINDING-004: Warn when SCD2 uses processing time for history
         if self.effective_at_column and self.effective_at_column in source_df.columns:
             validity_col = f"source.{self.effective_at_column}"
             validity_note = f"business time ({self.effective_at_column})"
         else:
             validity_col = "source.__etl_processed_at"
             validity_note = "processing time (__etl_processed_at)"
+            import warnings
+
+            warnings.warn(
+                f"SCD2 table {self.target_table_name} using processing time for history. "
+                "Configure 'effective_at' in YAML for correct business time semantics. "
+                "Late-arriving dimensions will have incorrect __valid_from dates.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         print(f"SCD2 time semantics: using {validity_note} for history boundaries")
 

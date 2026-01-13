@@ -101,6 +101,26 @@ class PipelineExecutor:
 
     Within each wave, pipelines run in parallel using ThreadPoolExecutor.
 
+    ⚠️ FINDING-020: PARALLELISM LIMITATION WARNING ⚠️
+    Using ThreadPoolExecutor for Spark jobs within the same driver provides LIMITED
+    actual parallelism. All threads share the same SparkSession and Spark jobs are
+    submitted to the same cluster. Whether they run in parallel depends on:
+    - Cluster resources (cores, memory)
+    - Spark scheduler configuration
+    - Python GIL (though Spark operations release it)
+
+    For TRUE parallelism at scale, use one of:
+    - Databricks Jobs with for_each tasks (RECOMMENDED for production)
+    - Separate job clusters per pipeline
+    - Databricks Workflows with parallel tasks
+
+    Within-session parallelism is best for:
+    - I/O-bound operations (many small dimension loads)
+    - Demo notebooks and local development
+    - Quick iteration during development
+
+    For compute-heavy fact loads, expect serialized execution despite threading.
+
     Args:
         config_paths: List of paths to pipeline YAML config files
         etl_schema: Schema for ETL control table. If not provided, uses

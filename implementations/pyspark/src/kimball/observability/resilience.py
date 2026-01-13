@@ -253,9 +253,24 @@ class StagingCleanupManager:
             tables_to_cleanup = [row.staging_table for row in rows]
 
             # Cleanup on driver side (single pass, no double evaluation)
+            # FINDING-021: Validate table names before executing DROP
+            import re
+
             for staging_table_name in tables_to_cleanup:
+                # Validate table name format to prevent SQL injection
+                if not re.match(
+                    r"^[a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+)*$", staging_table_name
+                ):
+                    print(f"Skipping invalid staging table name: {staging_table_name}")
+                    failed += 1
+                    continue
+
                 try:
-                    spark_session.sql(f"DROP TABLE IF EXISTS {staging_table_name}")
+                    # Use backticks for safe quoting
+                    quoted_name = ".".join(
+                        [f"`{part}`" for part in staging_table_name.split(".")]
+                    )
+                    spark_session.sql(f"DROP TABLE IF EXISTS {quoted_name}")
                     self.unregister_staging_table(staging_table_name)
                     cleaned += 1
                     print(f"Cleaned up orphaned staging table: {staging_table_name}")

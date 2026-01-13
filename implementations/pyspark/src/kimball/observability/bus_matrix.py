@@ -1,5 +1,6 @@
 import glob
 import os
+from collections import defaultdict
 
 from kimball.common.config import ConfigLoader, TableConfig
 
@@ -22,6 +23,53 @@ def parse_configs(config_dir: str) -> list[TableConfig]:
         except Exception as e:
             print(f"Skipping {f}: {e}")
     return configs
+
+
+def validate_conformed_dimensions(
+    configs: list[TableConfig],
+) -> list[str]:
+    """
+    FINDING-022: Validate that dimensions used by multiple facts are truly conformed.
+
+    Identifies dimensions referenced by multiple fact tables and warns if they
+    reference different physical tables (indicating non-conformity).
+
+    Args:
+        configs: List of parsed TableConfig objects.
+
+    Returns:
+        List of warning messages for non-conformed dimensions.
+    """
+    warnings = []
+
+    # Track dimension references: dim_name -> set of (fact_name, actual_table)
+    dim_references: dict[str, list[tuple[str, str]]] = defaultdict(list)
+
+    for config in configs:
+        if config.table_type == "fact" and config.foreign_keys:
+            for fk in config.foreign_keys:
+                if fk.references:
+                    # Normalize dimension name for comparison
+                    dim_short_name = fk.references.split(".")[-1]
+                    dim_references[dim_short_name].append(
+                        (config.table_name, fk.references)
+                    )
+
+    # Check for non-conformity (same logical dimension, different physical tables)
+    for dim_name, refs in dim_references.items():
+        if len(refs) > 1:
+            # Get unique physical tables
+            physical_tables = set(ref[1] for ref in refs)
+            if len(physical_tables) > 1:
+                fact_names = [ref[0] for ref in refs]
+                warnings.append(
+                    f"NON-CONFORMED DIMENSION WARNING: '{dim_name}' is referenced by "
+                    f"multiple facts ({', '.join(fact_names)}) but uses different physical tables: "
+                    f"{', '.join(physical_tables)}. "
+                    f"Kimball methodology requires conformed dimensions to use the same table."
+                )
+
+    return warnings
 
 
 def analyze_dependencies(
@@ -90,8 +138,16 @@ def render_markdown(
 def generate_bus_matrix(config_dir: str) -> str:
     """
     Scans a directory for YAML configs and generates an Enterprise Bus Matrix in Markdown.
-    Uses a pipeline of Parse -> Analyze -> Render.
+    Uses a pipeline of Parse -> Analyze -> Validate -> Render.
+
+    FINDING-022: Now includes validation for conformed dimensions.
     """
     configs = parse_configs(config_dir)
+
+    # Validate conformed dimensions and print warnings
+    conformity_warnings = validate_conformed_dimensions(configs)
+    for warning in conformity_warnings:
+        print(f"⚠️ {warning}")
+
     sorted_facts, matrix_data, sorted_dims = analyze_dependencies(configs)
     return render_markdown(sorted_facts, matrix_data, sorted_dims)

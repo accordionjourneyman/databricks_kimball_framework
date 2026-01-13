@@ -2,7 +2,8 @@ import os
 from typing import Any, Literal
 
 import yaml
-from jinja2 import Template
+
+# Jinja2 sandboxed environment is used in ConfigLoader
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 
@@ -39,6 +40,12 @@ class ForeignKeyConfig(BaseModel):
     column: str  # Column name in the fact table
     references: str | None = Field(
         default=None, description="Dimension table name for documentation"
+    )
+    # FINDING-026: Add dimension_key to specify the actual SK column in the dimension
+    dimension_key: str | None = Field(
+        default=None,
+        description="Surrogate key column name in the dimension table. "
+        "If not specified, assumes same name as 'column'.",
     )
     default_value: int = Field(
         default=-1, description="Default value for NULL handling"
@@ -97,6 +104,13 @@ class TableConfig(BaseModel):
                 raise ValueError("Dimensions require keys.surrogate_key")
             if not self.natural_keys:
                 raise ValueError("Dimensions require keys.natural_keys")
+            # FINDING-024: Block hash strategy for SCD2 dimensions
+            if self.scd_type == 2 and self.surrogate_key_strategy == "hash":
+                raise ValueError(
+                    "SCD Type 2 cannot use 'hash' surrogate key strategy. "
+                    "Hash-based keys produce identical values for all versions of the same natural key. "
+                    "Use 'identity' instead."
+                )
         return self
 
 
@@ -117,8 +131,12 @@ class ConfigLoader:
         with open(file_path) as f:
             raw_content = f.read()
 
-        # Render Jinja2 template
-        template = Template(raw_content)
+        # FINDING-023: Use sandboxed environment to prevent SSTI attacks
+        from jinja2.sandbox import SandboxedEnvironment
+        from jinja2 import StrictUndefined
+
+        env = SandboxedEnvironment(undefined=StrictUndefined)
+        template = env.from_string(raw_content)
         rendered_content = template.render(self.env_vars)
 
         # Parse YAML

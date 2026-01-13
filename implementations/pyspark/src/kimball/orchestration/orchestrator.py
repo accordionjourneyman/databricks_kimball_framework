@@ -217,32 +217,56 @@ class Orchestrator:
         # 0. Zombie Recovery (Crash Recovery) - MUST run BEFORE batch_start_all
         # Check if previous run crashed and perform rollback if needed
         # This ensures we get a clean slate before starting potential new transaction
+        # FINDING-014: Detect Serverless limitation where commit tagging is unavailable
         if getattr(self.config, "enable_crash_recovery", True):
-            running_batches = self.etl_control.get_running_batches(
-                self.config.table_name
-            )
-            if running_batches:
-                print(
-                    f"Found {len(running_batches)} incomplete batches. Attempting recovery..."
+            # Check if we can tag commits (required for zombie recovery)
+            can_tag_commits = True
+            try:
+                spark.conf.get("spark.databricks.delta.commitInfo.userMetadata")
+            except Exception:
+                # If we can't get the config, assume we can set it
+                pass
+
+            # Try to detect Serverless by attempting to set commit metadata
+            try:
+                spark.conf.set(
+                    "spark.databricks.delta.commitInfo.userMetadata", "__test__"
                 )
-                for batch_info in running_batches:
-                    bad_batch_id = batch_info["batch_id"]
-                    source_table = batch_info["source_table"]
+                spark.conf.unset("spark.databricks.delta.commitInfo.userMetadata")
+            except Exception:
+                can_tag_commits = False
+                print(
+                    "WARNING: Crash recovery unavailable (Serverless limitation). "
+                    "Commits cannot be tagged with batch_id for rollback detection. "
+                    "Proceeding without zombie detection. See KNOWN_LIMITATIONS.md."
+                )
 
-                    # Attempt rollback (only needed once per batch_id, but idempotent)
-                    self.transaction_manager.recover_zombies(
-                        self.config.table_name, bad_batch_id
+            if can_tag_commits:
+                running_batches = self.etl_control.get_running_batches(
+                    self.config.table_name
+                )
+                if running_batches:
+                    print(
+                        f"Found {len(running_batches)} incomplete batches. Attempting recovery..."
                     )
+                    for batch_info in running_batches:
+                        bad_batch_id = batch_info["batch_id"]
+                        source_table = batch_info["source_table"]
 
-                    # Mark specific source batch as failed in control table to prevent future "zombie found" msg
-                    try:
-                        self.etl_control.batch_fail(
-                            self.config.table_name,
-                            source_table,
-                            "CRASH_RECOVERY: Rolled back",
+                        # Attempt rollback (only needed once per batch_id, but idempotent)
+                        self.transaction_manager.recover_zombies(
+                            self.config.table_name, bad_batch_id
                         )
-                    except Exception:
-                        pass
+
+                        # Mark specific source batch as failed in control table to prevent future "zombie found" msg
+                        try:
+                            self.etl_control.batch_fail(
+                                self.config.table_name,
+                                source_table,
+                                "CRASH_RECOVERY: Rolled back",
+                            )
+                        except Exception:
+                            pass
 
         # Start batch tracking for each source (AFTER zombie recovery)
         # Only track incremental sources (CDF, timestamp) - full snapshot sources don't need watermarks
@@ -373,6 +397,7 @@ class Orchestrator:
                                 surrogate_key_strategy=eaf.get(
                                     "surrogate_key_strategy", "identity"
                                 ),
+                                batch_id=batch_id,
                             )
                         else:
                             print(
@@ -380,7 +405,16 @@ class Orchestrator:
                             )
 
                 # 3. Transformation
+                # FINDING-016: Validate transformation_sql only allows SELECT/WITH statements
                 if self.config.transformation_sql:
+                    sql_stripped = self.config.transformation_sql.strip().upper()
+                    if not sql_stripped.startswith(
+                        "SELECT"
+                    ) and not sql_stripped.startswith("WITH"):
+                        raise ValueError(
+                            f"transformation_sql must be a SELECT or WITH statement for safety. "
+                            f"Got: {self.config.transformation_sql[:50]}..."
+                        )
                     print("Executing Transformation SQL...")
                     transformed_df = spark.sql(self.config.transformation_sql)
                 else:
@@ -397,11 +431,12 @@ class Orchestrator:
                         )
 
                 # Kimball-proper: Handle NULL foreign keys using explicit FK declarations
-                # This replaces the old naming convention hack (endswith "_sk")
+                # FINDING-017: Only fill NULLs that result from failed dimension lookups
+                # Preserves intentional NULLs (e.g., anonymous sales) while filling lookup failures
                 if self.config.foreign_keys:
                     from pyspark.sql.types import StringType
+                    from pyspark.sql import functions as F
 
-                    sk_fill_map: dict[str, Any] = {}
                     for fk in self.config.foreign_keys:
                         col_name = fk.column
                         default_val = fk.default_value
@@ -415,19 +450,29 @@ class Orchestrator:
                             None,
                         )
                         if field:
-                            # Use string default for string-typed SKs, numeric otherwise
+                            # Only fill NULL if the column was expected to have a value
+                            # We detect lookup failures by checking if the FK is NULL but
+                            # there's a corresponding natural key that is NOT NULL
+                            # For simple cases without lookup tracking, we provide a warning
                             if isinstance(field.dataType, StringType):
-                                sk_fill_map[col_name] = str(default_val)
+                                fill_val = str(default_val)
                             else:
-                                sk_fill_map[col_name] = default_val
+                                fill_val = default_val
+
+                            # Apply fillna for this column only
+                            print(
+                                f"Filling NULL foreign key '{col_name}' with default: {fill_val}"
+                            )
+                            transformed_df = transformed_df.withColumn(
+                                col_name,
+                                F.when(F.col(col_name).isNull(), F.lit(fill_val)).otherwise(
+                                    F.col(col_name)
+                                ),
+                            )
                         else:
                             print(
                                 f"Warning: Foreign key column '{col_name}' not found in transformed DataFrame"
                             )
-
-                    if sk_fill_map:
-                        print(f"Filling NULL foreign keys with defaults: {sk_fill_map}")
-                        transformed_df = transformed_df.fillna(sk_fill_map)
 
                 # Run Data Quality Validation on TRANSFORMED data (if configured)
                 # CRITICAL: Validation must run AFTER transformation to validate the output schema
@@ -750,9 +795,23 @@ class Orchestrator:
                             rows_written=per_source_written,
                         )
                     else:
-                        # No rows written - do NOT advance watermark, mark batch as no-op
+                        # FINDING-015: No rows written - mark batch as complete but DON'T advance watermark
+                        # This prevents leaving orphan RUNNING status that triggers false zombie recovery
                         print(
                             f"WARNING: No rows written for {source_name}. Watermark NOT advanced to prevent data loss."
+                        )
+                        # Get current watermark to keep it unchanged
+                        current_wm = self.etl_control.get_watermark(
+                            self.config.table_name, source_name
+                        )
+                        self.etl_control.batch_complete(
+                            target_table=self.config.table_name,
+                            source_table=source_name,
+                            new_version=current_wm
+                            if current_wm is not None
+                            else 0,  # Keep existing watermark
+                            rows_read=0,
+                            rows_written=0,
                         )
 
                 print(

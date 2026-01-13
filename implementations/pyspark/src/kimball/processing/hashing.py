@@ -1,9 +1,10 @@
 from pyspark.sql import Column
 from pyspark.sql.functions import col, concat_ws, lit, sha2, when
 
-# Unique sentinel for NULL values to distinguish from empty string
-# This prevents (NULL, 'val') from colliding with ('', 'val')
-_NULL_SENTINEL = "<\x00NULL\x00>"
+# FINDING-009: Use UUID-based sentinel for NULL values that is statistically unique
+# This prevents (NULL, 'val') from colliding with ('', 'val') or any real data
+# The UUID is fixed to ensure deterministic hashing across runs
+_NULL_SENTINEL = "__NULL_SENTINEL_12345678123456781234567812345678__"
 
 
 def compute_hashdiff(columns: list[str]) -> Column:

@@ -81,6 +81,17 @@ class DataLoader:
                           CRITICAL for preventing race conditions if new data arrives
                           during processing.
         """
+        # FINDING-001: Warn if ending_version not provided (race condition risk)
+        if ending_version is None:
+            import warnings
+
+            warnings.warn(
+                "load_cdf called without ending_version. This can cause race conditions "
+                "if new data arrives during processing. Pass ending_version for safety.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         reader = (
             self.spark.read.format("delta")
             .option("readChangeFeed", "true")
@@ -97,9 +108,16 @@ class DataLoader:
             df = df.filter("_change_type != 'update_preimage'")
 
         # Deduplicate: keep only the latest version per key
+        # FINDING-002: Add secondary ordering by _change_type to ensure deletes win
         if deduplicate_keys and "_commit_version" in df.columns:
+            from pyspark.sql import functions as F
+
+            # Priority: delete (0) > update_postimage (1) > insert (2)
             window = Window.partitionBy(deduplicate_keys).orderBy(
-                col("_commit_version").desc()
+                col("_commit_version").desc(),
+                F.when(col("_change_type") == "delete", 0)
+                .when(col("_change_type") == "update_postimage", 1)
+                .otherwise(2),
             )
             df = (
                 df.withColumn("_rn", row_number().over(window))
