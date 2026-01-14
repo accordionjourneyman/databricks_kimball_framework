@@ -184,13 +184,23 @@ class TableCreator:
             self.enable_predictive_optimization(table_name)
         except Exception as e:
             error_str = str(e).lower()
+            # Serverless/edition limitations - suppress verbose output
             if any(
                 x in error_str
-                for x in ["not supported", "premium", "serverless", "not enabled"]
+                for x in [
+                    "not supported",
+                    "premium",
+                    "serverless",
+                    "not enabled",
+                    "unknown configuration",
+                    "delta_unknown_configuration",
+                ]
             ):
-                print(f"Notice: Predictive Optimization not available on this edition.")
+                pass  # Silently skip - this is a known serverless limitation
             else:
-                print(f"Warning: Predictive Optimization failed: {e}")
+                # Unknown error - print first line only, not full JVM trace
+                first_line = str(e).split("\n")[0][:200]
+                print(f"Warning: Predictive Optimization failed: {first_line}")
 
         try:
             self.enable_deletion_vectors(table_name)
@@ -198,11 +208,19 @@ class TableCreator:
             error_str = str(e).lower()
             if any(
                 x in error_str
-                for x in ["not supported", "premium", "serverless", "not enabled"]
+                for x in [
+                    "not supported",
+                    "premium",
+                    "serverless",
+                    "not enabled",
+                    "unknown configuration",
+                    "delta_unknown_configuration",
+                ]
             ):
-                print(f"Notice: Deletion Vectors not available on this edition.")
+                pass  # Silently skip - this is a known serverless limitation
             else:
-                print(f"Warning: Deletion Vectors failed: {e}")
+                first_line = str(e).split("\n")[0][:200]
+                print(f"Warning: Deletion Vectors failed: {first_line}")
 
         # Apply basic Delta constraints after table creation
         self.apply_basic_constraints(table_name, surrogate_key_col, schema_df)
