@@ -50,7 +50,7 @@ class TableCreator:
         """
         Add system/audit columns to a DataFrame for table creation.
         SCD1: __etl_processed_at, __etl_batch_id, __is_deleted (for soft deletes)
-        SCD2: above + __is_current, __valid_from, __valid_to, hashdiff
+        SCD2: above + __is_current, __valid_from, __valid_to, hashdiff, __is_skeleton
         """
         from pyspark.sql.functions import current_timestamp, lit
         from pyspark.sql.types import LongType, StringType, TimestampType
@@ -68,6 +68,9 @@ class TableCreator:
                 "__valid_to", lit(None).cast(TimestampType())
             )
             result_df = result_df.withColumn("hashdiff", lit(None).cast(StringType()))
+            result_df = result_df.withColumn(
+                "__is_skeleton", lit(False)
+            )  # For skeleton hydration
 
         # Add surrogate key column according to strategy
         if surrogate_key:
@@ -185,9 +188,7 @@ class TableCreator:
                 x in error_str
                 for x in ["not supported", "premium", "serverless", "not enabled"]
             ):
-                print(
-                    f"Notice: Predictive Optimization not available on this edition."
-                )
+                print(f"Notice: Predictive Optimization not available on this edition.")
             else:
                 print(f"Warning: Predictive Optimization failed: {e}")
 
