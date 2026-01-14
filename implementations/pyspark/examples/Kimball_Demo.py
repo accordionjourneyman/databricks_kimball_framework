@@ -601,7 +601,11 @@ ingest_parallel(day3_tasks)
 
 _day3_load_time = time.perf_counter() - _t_load_start
 
-print(f"Day 3 Data Ingested in {_day3_load_time:.2f}s")
+# Delete Bob from source (CDF requires actual DELETE to generate _change_type='delete')
+# Simply not including Bob in the new data doesn't trigger a delete in CDF
+spark.sql("DELETE FROM demo_silver.customers WHERE customer_id = 2")
+
+print(f"Day 3 Data Ingested in {_day3_load_time:.2f}s (Bob deleted from source)")
 
 # COMMAND ----------
 
