@@ -636,9 +636,41 @@ class SCD2Strategy:
         ):
             del insert_values[self.surrogate_key_col]
 
+        # Build skeleton hydration update set - update all source columns in place
+        # This keeps the SK but replaces placeholder NULLs with real data
+        skeleton_hydration_set = {}
+        for c in source_df.columns:
+            if c == "__merge_action":
+                continue
+            if c in self.join_keys:
+                skeleton_hydration_set[c] = f"source.__orig_{c}"
+            else:
+                skeleton_hydration_set[c] = f"source.{c}"
+
+        # Add system columns for hydration
+        skeleton_hydration_set.update(
+            {
+                "__is_skeleton": "false",  # No longer a skeleton
+                "__valid_from": f"COALESCE({validity_col}, {SQL_DEFAULT_VALID_FROM})",
+                "__is_current": "true",
+                "__etl_processed_at": "current_timestamp()",
+                "__is_deleted": "false",
+            }
+        )
+        # Remove SK from hydration (keep original skeleton SK)
+        if self.surrogate_key_col in skeleton_hydration_set:
+            del skeleton_hydration_set[self.surrogate_key_col]
+
         delta_table.alias("target").merge(
             final_source.alias("source"), merge_condition
         ).whenMatchedUpdate(
+            # SKELETON HYDRATION: If target is skeleton and source has real data,
+            # update in-place (keep SK, update attributes). This prevents the
+            # "same customer, two SKs" bug from skeleton getting SCD2 versioned.
+            condition="target.__is_skeleton = true AND source.__merge_action = 'INSERT_NEW'",
+            set=cast(dict[str, str | Column], skeleton_hydration_set),
+        ).whenMatchedUpdate(
+            # Normal SCD2 expiration for non-skeleton rows
             condition="source.__merge_action = 'UPDATE_EXPIRE'",
             set={
                 "__is_current": "false",

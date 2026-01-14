@@ -64,7 +64,9 @@ class TableConfig(BaseModel):
     natural_keys: list[str] = Field(default_factory=list)
     sources: list[SourceConfig]
     transformation_sql: str | None = None
-    delete_strategy: Literal["hard", "soft"] = "hard"
+    delete_strategy: Literal["hard", "soft"] = (
+        "soft"  # Kimball: preserve history for FK integrity
+    )
     enable_audit_columns: bool = Field(alias="audit_columns", default=True)
     scd_type: Literal[1, 2] = 1  # Pydantic coerces int to Literal[1, 2] if specific
     track_history_columns: list[str] | None = None

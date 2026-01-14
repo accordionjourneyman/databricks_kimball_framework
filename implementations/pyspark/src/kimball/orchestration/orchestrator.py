@@ -712,6 +712,31 @@ class Orchestrator:
                     else:
                         join_keys = self.config.natural_keys or []
 
+                    # GRAIN ENFORCEMENT: Fail fast if source violates grain
+                    # This prevents silent duplicates from reaching the merge
+                    if join_keys:
+                        from pyspark.sql.functions import count as spark_count
+
+                        grain_violations = (
+                            source_df.groupBy(*join_keys)
+                            .agg(spark_count("*").alias("__grain_count"))
+                            .filter("__grain_count > 1")
+                        )
+
+                        # Use efficient check (limit 1, not isEmpty)
+                        if len(grain_violations.limit(1).head(1)) > 0:
+                            sample_violations = grain_violations.limit(5).collect()
+                            violation_keys = [
+                                {k: row[k] for k in join_keys}
+                                for row in sample_violations
+                            ]
+                            raise ValueError(
+                                f"Grain violation in {self.config.table_name}: "
+                                f"Duplicate keys found for grain {join_keys}. "
+                                f"Sample violations: {violation_keys}. "
+                                "Fix upstream deduplication before loading."
+                            )
+
                     self.merger.merge(
                         target_table_name=self.config.table_name,
                         source_df=source_df,

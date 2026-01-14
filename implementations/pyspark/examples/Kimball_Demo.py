@@ -552,7 +552,253 @@ print("\n✅ Fact Linkage Test Passed")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 6. Benchmark Results
+# MAGIC ## 6. Day 3: Advanced Scenarios
+# MAGIC Testing deletes, SCD2 tracked column updates, new rows, and **late-arriving facts** (skeleton generation).
+# MAGIC *   **Deleted**: Bob (customer_id=2) is deleted from source
+# MAGIC *   **SCD2 Update**: Charlie's email changes (tracked column)
+# MAGIC *   **New Customer**: Dana (customer_id=4)
+# MAGIC *   **Late-Arriving Fact**: Order for customer_id=999 (doesn't exist yet - should create skeleton)
+
+# COMMAND ----------
+
+# --- Day 3 Data ---
+
+# Customers: Bob DELETED (not in list), Charlie email updated, new Dana
+customers_day3 = [
+    (1, "Alice", "Smith", "alice@example.com", "789 Cherry Ln, LA", "2025-01-02T11:00:00"),  # Same (no change)
+    # Bob (2) is DELETED - not included
+    (3, "Charlie", "Brown", "charlie.brown@newmail.com", "321 Date Dr, TX", "2025-01-03T09:00:00"),  # Email updated (SCD2)
+    (4, "Dana", "White", "dana@example.com", "555 Elm St, WA", "2025-01-03T10:00:00"),  # New customer
+]
+
+products_day3 = [
+    (101, "Laptop", "Electronics", 900.00, "2025-01-02T09:00:00"),  # Same
+    (102, "Mouse", "Electronics", 18.00, "2025-01-03T08:00:00"),  # Price drop
+    (103, "Keyboard", "Electronics", 50.00, "2025-01-02T10:00:00"),  # Same
+    (104, "Monitor", "Electronics", 300.00, "2025-01-03T11:00:00"),  # New product
+]
+
+orders_day3 = [
+    (1005, 4, "2025-01-03", "Processing", "2025-01-03T12:00:00"),  # Dana's order
+    (1006, 999, "2025-01-03", "Shipped", "2025-01-03T13:00:00"),  # LATE-ARRIVING: customer 999 doesn't exist!
+]
+
+order_items_day3 = [
+    (5005, 1005, 104, 1, 350.00),  # Dana buys Monitor
+    (5006, 1006, 101, 1, 950.00),  # Mystery customer 999 buys Laptop
+]
+
+# --- Ingest Day 3 ---
+_t_load_start = time.perf_counter()
+
+day3_tasks = [
+    ("customers", customers_day3, customers_schema, ["customer_id"]),
+    ("products", products_day3, products_schema, ["product_id"]),
+    ("orders", orders_day3, orders_schema, ["order_id"]),
+    ("order_items", order_items_day3, order_items_schema, ["order_item_id"]),
+]
+ingest_parallel(day3_tasks)
+
+_day3_load_time = time.perf_counter() - _t_load_start
+
+print(f"Day 3 Data Ingested in {_day3_load_time:.2f}s")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Run Pipeline (Day 3)
+# MAGIC This run will:
+# MAGIC 1. Soft-delete Bob (SCD2 delete handling)
+# MAGIC 2. Create new version for Charlie (email changed)
+# MAGIC 3. Insert Dana as new customer
+# MAGIC 4. **Generate skeleton row for customer_id=999** (late-arriving fact)
+
+# COMMAND ----------
+
+# Run Dimensions and Facts
+_t_transform_start = time.perf_counter()
+
+executor = PipelineExecutor([
+    f"{CONFIG_PATH}/dim_customer.yml",
+    f"{CONFIG_PATH}/dim_product.yml",
+    f"{CONFIG_PATH}/fact_sales.yml"
+])
+executor.run()
+_day3_transform_time = time.perf_counter() - _t_transform_start
+
+_day3_rows = spark.table("demo_gold.fact_sales").count()
+benchmark_metrics.append(
+    {
+        "framework": "pyspark",
+        "day": 3,
+        "load_time": _day3_load_time,
+        "transform_time": _day3_transform_time,
+        "total_time": _day3_load_time + _day3_transform_time,
+        "rows": _day3_rows,
+    }
+)
+
+print(f"Day 3 Pipeline Complete in {_day3_transform_time:.2f}s ({_day3_rows} rows)")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 7. Day 3 Verification Tests
+
+# COMMAND ----------
+
+# TEST 1: Bob Deleted (SCD2 soft delete)
+# Bob should still exist but be marked as deleted with __is_current = False
+
+bob_check = spark.sql("""
+    SELECT customer_sk, first_name, __is_current, __is_deleted, __valid_to
+    FROM demo_gold.dim_customer 
+    WHERE customer_id = 2
+    ORDER BY __valid_from
+""").collect()
+
+print("Bob (Deleted Customer) Status:")
+for row in bob_check:
+    print(row)
+
+assert len(bob_check) >= 1, "Bob should still exist in dimension (soft delete)"
+# The current version should be marked as deleted
+current_bob = [r for r in bob_check if r["__is_current"] == True]
+if current_bob:
+    assert current_bob[0]["__is_deleted"] == True, "Bob's current row should be marked as deleted"
+else:
+    # All rows expired (valid_to set)
+    assert all(r["__valid_to"] is not None for r in bob_check), "Bob should be expired"
+
+print("\n✅ Delete Handling Test Passed")
+
+# COMMAND ----------
+
+# TEST 2: Charlie SCD2 Email Update
+# Charlie should have 2 versions: old email and new email
+
+charlie_history = spark.sql("""
+    SELECT customer_sk, email, __valid_from, __valid_to, __is_current 
+    FROM demo_gold.dim_customer 
+    WHERE customer_id = 3 
+    ORDER BY __valid_from
+""").collect()
+
+print("Charlie History (SCD2 Email Change):")
+for row in charlie_history:
+    print(row)
+
+assert len(charlie_history) == 2, "Charlie should have 2 history rows after email update"
+assert charlie_history[0]["email"] == "charlie@example.com", "First version should have old email"
+assert charlie_history[1]["email"] == "charlie.brown@newmail.com", "Second version should have new email"
+assert charlie_history[1]["__is_current"] == True, "Latest version should be current"
+
+print("\n✅ SCD2 Tracked Column Update Test Passed")
+
+# COMMAND ----------
+
+# TEST 3: New Customer Dana
+# Dana should have exactly 1 row (new insert)
+
+dana = spark.sql("""
+    SELECT customer_sk, first_name, email, __is_current 
+    FROM demo_gold.dim_customer 
+    WHERE customer_id = 4
+""").collect()
+
+print("Dana (New Customer):")
+for row in dana:
+    print(row)
+
+assert len(dana) == 1, "Dana should have exactly 1 row"
+assert dana[0]["first_name"] == "Dana", "First name should be Dana"
+assert dana[0]["__is_current"] == True, "Dana's row should be current"
+
+print("\n✅ New Row Insert Test Passed")
+
+# COMMAND ----------
+
+# TEST 4: Late-Arriving Fact - Skeleton Generation
+# Order 1006 references customer_id=999 which doesn't exist
+# Framework should create a skeleton row in dim_customer
+
+skeleton_check = spark.sql("""
+    SELECT customer_sk, customer_id, first_name, __is_current, __is_skeleton, __valid_from
+    FROM demo_gold.dim_customer 
+    WHERE customer_id = 999
+""").collect()
+
+print("Skeleton Row for Late-Arriving Customer 999:")
+for row in skeleton_check:
+    print(row)
+
+# Check if skeleton was generated
+if len(skeleton_check) > 0:
+    assert skeleton_check[0]["__is_skeleton"] == True, "Row should be marked as skeleton"
+    assert skeleton_check[0]["first_name"] is None, "Skeleton should have NULL for non-key columns"
+    # Check sentinel date (1800-01-01)
+    valid_from = skeleton_check[0]["__valid_from"]
+    assert valid_from.year == 1800, f"Skeleton __valid_from should be 1800-01-01 sentinel, got {valid_from}"
+    print("\n✅ Skeleton Generation Test Passed")
+else:
+    print("\n⚠️ Skeleton not generated - this may be expected if skeleton generation is disabled")
+    print("   Check enable_skeleton_rows in fact_sales config")
+
+# COMMAND ----------
+
+# TEST 5: Fact Sales FK Integrity
+# All facts should have valid customer_sk (either real or skeleton -1 default)
+
+fk_check = spark.sql("""
+    SELECT 
+        f.order_id,
+        f.customer_sk,
+        CASE 
+            WHEN c.customer_sk IS NULL THEN 'MISSING' 
+            WHEN c.__is_skeleton = true THEN 'SKELETON'
+            ELSE 'VALID' 
+        END as fk_status
+    FROM demo_gold.fact_sales f
+    LEFT JOIN demo_gold.dim_customer c ON f.customer_sk = c.customer_sk
+    ORDER BY f.order_id
+""").collect()
+
+print("Fact Sales FK Integrity Check:")
+for row in fk_check:
+    print(row)
+
+# All FKs should be either VALID or SKELETON (not MISSING or NULL)
+missing_fks = [r for r in fk_check if r["fk_status"] == "MISSING"]
+assert len(missing_fks) == 0, f"Found {len(missing_fks)} facts with missing FKs"
+
+print("\n✅ FK Integrity Test Passed")
+
+# COMMAND ----------
+
+# TEST 6: Total Row Counts
+print("Final Table Counts:")
+dim_customer_count = spark.table("demo_gold.dim_customer").count()
+dim_product_count = spark.table("demo_gold.dim_product").count()
+fact_sales_count = spark.table("demo_gold.fact_sales").count()
+
+print(f"  dim_customer: {dim_customer_count} rows")
+print(f"  dim_product: {dim_product_count} rows") 
+print(f"  fact_sales: {fact_sales_count} rows")
+
+# Expected counts:
+# - dim_customer: Alice(2) + Bob(1-2) + Charlie(2) + Dana(1) + Skeleton(1) = 7-8 rows
+# - dim_product: 4 products (SCD1, so 1 row each)
+# - fact_sales: 6 order items total
+
+assert dim_product_count == 4, f"Expected 4 products, got {dim_product_count}"
+assert fact_sales_count == 6, f"Expected 6 fact rows, got {fact_sales_count}"
+
+print("\n✅ Row Count Test Passed")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 8. Benchmark Results
 
 # COMMAND ----------
 

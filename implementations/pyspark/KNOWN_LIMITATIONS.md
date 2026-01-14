@@ -2,13 +2,18 @@
 
 This document outlines known limitations, design choices, and potential edge cases in the PySpark implementation of the Kimball Framework.
 
-## 1. Delete Propagation (Delete Semantics)
+## 1. Delete Semantics (Kimball-Compliant)
 
-- **Behavior:** The framework **propagates** deletes from Source to Target.
-  - **Source:** `loader.py` reads CDF data and filters out `update_preimage` rows but **includes** `delete` rows.
-  - **Target (SCD1):** Deletes are applied (rows removed).
-  - **Target (SCD2):** Deletes are handled as "Logical Deletes" if configured (`__is_deleted` = true) or hard deletes (`whenMatchedDelete`).
-- **Documentation Correction:** Previous documentation stating "Deletes are filtered out" was incorrect. The code correctly handles deletes.
+**Default Behavior**: `delete_strategy: soft` (preserves referential integrity)
+
+| SCD Type | Delete Behavior                                             |
+| -------- | ----------------------------------------------------------- |
+| **SCD1** | Sets `__is_deleted = true` (row preserved)                  |
+| **SCD2** | Expires row (`__is_current = false`, `__is_deleted = true`) |
+
+**Why Soft Deletes?** Kimball requires dimension rows to remain for FK integrity. Facts that referenced a deleted customer must still join correctly.
+
+**Hard Delete Option**: `delete_strategy: hard` removes rows (use for GDPR compliance, not general ETL).
 
 ## 2. Crash Consistency (Atomic Batch Recovery)
 
@@ -41,3 +46,33 @@ This document outlines known limitations, design choices, and potential edge cas
 - **Status:** This strategy is now **BLOCKED** by default.
 - **Mitigation:** Use `surrogate_key_strategy: identity` (Delta Identity Columns) or `hash`.
 - **Override:** Can be force-enabled via `KIMBALL_ALLOW_UNSAFE_SEQUENCE_KEY=1` (Not Recommended).
+
+## 7. Idempotency Contracts
+
+The framework provides the following guarantees for repeated runs of the same batch:
+
+| Merge Strategy          | Idempotency Guarantee              | Notes                                                                                                                    |
+| ----------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| **upsert** (default)    | ✅ **Idempotent**                  | Same batch replayed → same result. Delta MERGE is inherently idempotent when matching on natural/merge keys.             |
+| **append**              | ❌ **NOT idempotent**              | Repeated runs will create duplicates. User must ensure upstream deduplication or use watermark to prevent re-processing. |
+| **partition_overwrite** | ✅ **Idempotent within partition** | Same partition rewritten → same result. Idempotent as long as partition bounds are deterministic.                        |
+
+### Ensuring Idempotency
+
+1. **Watermarks**: The framework tracks `last_processed_version` (CDF) or `last_processed_timestamp` to prevent re-processing the same data.
+
+2. **Batch Tracking**: Each run is assigned a unique `batch_id`. Crashed batches are detected and rolled back on restart.
+
+3. **Grain Enforcement**: Pre-merge validation ensures source data has unique keys, preventing silent duplicates.
+
+### When Idempotency Breaks
+
+- **Watermark reset**: Manually resetting watermarks will cause re-processing.
+- **Non-deterministic transforms**: `current_timestamp()` or `rand()` in `transformation_sql` produces different results on replay.
+- **External state**: Joins to external tables that change between runs.
+
+### Best Practices
+
+- Use `upsert` (default) for dimensions and transaction facts.
+- Reserve `append` for immutable event logs where source has exactly-once semantics.
+- Use `partition_overwrite` for bulk restatements with date-partitioned tables.
