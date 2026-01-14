@@ -179,9 +179,9 @@ class TableCreator:
         logger.info(f"Table {table_name} created successfully.")
 
         # Enable Delta optimizations after table creation (optional features, may fail on Free Edition)
-        # FINDING-013: Improved error handling to distinguish edition limitations from real errors
+        # Phase 1 optimization: Batch TBLPROPERTIES into single ALTER TABLE
         try:
-            self.enable_predictive_optimization(table_name)
+            self.enable_delta_features(table_name)
         except Exception as e:
             error_str = str(e).lower()
             # Serverless/edition limitations - suppress verbose output
@@ -196,31 +196,11 @@ class TableCreator:
                     "delta_unknown_configuration",
                 ]
             ):
-                pass  # Silently skip - this is a known serverless limitation
+                pass  # Silently skip - known serverless limitation
             else:
                 # Unknown error - print first line only, not full JVM trace
                 first_line = str(e).split("\n")[0][:200]
-                print(f"Warning: Predictive Optimization failed: {first_line}")
-
-        try:
-            self.enable_deletion_vectors(table_name)
-        except Exception as e:
-            error_str = str(e).lower()
-            if any(
-                x in error_str
-                for x in [
-                    "not supported",
-                    "premium",
-                    "serverless",
-                    "not enabled",
-                    "unknown configuration",
-                    "delta_unknown_configuration",
-                ]
-            ):
-                pass  # Silently skip - this is a known serverless limitation
-            else:
-                first_line = str(e).split("\n")[0][:200]
-                print(f"Warning: Deletion Vectors failed: {first_line}")
+                print(f"Warning: Delta features failed: {first_line}")
 
         # Apply basic Delta constraints after table creation
         self.apply_basic_constraints(table_name, surrogate_key_col, schema_df)
@@ -340,10 +320,30 @@ class TableCreator:
         spark.conf.set(SPARK_CONF_AUTO_MERGE, "true")
         logger.info("Enabled schema auto-merge for current session")
 
+    def enable_delta_features(self, table_name: str) -> None:
+        """
+        Enable multiple Delta features in a single ALTER TABLE call.
+        Phase 1 optimization: Batches TBLPROPERTIES to reduce round-trips.
+
+        Features enabled:
+        - Deletion Vectors (improves MERGE performance)
+        - Predictive Optimization (auto table layout optimization)
+        """
+        quoted_table_name = quote_table_name(table_name)
+        features = [
+            "'delta.enableDeletionVectors' = 'true'",
+            "'delta.enablePredictiveOptimization' = 'true'",
+        ]
+        alter_sql = (
+            f"ALTER TABLE {quoted_table_name} SET TBLPROPERTIES ({', '.join(features)})"
+        )
+        spark.sql(alter_sql)
+        print(f"Delta features enabled for {table_name}")
+
     def enable_predictive_optimization(self, table_name: str) -> None:
         """
         Enables Predictive Optimization for a Delta table.
-        This allows Databricks to automatically optimize table layout and performance.
+        DEPRECATED: Use enable_delta_features() for batched operations.
         """
         quoted_table_name = quote_table_name(table_name)
         alter_sql = f"ALTER TABLE {quoted_table_name} SET TBLPROPERTIES ('delta.enablePredictiveOptimization' = 'true')"
@@ -353,7 +353,7 @@ class TableCreator:
     def enable_deletion_vectors(self, table_name: str) -> None:
         """
         Enables Deletion Vectors for a Delta table.
-        This improves performance for MERGE operations with many updates/deletes.
+        DEPRECATED: Use enable_delta_features() for batched operations.
         """
         quoted_table_name = quote_table_name(table_name)
         alter_sql = f"ALTER TABLE {quoted_table_name} SET TBLPROPERTIES ('delta.enableDeletionVectors' = 'true')"

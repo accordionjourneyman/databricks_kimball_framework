@@ -624,6 +624,7 @@ class SCD2Strategy:
                 "__valid_to": SQL_DEFAULT_VALID_TO,
                 "__etl_processed_at": "current_timestamp()",
                 "__is_deleted": "false",
+                "__is_skeleton": "false",  # New rows are not skeletons
             }
         )
 
