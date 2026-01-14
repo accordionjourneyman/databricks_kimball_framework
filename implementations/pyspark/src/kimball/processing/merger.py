@@ -277,17 +277,11 @@ class SCD1Strategy:
             elif self.surrogate_key_strategy == "hash":
                 key_gen = HashKeyGenerator(self.join_keys)
             elif self.surrogate_key_strategy == "sequence":
-                try:
-                    max_key_row = (
-                        delta_table.toDF().agg({self.surrogate_key_col: "max"}).first()
-                    )
-                    max_key = max_key_row[0] if max_key_row else 0
-                except PYSPARK_EXCEPTION_BASE as e:
-                    print(
-                        f"Warning: Failed to retrieve max key for {self.surrogate_key_col}: {e}"
-                    )
-                    max_key = 0
-                key_gen = SequenceKeyGenerator()
+                # FINDING-006: Block sequence strategy with clear error
+                raise ValueError(
+                    "surrogate_key_strategy='sequence' is blocked due to OOM risk with row_number(). "
+                    "Use 'identity' (recommended) or 'hash'. See KNOWN_LIMITATIONS.md."
+                )
 
             if key_gen and self.surrogate_key_strategy != "identity":
                 source_df = key_gen.generate_keys(
@@ -424,9 +418,7 @@ class SCD2Strategy:
 
                 # Build merge condition for deletes
                 delete_merge_cond = (
-                    " AND ".join(
-                        [f"target.{k} <=> source.{k}" for k in self.join_keys]
-                    )
+                    " AND ".join([f"target.{k} <=> source.{k}" for k in self.join_keys])
                     + " AND target.__is_current = true"
                 )
 
