@@ -325,9 +325,18 @@ class StagingTableManager:
         _exc_tb: TracebackType | None,
     ) -> None:
         """Ensure staging tables are cleaned up even if an exception occurs."""
+        import re
+
         for staging_table in self.staging_tables:
             try:
-                spark.sql(f"DROP TABLE IF EXISTS {staging_table}")
+                # C-03: Validate table name format to prevent SQL injection
+                if not re.match(r"^[a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+)*$", staging_table):
+                    print(f"Skipping invalid staging table name: {staging_table}")
+                    continue
+
+                # Quote each part of the table name for safety
+                quoted = ".".join([f"`{part}`" for part in staging_table.split(".")])
+                spark.sql(f"DROP TABLE IF EXISTS {quoted}")
                 self.cleanup_manager.unregister_staging_table(staging_table)
                 print(
                     f"Cleaned up staging table during exception recovery: {staging_table}"

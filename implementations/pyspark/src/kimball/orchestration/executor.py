@@ -1,14 +1,25 @@
 """
-PipelineExecutor - Wave-based parallel pipeline execution for notebooks.
+PipelineExecutor - Wave-based pipeline execution for notebooks.
 
-This module provides a simple executor for running multiple Kimball pipelines
+This module provides an executor for running multiple Kimball pipelines
 with automatic dependency ordering (dimensions before facts).
 
-IMPORTANT: For production workloads, use Databricks Jobs with for_each tasks
-instead. This executor is designed for:
-- Demo notebooks
-- Local development
-- Quick iteration during development
+IMPORTANT LIMITATION (C-06):
+    ThreadPoolExecutor does NOT provide real Spark parallelism:
+    - Python GIL means only one thread runs Python code at a time
+    - All threads share the same SparkSession, so jobs serialize
+    - For actual parallel execution, use Databricks Jobs with for_each tasks
+
+This executor is designed for:
+    - Demo notebooks (sequential execution is fine)
+    - Local development
+    - Quick iteration during development
+    - Single-threaded deterministic testing
+
+For production workloads with parallelism requirements, use:
+    - Databricks Jobs with for_each tasks
+    - Separate job clusters per pipeline
+    - Delta Live Tables (DLT) pipelines
 
 Configuration:
     Set KIMBALL_ETL_SCHEMA environment variable to configure ETL control table location:

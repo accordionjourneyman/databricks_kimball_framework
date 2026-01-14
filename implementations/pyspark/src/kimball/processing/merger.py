@@ -654,7 +654,27 @@ class DeltaMerger:
     """
     Handles the MERGE operation into the target Delta table.
     Includes Audit Column injection and Delete handling.
+
+    C-01: Supports SparkSession injection for testability.
     """
+
+    def __init__(self, spark_session: Any | None = None) -> None:
+        """
+        Initialize DeltaMerger with optional SparkSession injection.
+
+        Args:
+            spark_session: Optional SparkSession. If None, uses global Databricks spark.
+        """
+        self._spark = spark_session
+
+    @property
+    def spark(self) -> Any:
+        """Lazy SparkSession accessor with fallback to global."""
+        if self._spark is None:
+            from databricks.sdk.runtime import spark
+
+            self._spark = spark
+        return self._spark
 
     @retry_on_concurrent_exception()
     def merge(
@@ -714,19 +734,46 @@ class DeltaMerger:
         DeltaTable.isDeltaTable() requires a path, not a table name.
         """
         try:
-            DeltaTable.forName(spark, table_name)
+            DeltaTable.forName(self.spark, table_name)
             return True
         except Exception:
             return False
 
-    def get_last_merge_metrics(self, table_name: str) -> dict[str, Any]:
+    def get_last_merge_metrics(
+        self, table_name: str, batch_id: str | None = None
+    ) -> dict[str, Any]:
         """
-        Get metrics from the last MERGE operation on a table.
-        Returns dict with numSourceRows, numTargetRowsInserted, numTargetRowsUpdated, etc.
-        This is more efficient than counting DataFrames since Delta tracks this automatically.
+        Get metrics from a MERGE operation on a table.
+
+        C-02: Fix race condition by optionally querying by batch_id.
+        Without batch_id, returns history(1) which may be from a concurrent pipeline.
+        With batch_id, searches recent history to find the exact commit.
+
+        Args:
+            table_name: Target table name.
+            batch_id: Optional batch ID to find exact commit metrics.
+
+        Returns:
+            Dict with numSourceRows, numTargetRowsInserted, numTargetRowsUpdated, etc.
         """
         try:
-            delta_table = DeltaTable.forName(spark, table_name)
+            delta_table = DeltaTable.forName(self.spark, table_name)
+
+            if batch_id:
+                # Query by batch_id in userMetadata for exact commit
+                from pyspark.sql.functions import col
+
+                history = delta_table.history(10)  # Check last 10 commits
+                matching = history.filter(col("userMetadata") == batch_id).first()
+                if matching and matching.operationMetrics:
+                    return dict(matching.operationMetrics)
+                # Fallback to latest if batch_id not found (Serverless may not tag)
+                print(
+                    f"Warning: Could not find commit with batch_id={batch_id}. "
+                    "Using latest commit metrics (may be inaccurate if concurrent pipelines)."
+                )
+
+            # Default: return latest commit metrics
             history = delta_table.history(1).select("operationMetrics").first()
             if history and history.operationMetrics:
                 return dict(history.operationMetrics)
@@ -746,7 +793,7 @@ class DeltaMerger:
         Ensures that the standard SCD2 default rows (-1, -2, -3) exist in the table.
         """
         # Table must exist (Orchestrator creates it as Delta before calling this)
-        if not spark.catalog.tableExists(target_table_name):
+        if not self.spark.catalog.tableExists(target_table_name):
             print(
                 f"ensure_scd2_defaults: table {target_table_name} does not exist. Skipping."
             )
@@ -759,7 +806,7 @@ class DeltaMerger:
                 "The Orchestrator should create it as Delta before calling this method."
             )
 
-        delta_table = DeltaTable.forName(spark, target_table_name)
+        delta_table = DeltaTable.forName(self.spark, target_table_name)
 
         # Define the standard defaults
         # -1: Unknown
@@ -840,7 +887,7 @@ class DeltaMerger:
             print(
                 f"Seeding {len(rows_to_insert)} default rows into {target_table_name}..."
             )
-            df = spark.createDataFrame(rows_to_insert, schema)
+            df = self.spark.createDataFrame(rows_to_insert, schema)
 
             # Use atomic MERGE operation to prevent duplicates in concurrent environments
             delta_table.alias("target").merge(
@@ -860,7 +907,7 @@ class DeltaMerger:
         Similar to SCD2 but without the SCD2-specific system columns.
         """
         # Table must exist (Orchestrator creates it as Delta before calling this)
-        if not spark.catalog.tableExists(target_table_name):
+        if not self.spark.catalog.tableExists(target_table_name):
             print(
                 f"ensure_scd1_defaults: table {target_table_name} does not exist. Skipping."
             )
@@ -872,7 +919,7 @@ class DeltaMerger:
                 f"ensure_scd1_defaults: {target_table_name} exists but is not a Delta table."
             )
 
-        delta_table = DeltaTable.forName(spark, target_table_name)
+        delta_table = DeltaTable.forName(self.spark, target_table_name)
 
         rows_to_insert = []
 
@@ -935,7 +982,7 @@ class DeltaMerger:
             print(
                 f"Seeding {len(rows_to_insert)} default rows into {target_table_name}..."
             )
-            df = spark.createDataFrame(rows_to_insert, schema)
+            df = self.spark.createDataFrame(rows_to_insert, schema)
 
             # Use atomic MERGE operation to prevent duplicates in concurrent environments
             delta_table.alias("target").merge(
@@ -959,10 +1006,10 @@ class DeltaMerger:
             # Note: This assumes the table was created with CLUSTER BY clause
             # We just run OPTIMIZE, which will use the existing clustering spec
             quoted_table_name = quote_table_name(table_name)
-            spark.sql(f"OPTIMIZE {quoted_table_name}")
+            self.spark.sql(f"OPTIMIZE {quoted_table_name}")
             print(f"Optimized {table_name} using Liquid Clustering on {cluster_by}")
         else:
             # Standard OPTIMIZE without clustering
             quoted_table_name = quote_table_name(table_name)
-            spark.sql(f"OPTIMIZE {quoted_table_name}")
+            self.spark.sql(f"OPTIMIZE {quoted_table_name}")
             print(f"Optimized {table_name}")

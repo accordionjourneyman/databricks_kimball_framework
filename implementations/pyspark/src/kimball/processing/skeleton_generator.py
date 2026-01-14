@@ -70,21 +70,26 @@ class SkeletonGenerator:
         # Start with the keys
         skeletons = missing_keys.withColumnRenamed("key", dim_join_key)
 
-        # FINDING-010: Add proper audit trail for skeleton rows
-        # Use current_timestamp for __valid_from (dimension was discovered NOW, not 1900)
-        # Include batch_id to trace skeleton creation to originating fact batch
-        # Add __is_skeleton flag to identify skeleton rows for later processing
+        # C-07: Use sentinel date for skeleton rows to distinguish from real dimensions
+        # Skeletons represent "unknown" dimension members discovered via early-arriving facts.
+        # Using 1800-01-01 as sentinel makes it clear these are synthetic rows.
+        # When real dimension arrives, __valid_from should be set from source data.
+        from datetime import datetime
+
+        SKELETON_VALID_FROM = datetime(1800, 1, 1, 0, 0, 0)
+
         skeletons = (
             skeletons.withColumn("__is_current", lit(True))
             .withColumn(
-                "__valid_from", current_timestamp()
-            )  # Discovered NOW, not historical
+                "__valid_from", lit(SKELETON_VALID_FROM)
+            )  # Sentinel date - clearly artificial
             .withColumn("__valid_to", lit(None).cast("timestamp"))
             .withColumn("__etl_processed_at", current_timestamp())
-            .withColumn(
-                "__etl_batch_id", lit(batch_id if batch_id else "SKELETON_GEN")
-            )
+            .withColumn("__etl_batch_id", lit(batch_id if batch_id else "SKELETON_GEN"))
             .withColumn("__is_skeleton", lit(True))  # Flag for identification
+            .withColumn(
+                "__skeleton_created_at", current_timestamp()
+            )  # Actual creation time
             .withColumn("__is_deleted", lit(False))
         )
 

@@ -2,10 +2,15 @@ import os
 import time
 import uuid
 import warnings
+import logging
 from typing import Any
 
 from databricks.sdk.runtime import spark
-from pyspark.sql.functions import col
+from pyspark.sql import DataFrame
+from pyspark.sql.functions import col, lit
+
+# C-04: Add structured logging for exception visibility
+logger = logging.getLogger(__name__)
 
 from kimball.common.config import ConfigLoader
 from kimball.common.constants import (
@@ -89,9 +94,9 @@ class Orchestrator:
             spark.conf.set(SPARK_CONF_AQE_ENABLED, "true")
             spark.conf.set(SPARK_CONF_AQE_SKEW_JOIN, "true")
             spark.conf.set(SPARK_CONF_AQE_COALESCE, "true")
-        except Exception:
-            # Spark Connect (Databricks Free Edition) does not allow setting these configs
-            pass
+        except Exception as e:
+            # C-04: Log instead of silent pass for debugging
+            logger.debug(f"Could not set Spark AQE configs (likely Spark Connect): {e}")
 
         # Handle deprecated 'watermark_database' parameter
         if watermark_database is not None:
@@ -265,8 +270,11 @@ class Orchestrator:
                                 source_table,
                                 "CRASH_RECOVERY: Rolled back",
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            # C-04: Log failed batch_fail for visibility
+                            logger.warning(
+                                f"Failed to mark batch as failed during crash recovery: {e}"
+                            )
 
         # Start batch tracking for each source (AFTER zombie recovery)
         # Only track incremental sources (CDF, timestamp) - full snapshot sources don't need watermarks
@@ -465,9 +473,9 @@ class Orchestrator:
                             )
                             transformed_df = transformed_df.withColumn(
                                 col_name,
-                                F.when(F.col(col_name).isNull(), F.lit(fill_val)).otherwise(
-                                    F.col(col_name)
-                                ),
+                                F.when(
+                                    F.col(col_name).isNull(), F.lit(fill_val)
+                                ).otherwise(F.col(col_name)),
                             )
                         else:
                             print(
@@ -554,7 +562,8 @@ class Orchestrator:
 
                 # 4. Stage-then-Merge for concurrency resilience
                 # Check if we have data to merge
-                if transformed_df.isEmpty():
+                # C-08: Use efficient empty check pattern instead of isEmpty() which scans entire DataFrame
+                if len(transformed_df.limit(1).head(1)) == 0:
                     print("No data to merge. Skipping.")
                     # CRITICAL: Do NOT fetch last merge metrics here - they would be stale
                     # from a previous run and could incorrectly trigger watermark advancement
@@ -736,8 +745,9 @@ class Orchestrator:
                 # CRITICAL: Only fetch metrics if merge was actually executed
                 # Otherwise we'd get stale metrics from a previous run
                 if merge_executed:
+                    # C-02: Pass batch_id to get exact commit metrics (prevents race condition)
                     merge_metrics = self.merger.get_last_merge_metrics(
-                        self.config.table_name
+                        self.config.table_name, batch_id=batch_id
                     )
                     total_rows_read = int(merge_metrics.get("numSourceRows", 0))
                     total_rows_written = int(
@@ -855,8 +865,9 @@ class Orchestrator:
                     self.etl_control.batch_fail(
                         self.config.table_name, source.name, error_msg
                     )
-                except Exception:
-                    pass  # Don't mask original error
+                except Exception as batch_err:
+                    # C-04: Log instead of silent pass
+                    logger.debug(f"Could not mark batch as failed: {batch_err}")
 
             # Re-raise exception to ensure TransactionManager context manager catches it and rolls back
             raise e
