@@ -4,37 +4,61 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kimball_framework"
-version = "0.1.1"
-description = "A declarative, CDF-based ETL framework for Databricks"
+version = "0.2.0"
+description = "A declarative, CDF-based ETL framework implementing Kimball dimensional modeling on Databricks"
 authors = [{name = "Tiago Marques"}]
 license = {text = "Apache-2.0"}
 readme = "README.md"
 requires-python = ">=3.10"
+keywords = ["databricks", "kimball", "etl", "delta-lake", "dimensional-modeling", "scd", "data-warehouse"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering",
+]
+
+# Core deps are pure-python. PySpark/Delta provided by Databricks Runtime.
 dependencies = [
     "pyyaml",
     "jinja2",
     "jsonschema>=4.0.0",
     "pydantic>=2.0.0,<2.10.0",
-    "typing-extensions>=4.6.0"
+    "typing-extensions>=4.6.0",
 ]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[project.urls]
+Homepage = "https://github.com/your-username/databricks_kimball_framework"
+Documentation = "https://github.com/your-username/databricks_kimball_framework#readme"
+Repository = "https://github.com/your-username/databricks_kimball_framework"
+Changelog = "https://github.com/your-username/databricks_kimball_framework/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
+# For local development/testing outside Databricks
+spark = [
+    "pyspark>=3.4.0",
+    "delta-spark>=2.4.0",
+]
 dev = [
     "pytest",
     "ruff",
     "mypy",
     "pyright",
     "pyspark>=3.4.0",
-    "delta-spark>=2.4.0"
+    "delta-spark>=2.4.0",
 ]
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.ruff]
 line-length = 88
 target-version = "py310"
-exclude = ["examples"]
 
 [tool.ruff.lint]
 select = [
@@ -58,13 +82,11 @@ python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
-exclude = ["examples"]
 
 [tool.pyright]
 pythonVersion = "3.10"
 typeCheckingMode = "basic"
 reportMissingImports = "none"
-exclude = ["examples"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

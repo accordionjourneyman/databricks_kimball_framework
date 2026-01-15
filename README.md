@@ -2,6 +2,14 @@
 
 A declarative, CDF-based ETL framework implementing Kimball dimensional modeling patterns on Databricks with Delta Lake.
 
+## Requirements
+
+- **Databricks Runtime**: 13.3 LTS or higher
+- **Python**: 3.10+
+- **Delta Lake**: Provided by Databricks Runtime (or `delta-spark>=2.4.0` for local dev)
+
+> **Note**: PySpark and Delta Lake are _not_ installed by `pip install .` — they're provided by the Databricks Runtime. For local development, use `pip install ".[dev]"`.
+
 ## Quick Start
 
 ```bash
@@ -18,7 +26,7 @@ Then open `examples/Kimball_Demo.py` in Databricks.
 - **Change Data Feed (CDF)**: Incremental processing with watermark tracking
 - **Foreign Key Lookups**: With Kimball-style defaults (-1 for unknown)
 - **Performance Optimized**: Configurable "lite" validations vs "strict" dev checks
-- **Crash Recovery**: Transactional batch recovery with rollback support
+- **Crash Recovery**: Transactional batch recovery — see [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md#2-crash-consistency-atomic-batch-recovery)
 
 ## Project Structure
 
@@ -34,8 +42,6 @@ Then open `examples/Kimball_Demo.py` in Databricks.
 ```
 
 ## Documentation
-
-See [docs/](docs/) for detailed documentation:
 
 - [Getting Started](docs/GETTING_STARTED.md)
 - [Configuration](docs/CONFIGURATION.md)
