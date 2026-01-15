@@ -898,44 +898,26 @@ class Orchestrator:
 
                     # Only advance watermark if we actually processed something
                     # OR if total_rows_written > 0 (merge happened successfully)
-                    if total_rows_written > 0 or per_source_rows > 0:
-                        # Use actual per-source count if available, else distribute written rows
-                        if per_source_rows == 0 and total_rows_written > 0:
-                            # Fallback: distribute written rows among sources that contributed
-                            per_source_written = total_rows_written // max(
-                                len(sources_with_data), 1
-                            )
-                        else:
-                            per_source_written = per_source_rows
-
-                        self.etl_control.batch_complete(
-                            target_table=self.config.table_name,
-                            source_table=source_name,
-                            new_version=version,
-                            rows_read=per_source_rows
-                            if per_source_rows > 0
-                            else (total_rows_read // max(len(sources_with_data), 1)),
-                            rows_written=per_source_written,
+                    # Use actual per-source count if available, else distribute written rows
+                    if per_source_rows == 0 and total_rows_written > 0:
+                        # Fallback: distribute written rows among sources that contributed
+                        per_source_written = total_rows_written // max(
+                            len(sources_with_data), 1
                         )
                     else:
-                        # FINDING-015: No rows written - mark batch as complete but DON'T advance watermark
-                        # This prevents leaving orphan RUNNING status that triggers false zombie recovery
-                        print(
-                            f"WARNING: No rows written for {source_name}. Watermark NOT advanced to prevent data loss."
-                        )
-                        # Get current watermark to keep it unchanged
-                        current_wm = self.etl_control.get_watermark(
-                            self.config.table_name, source_name
-                        )
-                        self.etl_control.batch_complete(
-                            target_table=self.config.table_name,
-                            source_table=source_name,
-                            new_version=current_wm
-                            if current_wm is not None
-                            else 0,  # Keep existing watermark
-                            rows_read=0,
-                            rows_written=0,
-                        )
+                        per_source_written = per_source_rows
+
+                    # Always advance watermark to the processed version
+                    # Empty CDF versions (like OPTIMIZE) are valid - no data to lose
+                    self.etl_control.batch_complete(
+                        target_table=self.config.table_name,
+                        source_table=source_name,
+                        new_version=version,
+                        rows_read=per_source_rows
+                        if per_source_rows > 0
+                        else (total_rows_read // max(len(sources_with_data), 1)),
+                        rows_written=per_source_written,
+                    )
 
                 print(
                     f"Pipeline completed successfully. Read: {total_rows_read}, Written: {total_rows_written}"
