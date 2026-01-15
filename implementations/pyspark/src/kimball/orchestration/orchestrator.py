@@ -419,6 +419,11 @@ class Orchestrator:
                     )
                     stage_start = time.time()
 
+                # Early exit if no sources loaded (all skipped - already at version)
+                if not active_dfs:
+                    print("All sources already at current version. Nothing to process.")
+                    return {"rows_read": 0, "rows_written": 0}
+
                 # 2. Early Arriving Facts (Skeleton Generation)
                 if self.config.early_arriving_facts:
                     print("Checking for Early Arriving Facts...")
