@@ -110,14 +110,14 @@ class TableCreator:
             surrogate_key_strategy: Strategy for SK generation ('identity', 'hash', 'sequence')
         """
         if get_spark().catalog.tableExists(table_name):
-            print(f"Table {table_name} already exists. Skipping creation.")
+            logger.info(f"Table {table_name} already exists. Skipping creation.")
             return
 
         # Check config for liquid clustering
         if config and "cluster_by" in config:
             cluster_by = config["cluster_by"]
             partition_by = None  # Don't use partitioning with liquid clustering
-            print(f"Using Liquid Clustering from config: {cluster_by}")
+            logger.info(f"Using Liquid Clustering from config: {cluster_by}")
         elif cluster_by:
             logger.info(f"Using provided cluster_by: {cluster_by}")
 
@@ -172,7 +172,7 @@ class TableCreator:
         create_sql += "\nTBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"
 
         if surrogate_key_col and surrogate_key_strategy == "identity":
-            print(f"  - Surrogate key '{surrogate_key_col}' using IDENTITY column")
+            logger.info(f"  - Surrogate key '{surrogate_key_col}' using IDENTITY column")
         if cluster_by:
             logger.info(f"  - Liquid Clustering on {cluster_by}")
         get_spark().sql(create_sql)
@@ -200,7 +200,7 @@ class TableCreator:
             else:
                 # Unknown error - print first line only, not full JVM trace
                 first_line = str(e).split("\n")[0][:200]
-                print(f"Warning: Delta features failed: {first_line}")
+                logger.info(f"Warning: Delta features failed: {first_line}")
 
         # Apply basic Delta constraints after table creation
         self.apply_basic_constraints(table_name, surrogate_key_col, schema_df)
@@ -229,18 +229,18 @@ class TableCreator:
             alter_sql = f"ALTER TABLE {quoted_table_name} ADD CONSTRAINT sk_not_null CHECK (`{surrogate_key_col}` IS NOT NULL)"
             try:
                 get_spark().sql(alter_sql)
-                print("Applied surrogate key NOT NULL constraint")
+                logger.info("Applied surrogate key NOT NULL constraint")
             except Exception as e:
-                print(f"Warning: Could not apply surrogate key constraint: {e}")
+                logger.info(f"Warning: Could not apply surrogate key constraint: {e}")
 
         # Apply is_current boolean constraint for SCD2 tables
         if schema_df and "__is_current" in [f.name for f in schema_df.schema.fields]:
             alter_sql = f"ALTER TABLE {quoted_table_name} ADD CONSTRAINT is_current_check CHECK (__is_current IN (true, false))"
             try:
                 get_spark().sql(alter_sql)
-                print("Applied is_current boolean constraint")
+                logger.info("Applied is_current boolean constraint")
             except Exception as e:
-                print(f"Warning: Could not apply is_current constraint: {e}")
+                logger.info(f"Warning: Could not apply is_current constraint: {e}")
 
     def apply_delta_constraints(self, table_name: str, config: dict[str, Any]) -> None:
         """
@@ -277,15 +277,15 @@ class TableCreator:
                 )
                 if fk_col:
                     if not _is_valid_identifier(fk_col):
-                        print(f"Skipping invalid FK column name: {fk_col}")
+                        logger.info(f"Skipping invalid FK column name: {fk_col}")
                         continue
                     constraint_name = f"fk_{fk_col}_not_null"
                     alter_sql = f"ALTER TABLE {quoted_table_name} ADD CONSTRAINT `{constraint_name}` CHECK (`{fk_col}` IS NOT NULL)"
                     try:
                         get_spark().sql(alter_sql)
-                        print(f"Applied FK NOT NULL constraint: {constraint_name}")
+                        logger.info(f"Applied FK NOT NULL constraint: {constraint_name}")
                     except Exception as e:
-                        print(
+                        logger.info(
                             f"Warning: Could not apply FK constraint {constraint_name}: {e}"
                         )
 
@@ -297,7 +297,7 @@ class TableCreator:
 
             if constraint_name and constraint_expr:
                 if not _is_valid_identifier(constraint_name):
-                    print(f"Skipping invalid constraint name: {constraint_name}")
+                    logger.info(f"Skipping invalid constraint name: {constraint_name}")
                     continue
 
                 # Strict whitelist validation for constraints
@@ -338,7 +338,7 @@ class TableCreator:
             f"ALTER TABLE {quoted_table_name} SET TBLPROPERTIES ({', '.join(features)})"
         )
         get_spark().sql(alter_sql)
-        print(f"Delta features enabled for {table_name}")
+        logger.info(f"Delta features enabled for {table_name}")
 
     def enable_predictive_optimization(self, table_name: str) -> None:
         """
@@ -348,7 +348,7 @@ class TableCreator:
         quoted_table_name = quote_table_name(table_name)
         alter_sql = f"ALTER TABLE {quoted_table_name} SET TBLPROPERTIES ('delta.enablePredictiveOptimization' = 'true')"
         get_spark().sql(alter_sql)
-        print(f"Predictive Optimization enabled for {table_name}")
+        logger.info(f"Predictive Optimization enabled for {table_name}")
 
     def enable_deletion_vectors(self, table_name: str) -> None:
         """
@@ -358,4 +358,4 @@ class TableCreator:
         quoted_table_name = quote_table_name(table_name)
         alter_sql = f"ALTER TABLE {quoted_table_name} SET TBLPROPERTIES ('delta.enableDeletionVectors' = 'true')"
         get_spark().sql(alter_sql)
-        print(f"Deletion Vectors enabled for {table_name}")
+        logger.info(f"Deletion Vectors enabled for {table_name}")

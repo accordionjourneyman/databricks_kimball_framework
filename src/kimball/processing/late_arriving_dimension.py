@@ -1,4 +1,6 @@
 """
+import logging
+logger = logging.getLogger(__name__)
 Late Arriving Dimension Processor - Handles updating facts when dimensions arrive late.
 
 This module complements the SkeletonGenerator by handling the reverse case:
@@ -69,7 +71,7 @@ class LateArrivingDimensionProcessor:
             Number of skeleton rows updated.
         """
         if not self.spark.catalog.tableExists(dimension_table):
-            print(f"Dimension table {dimension_table} does not exist. Skipping.")
+            logger.info(f"Dimension table {dimension_table} does not exist. Skipping.")
             return 0
 
         delta_table = DeltaTable.forName(self.spark, dimension_table)
@@ -77,7 +79,7 @@ class LateArrivingDimensionProcessor:
 
         # Check if __is_skeleton column exists
         if "__is_skeleton" not in dim_df.columns:
-            print(
+            logger.info(
                 f"Table {dimension_table} has no __is_skeleton column. "
                 "Skipping late-arriving dimension processing."
             )
@@ -86,7 +88,7 @@ class LateArrivingDimensionProcessor:
         # Find skeleton rows that match incoming source data
         skeleton_rows = dim_df.filter(col("__is_skeleton") == True)  # noqa: E712
         if skeleton_rows.isEmpty():
-            print(f"No skeleton rows found in {dimension_table}.")
+            logger.info(f"No skeleton rows found in {dimension_table}.")
             return 0
 
         # Build merge condition on natural keys
@@ -122,7 +124,7 @@ class LateArrivingDimensionProcessor:
             source_df.alias("source"), merge_condition
         ).whenMatchedUpdate(set=update_set).execute()
 
-        print(f"Updated skeleton rows in {dimension_table} with real dimension data.")
+        logger.info(f"Updated skeleton rows in {dimension_table} with real dimension data.")
 
         # Return count of updated rows (from merge metrics)
         try:
@@ -161,11 +163,11 @@ class LateArrivingDimensionProcessor:
             Number of fact rows updated.
         """
         if not self.spark.catalog.tableExists(fact_table):
-            print(f"Fact table {fact_table} does not exist. Skipping.")
+            logger.info(f"Fact table {fact_table} does not exist. Skipping.")
             return 0
 
         if not self.spark.catalog.tableExists(dimension_table):
-            print(f"Dimension table {dimension_table} does not exist. Skipping.")
+            logger.info(f"Dimension table {dimension_table} does not exist. Skipping.")
             return 0
 
         fact_delta = DeltaTable.forName(self.spark, fact_table)
@@ -181,7 +183,7 @@ class LateArrivingDimensionProcessor:
         # 3. Updating fact FK with new dimension SK
 
         # For now, we log a warning - full implementation requires natural key storage in facts
-        print(
+        logger.info(
             f"WARNING: FK reconciliation for {fact_table}.{fact_fk_col} -> "
             f"{dimension_table}.{dimension_sk_col} requires manual review. "
             "Full auto-reconciliation requires natural key storage in fact tables."

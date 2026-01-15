@@ -152,10 +152,10 @@ class Orchestrator:
             checkpoint_root = os.getenv("KIMBALL_CHECKPOINT_ROOT")
 
         if checkpoint_root:
-            print(f"Setting Spark checkpoint directory to: {checkpoint_root}")
+            logger.info(f"Setting Spark checkpoint directory to: {checkpoint_root}")
             _get_spark().sparkContext.setCheckpointDir(checkpoint_root)
         else:
-            print(
+            logger.info(
                 "Warning: No checkpoint_root provided. Using local checkpointing which is unreliable in production."
             )
 
@@ -192,19 +192,19 @@ class Orchestrator:
             pipeline_id: Optional pipeline ID to filter cleanup (for targeted cleanup)
             max_age_hours: Maximum age of staging tables to clean up (default 24 hours)
         """
-        print(f"Checking for orphaned staging tables (max age: {max_age_hours}h)...")
+        logger.info(f"Checking for orphaned staging tables (max age: {max_age_hours}h)...")
 
         # Use TTL-based cleanup to avoid interfering with concurrent pipelines
         if self.cleanup_manager is None:
-            print("Warning: cleanup_manager not initialized, skipping cleanup")
+            logger.warning(" cleanup_manager not initialized, skipping cleanup")
             return
         cleaned, failed = self.cleanup_manager.cleanup_staging_tables(
             pipeline_id=pipeline_id, max_age_hours=max_age_hours
         )
         if cleaned > 0:
-            print(f"Cleaned up {cleaned} orphaned staging tables")
+            logger.info(f"Cleaned up {cleaned} orphaned staging tables")
         if failed > 0:
-            print(f"Warning: {failed} staging tables could not be cleaned up")
+            logger.warning(f" {failed} staging tables could not be cleaned up")
 
     def run(self, max_retries: int = 0) -> dict[str, Any]:
         """
@@ -239,7 +239,7 @@ class Orchestrator:
                         self.config.table_name, source.name
                     )
                     if wm is not None and wm >= source_version:
-                        print(
+                        logger.info(
                             f"Preserve All Changes: Caught up (watermark {wm} >= source {source_version})"
                         )
                         return combined_result
@@ -249,18 +249,18 @@ class Orchestrator:
             combined_result["rows_read"] += result.get("rows_read", 0)
             combined_result["rows_written"] += result.get("rows_written", 0)
 
-            print(
+            logger.info(
                 f"Preserve All Changes: Iteration {iteration} processed, checking for more versions..."
             )
 
         if iteration > 1:
-            print(f"Preserve All Changes: Processed {iteration} version(s) total")
+            logger.info(f"Preserve All Changes: Processed {iteration} version(s) total")
 
         return combined_result
 
     def _run_pipeline_once(self, max_retries: int = 0) -> dict[str, Any]:
         """Execute single pipeline iteration."""
-        print(f"Starting pipeline for {self.config.table_name}")
+        logger.info(f"Starting pipeline for {self.config.table_name}")
 
         # Clean up orphaned staging tables (only once per session to avoid repeated overhead)
         global _staging_cleanup_done_this_session
@@ -304,7 +304,7 @@ class Orchestrator:
                 _get_spark().conf.unset("_get_spark().databricks.delta.commitInfo.userMetadata")
             except Exception:
                 can_tag_commits = False
-                print(
+                logger.info(
                     "WARNING: Crash recovery unavailable (Serverless limitation). "
                     "Commits cannot be tagged with batch_id for rollback detection. "
                     "Proceeding without zombie detection. See KNOWN_LIMITATIONS.md."
@@ -315,7 +315,7 @@ class Orchestrator:
                     self.config.table_name
                 )
                 if running_batches:
-                    print(
+                    logger.info(
                         f"Found {len(running_batches)} incomplete batches. Attempting recovery..."
                     )
                     for batch_info in running_batches:
@@ -376,7 +376,7 @@ class Orchestrator:
                             self.config.table_name, source.name
                         )
                         if wm is None:
-                            print(
+                            logger.info(
                                 f"No watermark for {source.name}. Performing Full Snapshot."
                             )
                             df = self.loader.load_full_snapshot(
@@ -386,7 +386,7 @@ class Orchestrator:
                             )
                         else:
                             if wm >= latest_v:
-                                print(
+                                logger.info(
                                     f"Source {source.name} already at version {latest_v}. Skipping."
                                 )
                                 # Mark batch complete with no changes
@@ -406,7 +406,7 @@ class Orchestrator:
                             ):
                                 # Load just ONE version (wm+1) instead of the full range
                                 # Subsequent versions will be picked up in the next run
-                                print(
+                                logger.info(
                                     f"Preserve All Changes: Processing version {wm + 1} only"
                                 )
                                 df = self.loader.load_cdf(
@@ -452,12 +452,12 @@ class Orchestrator:
 
                 # Early exit if no sources loaded (all skipped - already at version)
                 if not active_dfs:
-                    print("All sources already at current version. Nothing to process.")
+                    logger.info("All sources already at current version. Nothing to process.")
                     return {"rows_read": 0, "rows_written": 0}
 
                 # 2. Early Arriving Facts (Skeleton Generation)
                 if self.config.early_arriving_facts:
-                    print("Checking for Early Arriving Facts...")
+                    logger.info("Checking for Early Arriving Facts...")
                     for eaf in self.config.early_arriving_facts:
                         # We need the fact dataframe.
                         # The config doesn't explicitly say which source is the "fact" source,
@@ -495,7 +495,7 @@ class Orchestrator:
                                 batch_id=batch_id,
                             )
                         else:
-                            print(
+                            logger.info(
                                 f"Warning: Could not find source with column {eaf['fact_join_key']} for skeleton generation."
                             )
 
@@ -510,7 +510,7 @@ class Orchestrator:
                             f"transformation_sql must be a SELECT or WITH statement for safety. "
                             f"Got: {self.config.transformation_sql[:50]}..."
                         )
-                    print("Executing Transformation SQL...")
+                    logger.info("Executing Transformation SQL...")
                     transformed_df = _get_spark().sql(self.config.transformation_sql)
 
                     # AUTO-PRESERVE _change_type for CDF sources
@@ -526,7 +526,7 @@ class Orchestrator:
                             # For single-source, natural keys should be sufficient
                             pk_cols = self.config.sources[0].primary_keys
                             if pk_cols:
-                                print(
+                                logger.info(
                                     "Auto-preserving _change_type through transformation"
                                 )
                                 transformed_df = transformed_df.join(
@@ -539,7 +539,7 @@ class Orchestrator:
                     if len(self.config.sources) == 1:
                         source_name = self.config.sources[0].name
                         transformed_df = active_dfs[source_name]
-                        print(
+                        logger.info(
                             f"Using source data directly (no transformation): {source_name}"
                         )
                     else:
@@ -577,7 +577,7 @@ class Orchestrator:
                                 fill_val = default_val
 
                             # Apply fillna for this column only
-                            print(
+                            logger.info(
                                 f"Filling NULL foreign key '{col_name}' with default: {fill_val}"
                             )
                             transformed_df = transformed_df.withColumn(
@@ -587,7 +587,7 @@ class Orchestrator:
                                 ).otherwise(F.col(col_name)),
                             )
                         else:
-                            print(
+                            logger.info(
                                 f"Warning: Foreign key column '{col_name}' not found in transformed DataFrame"
                             )
 
@@ -596,7 +596,7 @@ class Orchestrator:
                 if getattr(self.config, "tests", None):
                     from kimball.validation import DataQualityValidator
 
-                    print("Running data quality validation on transformed data...")
+                    logger.info("Running data quality validation on transformed data...")
                     validator = DataQualityValidator()
                     report = validator.run_config_tests(self.config, df=transformed_df)
                     report.raise_on_failure()
@@ -606,14 +606,14 @@ class Orchestrator:
                 if self.config.table_type == "dimension" and self.config.natural_keys:
                     from kimball.validation import DataQualityValidator
 
-                    print("Validating natural key uniqueness (pre-merge gate)...")
+                    logger.info("Validating natural key uniqueness (pre-merge gate)...")
                     validator = DataQualityValidator()
                     nk_result = validator.validate_natural_key_uniqueness(
                         transformed_df,
                         self.config.natural_keys,
                         table_name=self.config.table_name,
                     )
-                    print(str(nk_result))
+                    logger.info(str(nk_result))
                     if not nk_result.passed:
                         from kimball.common.errors import DataQualityError
 
@@ -628,7 +628,7 @@ class Orchestrator:
                 if self.config.table_type == "fact" and self.config.foreign_keys:
                     from kimball.validation import DataQualityValidator
 
-                    print(
+                    logger.info(
                         "Validating FK integrity against dimensions (pre-merge gate)..."
                     )
                     validator = DataQualityValidator()
@@ -647,7 +647,7 @@ class Orchestrator:
                             transformed_df, fk_defs
                         )
                         for result in fk_report.results:
-                            print(str(result))
+                            logger.info(str(result))
                         fk_report.raise_on_failure()
 
                 # Checkpoint: Transformation complete
@@ -673,7 +673,7 @@ class Orchestrator:
                 # Check if we have data to merge
                 # C-08: Use efficient empty check pattern instead of isEmpty() which scans entire DataFrame
                 if len(transformed_df.limit(1).head(1)) == 0:
-                    print("No data to merge. Skipping.")
+                    logger.info("No data to merge. Skipping.")
                     # CRITICAL: Do NOT fetch last merge metrics here - they would be stale
                     # from a previous run and could incorrectly trigger watermark advancement
                     merge_executed = False
@@ -683,7 +683,7 @@ class Orchestrator:
                     # We need to create the table if it doesn't exist to seed defaults
                     table_created = False
                     if not _get_spark().catalog.tableExists(self.config.table_name):
-                        print(f"Creating table {self.config.table_name}...")
+                        logger.info(f"Creating table {self.config.table_name}...")
                         # Add system columns to transformed_df schema for table creation
                         schema_df = self.table_creator.add_system_columns(
                             transformed_df.limit(0),
@@ -702,7 +702,7 @@ class Orchestrator:
                         ):
                             cluster_cols = self.config.natural_keys or []
                             if cluster_cols:
-                                print(
+                                logger.info(
                                     f"Auto-clustering on natural keys: {cluster_cols}"
                                 )
 
@@ -739,7 +739,7 @@ class Orchestrator:
 
                     # Use DataFrame checkpointing instead of physical staging to minimize lock time
                     # This provides fault tolerance without the 100% I/O overhead of physical staging
-                    print("Creating DataFrame checkpoint for merge operation...")
+                    logger.info("Creating DataFrame checkpoint for merge operation...")
 
                     # Checkpoint optimization: Only use expensive checkpoint() when explicitly enabled
                     # Default to localCheckpoint() which is much more efficient for standard pipelines
@@ -748,31 +748,31 @@ class Orchestrator:
                         try:
                             checkpoint_dir = _get_spark().sparkContext.getCheckpointDir()
                             if checkpoint_dir:
-                                print(
+                                logger.info(
                                     f"Using reliable checkpoint directory: {checkpoint_dir}"
                                 )
                                 checkpointed_df = transformed_df.checkpoint()
                             else:
-                                print(
+                                logger.info(
                                     "No checkpoint directory configured, using local checkpoint"
                                 )
                                 checkpointed_df = transformed_df.localCheckpoint()
                         except PYSPARK_EXCEPTION_BASE as e:
                             # Log specific exception and fallback to local checkpoint
-                            print(
+                            logger.info(
                                 f"Checkpoint directory access failed with PySpark error: {e}"
                             )
-                            print("Using local checkpoint (less reliable)")
+                            logger.info("Using local checkpoint (less reliable)")
                             checkpointed_df = transformed_df.localCheckpoint()
                         except Exception as e:
                             # Log any other unexpected errors and fallback to local checkpoint
-                            print(f"Unexpected error during checkpoint setup: {e}")
-                            print("Using local checkpoint (less reliable)")
+                            logger.info(f"Unexpected error during checkpoint setup: {e}")
+                            logger.info("Using local checkpoint (less reliable)")
                             checkpointed_df = transformed_df.localCheckpoint()
                     else:
                         # Use efficient localCheckpoint() by default - no disk I/O overhead
                         checkpointed_df = transformed_df.localCheckpoint()
-                        print(
+                        logger.info(
                             "Using local checkpoint (efficient, no lineage truncation)"
                         )
 
@@ -805,14 +805,14 @@ class Orchestrator:
                         source_df = checkpointed_df.select(
                             *[col(c) for c in columns_to_select]
                         )
-                        print(
+                        logger.info(
                             f"Applied column pruning: kept {len(columns_to_select)}/{len(checkpointed_df.columns)} columns (including system columns)"
                         )
                     else:
                         # First run or schema evolution enabled - use all columns
                         source_df = checkpointed_df
 
-                    print(
+                    logger.info(
                         f"Merging directly from checkpointed DataFrame into {self.config.table_name}..."
                     )
 
@@ -870,7 +870,7 @@ class Orchestrator:
                                 self.config.table_name, self.config.cluster_by or []
                             )
                         else:
-                            print(
+                            logger.info(
                                 "Skipping inline OPTIMIZE (Performance Optimization). "
                                 "Set KIMBALL_ENABLE_INLINE_OPTIMIZE=1 to enable, "
                                 "or use async maintenance jobs (Recommended)."
@@ -905,7 +905,7 @@ class Orchestrator:
                 # 6. Commit Watermarks with batch completion
                 # CRITICAL: Only advance watermarks for sources that contributed to the pipeline
                 # This prevents silent data loss when transformation filters everything out
-                print("Completing batches and updating watermarks...")
+                logger.info("Completing batches and updating watermarks...")
 
                 # Determine which sources actually contributed rows
                 sources_with_data = set(active_dfs.keys())
@@ -941,7 +941,7 @@ class Orchestrator:
                         rows_written=per_source_written,
                     )
 
-                print(
+                logger.info(
                     f"Pipeline completed successfully. Read: {total_rows_read}, Written: {total_rows_written}"
                 )
 
@@ -950,7 +950,7 @@ class Orchestrator:
                 if self.metrics_collector:
                     self.metrics_collector.stop_collection()
                     metrics_summary = self.metrics_collector.get_summary()
-                    print(f"Query Metrics: {metrics_summary}")
+                    logger.info(f"Query Metrics: {metrics_summary}")
 
                 # Clear checkpoints on success
                 if self.checkpoint_manager:
@@ -975,7 +975,7 @@ class Orchestrator:
 
             # Mark all batches as failed
             error_msg = f"{type(e).__name__}: {str(e)}"
-            print(f"Pipeline failed: {error_msg}")
+            logger.info(f"Pipeline failed: {error_msg}")
 
             for source in self.config.sources:
                 try:
@@ -991,7 +991,7 @@ class Orchestrator:
 
             # Re-raise based on error type
             if isinstance(e, RetriableError) and max_retries > 0:
-                print(f"Retriable error encountered. Retries remaining: {max_retries}")
+                logger.info(f"Retriable error encountered. Retries remaining: {max_retries}")
                 time.sleep(30)  # Backoff before retry
                 return self.run(max_retries=max_retries - 1)
 
@@ -1024,7 +1024,7 @@ class Orchestrator:
                 last_error = e
                 if attempt <= max_retries:
                     wait_time = backoff_seconds * (2 ** (attempt - 1))
-                    print(
+                    logger.info(
                         f"Retriable error: {e}. Waiting {wait_time}s before retry {attempt}/{max_retries}"
                     )
                     time.sleep(wait_time)

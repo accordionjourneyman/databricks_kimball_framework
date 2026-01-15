@@ -1,5 +1,4 @@
-"""
-Resilience features for Kimball ETL pipelines.
+"""Resilience features for Kimball ETL pipelines.
 
 This module provides optional features for production-ready pipelines:
 - QueryMetricsCollector: Basic query execution metrics
@@ -17,6 +16,7 @@ Available features: checkpoints, staging_cleanup, metrics, auto_cluster
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import traceback
@@ -28,6 +28,8 @@ from pyspark.sql.functions import col, current_timestamp, desc
 from pyspark.sql.types import StringType, StructField, StructType, TimestampType
 
 from kimball.common.spark_session import get_spark
+
+logger = logging.getLogger(__name__)
 
 
 def _feature_enabled(feature: str) -> bool:
@@ -100,7 +102,7 @@ class QueryMetricsCollector:
             self.metrics.append(metric)
 
         except Exception as e:
-            print(
+            logger.info(
                 f"Failed to collect metric for {operation_name}: {e}\n{traceback.format_exc()}"
             )
 
@@ -165,7 +167,9 @@ class StagingCleanupManager:
             )
             empty_df = get_spark().createDataFrame([], schema)
             empty_df.write.format("delta").saveAsTable(self.registry_table)
-            print(f"Created staging cleanup registry table: {self.registry_table}")
+            logger.info(
+                f"Created staging cleanup registry table: {self.registry_table}"
+            )
 
     def register_staging_table(
         self,
@@ -177,10 +181,14 @@ class StagingCleanupManager:
         from delta.tables import DeltaTable
 
         # Create DataFrame for the new entry
-        new_entry = get_spark().createDataFrame(
-            [(pipeline_id or "unknown", staging_table, batch_id or "unknown")],
-            ["pipeline_id", "staging_table", "batch_id"],
-        ).withColumn("created_at", current_timestamp())
+        new_entry = (
+            get_spark()
+            .createDataFrame(
+                [(pipeline_id or "unknown", staging_table, batch_id or "unknown")],
+                ["pipeline_id", "staging_table", "batch_id"],
+            )
+            .withColumn("created_at", current_timestamp())
+        )
 
         # Use DeltaTable API for atomic registration
         registry_table = DeltaTable.forName(get_spark(), self.registry_table)
@@ -188,7 +196,7 @@ class StagingCleanupManager:
             new_entry.alias("source"), "target.staging_table = source.staging_table"
         ).whenNotMatchedInsertAll().execute()
 
-        print(f"Registered staging table for cleanup: {staging_table}")
+        logger.info(f"Registered staging table for cleanup: {staging_table}")
 
     def unregister_staging_table(self, staging_table: str) -> None:
         """Unregister a staging table after successful cleanup."""
@@ -196,7 +204,7 @@ class StagingCleanupManager:
 
         registry_table = DeltaTable.forName(get_spark(), self.registry_table)
         registry_table.delete(col("staging_table") == staging_table)
-        print(f"Unregistered staging table from cleanup: {staging_table}")
+        logger.info(f"Unregistered staging table from cleanup: {staging_table}")
 
     def cleanup_staging_tables(
         self,
@@ -242,13 +250,13 @@ class StagingCleanupManager:
 
         while iteration < max_iterations:
             iteration += 1
-            print(
+            logger.info(
                 f"Cleanup iteration {iteration}: fetching up to {MAX_CLEANUP_BATCH} stale staging tables..."
             )
 
             rows = registry_df.limit(MAX_CLEANUP_BATCH).collect()
             if not rows:
-                print("No more orphaned staging tables to clean up.")
+                logger.info("No more orphaned staging tables to clean up.")
                 break
 
             tables_to_cleanup = [row.staging_table for row in rows]
@@ -262,7 +270,9 @@ class StagingCleanupManager:
                 if not re.match(
                     r"^[a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+)*$", staging_table_name
                 ):
-                    print(f"Skipping invalid staging table name: {staging_table_name}")
+                    logger.info(
+                        f"Skipping invalid staging table name: {staging_table_name}"
+                    )
                     failed += 1
                     continue
 
@@ -274,20 +284,22 @@ class StagingCleanupManager:
                     spark_session.sql(f"DROP TABLE IF EXISTS {quoted_name}")
                     self.unregister_staging_table(staging_table_name)
                     cleaned += 1
-                    print(f"Cleaned up orphaned staging table: {staging_table_name}")
+                    logger.info(
+                        f"Cleaned up orphaned staging table: {staging_table_name}"
+                    )
                 except Exception as e:
-                    print(f"Failed to cleanup {staging_table_name}: {e}")
+                    logger.info(f"Failed to cleanup {staging_table_name}: {e}")
                     failed += 1
 
             if len(rows) < MAX_CLEANUP_BATCH:
                 # Less than batch size means we've processed all candidates
                 break
 
-        print(
+        logger.info(
             f"Staging cleanup completed: {cleaned} cleaned, {failed} failed in {iteration} iteration(s)."
         )
         if iteration >= max_iterations:
-            print(
+            logger.info(
                 "Warning: Cleanup hit max iteration limit (10,000 tables). "
                 "Run cleanup again if more orphans exist."
             )
@@ -332,18 +344,20 @@ class StagingTableManager:
             try:
                 # C-03: Validate table name format to prevent SQL injection
                 if not re.match(r"^[a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+)*$", staging_table):
-                    print(f"Skipping invalid staging table name: {staging_table}")
+                    logger.info(f"Skipping invalid staging table name: {staging_table}")
                     continue
 
                 # Quote each part of the table name for safety
                 quoted = ".".join([f"`{part}`" for part in staging_table.split(".")])
                 get_spark().sql(f"DROP TABLE IF EXISTS {quoted}")
                 self.cleanup_manager.unregister_staging_table(staging_table)
-                print(
+                logger.info(
                     f"Cleaned up staging table during exception recovery: {staging_table}"
                 )
             except Exception as e:
-                print(f"Warning: Failed to clean up staging table {staging_table}: {e}")
+                logger.info(
+                    f"Warning: Failed to clean up staging table {staging_table}: {e}"
+                )
 
 
 class PipelineCheckpoint:
@@ -377,7 +391,7 @@ class PipelineCheckpoint:
             empty_df.write.format("delta").partitionBy("pipeline_id").saveAsTable(
                 self.checkpoint_table
             )
-            print(f"Created pipeline checkpoint table: {self.checkpoint_table}")
+            logger.info(f"Created pipeline checkpoint table: {self.checkpoint_table}")
 
     def save_checkpoint(
         self, pipeline_id: str, stage: str, state: dict[str, Any]
@@ -397,9 +411,13 @@ class PipelineCheckpoint:
         state_json = json.dumps(state)
 
         # Create DataFrame for the checkpoint entry
-        checkpoint_entry = get_spark().createDataFrame(
-            [(pipeline_id, stage, state_json)], ["pipeline_id", "stage", "state"]
-        ).withColumn("timestamp", current_timestamp())
+        checkpoint_entry = (
+            get_spark()
+            .createDataFrame(
+                [(pipeline_id, stage, state_json)], ["pipeline_id", "stage", "state"]
+            )
+            .withColumn("timestamp", current_timestamp())
+        )
 
         # Use DeltaTable API for atomic checkpoint updates
         checkpoint_table = DeltaTable.forName(get_spark(), self.checkpoint_table)
@@ -410,7 +428,7 @@ class PipelineCheckpoint:
             set={"timestamp": "source.timestamp", "state": "source.state"}
         ).whenNotMatchedInsertAll().execute()
 
-        print(f"Checkpoint saved: {pipeline_id} -> {stage}")
+        logger.info(f"Checkpoint saved: {pipeline_id} -> {stage}")
 
     def load_checkpoint(self, pipeline_id: str, stage: str) -> dict[str, Any] | None:
         """Load pipeline state from Delta table checkpoint.
@@ -437,10 +455,10 @@ class PipelineCheckpoint:
                 return None
             state_json = row["state"]
             state: dict[str, Any] = json.loads(state_json)
-            print(f"Checkpoint loaded: {pipeline_id} -> {stage}")
+            logger.info(f"Checkpoint loaded: {pipeline_id} -> {stage}")
             return state
         except Exception as e:
-            print(f"Failed to load checkpoint {pipeline_id}:{stage}: {e}")
+            logger.info(f"Failed to load checkpoint {pipeline_id}:{stage}: {e}")
             return None
 
     def clear_checkpoint(self, pipeline_id: str, stage: str) -> None:
@@ -452,7 +470,7 @@ class PipelineCheckpoint:
             (col("pipeline_id") == pipeline_id) & (col("stage") == stage)
         )
 
-        print(f"Checkpoint cleared: {pipeline_id} -> {stage}")
+        logger.info(f"Checkpoint cleared: {pipeline_id} -> {stage}")
 
     def list_checkpoints(self, pipeline_id: str | None = None) -> DataFrame:
         """List all checkpoints, optionally filtered by pipeline_id."""

@@ -1,4 +1,6 @@
 """
+import logging
+logger = logging.getLogger(__name__)
 PipelineExecutor - Wave-based pipeline execution for notebooks.
 
 This module provides an executor for running multiple Kimball pipelines
@@ -155,7 +157,7 @@ class PipelineExecutor:
         executor = PipelineExecutor([...], etl_schema="gold")
 
         summary = executor.run()
-        print(summary)
+        logger.info(summary)
     """
 
     def __init__(
@@ -221,7 +223,7 @@ class PipelineExecutor:
                 else:
                     self.facts.append(pipeline_info)
             except Exception as e:
-                print(f"Warning: Could not load config {path}: {e}")
+                logger.info(f"Warning: Could not load config {path}: {e}")
                 # Add to facts wave (will fail during execution with proper error)
                 self.facts.append(
                     {
@@ -240,12 +242,12 @@ class PipelineExecutor:
         start_time = time.time()
 
         try:
-            print(f"  Starting: {table_name}")
+            logger.info(f"  Starting: {table_name}")
             orchestrator = self._create_orchestrator(path)
             result = orchestrator.run()
             duration = time.time() - start_time
 
-            print(
+            logger.info(
                 f"  ✓ Completed: {table_name} ({duration:.1f}s, {result.get('rows_written', 0)} rows)"
             )
 
@@ -263,7 +265,7 @@ class PipelineExecutor:
         except NonRetriableError as e:
             duration = time.time() - start_time
             error_msg = f"{type(e).__name__}: {str(e)}"
-            print(f"  ✗ Failed (non-retriable): {table_name} - {error_msg}")
+            logger.info(f"  ✗ Failed (non-retriable): {table_name} - {error_msg}")
 
             return PipelineResult(
                 config_path=path,
@@ -277,7 +279,7 @@ class PipelineExecutor:
         except Exception as e:
             duration = time.time() - start_time
             error_msg = f"{type(e).__name__}: {str(e)}"
-            print(f"  ✗ Failed: {table_name} - {error_msg}")
+            logger.info(f"  ✗ Failed: {table_name} - {error_msg}")
 
             return PipelineResult(
                 config_path=path,
@@ -295,9 +297,9 @@ class PipelineExecutor:
         if not pipelines:
             return []
 
-        print(f"\n{'=' * 60}")
-        print(f"Wave: {wave_name} ({len(pipelines)} pipelines)")
-        print(f"{'=' * 60}")
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"Wave: {wave_name} ({len(pipelines)} pipelines)")
+        logger.info(f"{'=' * 60}")
 
         results = []
 
@@ -308,7 +310,7 @@ class PipelineExecutor:
                 results.append(result)
 
                 if result.status == "FAILED" and self.stop_on_failure:
-                    print(f"\n⚠ Stopping due to failure in {result.table_name}")
+                    logger.info(f"\n⚠ Stopping due to failure in {result.table_name}")
                     break
         else:
             # Parallel execution
@@ -324,7 +326,7 @@ class PipelineExecutor:
                     results.append(result)
 
                     if result.status == "FAILED" and self.stop_on_failure:
-                        print(
+                        logger.info(
                             f"\n⚠ Failure detected in {result.table_name}. Cancelling remaining..."
                         )
                         # Cancel pending futures
@@ -345,11 +347,11 @@ class PipelineExecutor:
         all_results: list[PipelineResult] = []
         wave_failed = False
 
-        print(f"\n{'#' * 60}")
-        print("# Kimball Pipeline Executor")
-        print(f"# Dimensions: {len(self.dimensions)}, Facts: {len(self.facts)}")
-        print(f"# Max Workers: {self.max_workers}")
-        print(f"{'#' * 60}")
+        logger.info(f"\n{'#' * 60}")
+        logger.info("# Kimball Pipeline Executor")
+        logger.info(f"# Dimensions: {len(self.dimensions)}, Facts: {len(self.facts)}")
+        logger.info(f"# Max Workers: {self.max_workers}")
+        logger.info(f"{'#' * 60}")
 
         # Wave 1: Dimensions
         dim_results = self._run_wave("Dimensions", self.dimensions)
@@ -359,7 +361,7 @@ class PipelineExecutor:
         dim_failures = [r for r in dim_results if r.status == "FAILED"]
         if dim_failures and self.stop_on_failure:
             wave_failed = True
-            print(f"\n⚠ {len(dim_failures)} dimension(s) failed. Skipping facts wave.")
+            logger.info(f"\n⚠ {len(dim_failures)} dimension(s) failed. Skipping facts wave.")
 
             # Mark facts as skipped
             for fact in self.facts:
@@ -393,9 +395,9 @@ class PipelineExecutor:
         )
 
         # Print summary
-        print(f"\n{'=' * 60}")
-        print(summary)
-        print(f"{'=' * 60}\n")
+        logger.info(f"\n{'=' * 60}")
+        logger.info(summary)
+        logger.info(f"{'=' * 60}\n")
 
         return summary
 
@@ -405,22 +407,22 @@ class PipelineExecutor:
 
         Useful for verifying wave ordering before execution.
         """
-        print(f"\n{'#' * 60}")
-        print("# Kimball Pipeline Executor - DRY RUN")
-        print("# (No pipelines will be executed)")
-        print(f"{'#' * 60}")
+        logger.info(f"\n{'#' * 60}")
+        logger.info("# Kimball Pipeline Executor - DRY RUN")
+        logger.info("# (No pipelines will be executed)")
+        logger.info(f"{'#' * 60}")
 
-        print(f"\nWave 1: Dimensions ({len(self.dimensions)} pipelines)")
+        logger.info(f"\nWave 1: Dimensions ({len(self.dimensions)} pipelines)")
         for i, dim in enumerate(self.dimensions, 1):
-            print(f"  {i}. {dim['table_name']} ({dim['path']})")
+            logger.info(f"  {i}. {dim['table_name']} ({dim['path']})")
 
-        print(f"\nWave 2: Facts ({len(self.facts)} pipelines)")
+        logger.info(f"\nWave 2: Facts ({len(self.facts)} pipelines)")
         for i, fact in enumerate(self.facts, 1):
-            print(f"  {i}. {fact['table_name']} ({fact['path']})")
+            logger.info(f"  {i}. {fact['table_name']} ({fact['path']})")
 
-        print("\nExecution Order:")
-        print(f"  1. All dimensions run in parallel (max {self.max_workers} workers)")
-        print("  2. After ALL dimensions complete, facts run in parallel")
+        logger.info("\nExecution Order:")
+        logger.info(f"  1. All dimensions run in parallel (max {self.max_workers} workers)")
+        logger.info("  2. After ALL dimensions complete, facts run in parallel")
         if self.stop_on_failure:
-            print("  3. If any dimension fails, facts wave is skipped")
-        print()
+            logger.info("  3. If any dimension fails, facts wave is skipped")
+        logger.info()

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
@@ -39,12 +43,12 @@ class TransactionManager:
 
     def _rollback(self, table_name: str, version: int) -> None:
         """Rollback table to a specific version using RESTORE."""
-        print(f"TRANSACTION ROLLBACK: Restoring {table_name} to version {version}...")
+        logger.info(f"TRANSACTION ROLLBACK: Restoring {table_name} to version {version}...")
         try:
             self.spark.sql(f"RESTORE TABLE {table_name} TO VERSION AS OF {version}")
-            print(f"ROLLBACK COMPLETE: {table_name} restored to {version}.")
+            logger.info(f"ROLLBACK COMPLETE: {table_name} restored to {version}.")
         except Exception as e:
-            print(f"CRITICAL: Failed to rollback {table_name}: {e}")
+            logger.info(f"CRITICAL: Failed to rollback {table_name}: {e}")
             raise e
 
     def recover_zombies(self, table_name: str, batch_id: str) -> bool:
@@ -61,7 +65,7 @@ class TransactionManager:
         try:
             # Check if table exists first
             if not self.spark.catalog.tableExists(table_name):
-                print(f"ZOMBIE RECOVERY SKIPPED: Table {table_name} does not exist.")
+                logger.info(f"ZOMBIE RECOVERY SKIPPED: Table {table_name} does not exist.")
                 return False
 
             # Check history for commits tagged with this batch_id
@@ -86,19 +90,19 @@ class TransactionManager:
             restore_version = first_zombie_version - 1
 
             if restore_version < 0:
-                print(
+                logger.info(
                     f"WARNING: Cannot rollback {table_name} below version 0. Manual intervention required."
                 )
                 return False
 
-            print(
+            logger.info(
                 f"ZOMBIE RECOVERY: Found {len(zombie_commits)} commits for crashed batch {batch_id}."
             )
             self._rollback(table_name, restore_version)
             return True
 
         except Exception as e:
-            print(f"ZOMBIE RECOVERY FAILED: {e}")
+            logger.info(f"ZOMBIE RECOVERY FAILED: {e}")
             return False
 
     @contextmanager
@@ -124,7 +128,7 @@ class TransactionManager:
                 "spark.databricks.delta.commitInfo.userMetadata", str(batch_id)
             )
         except Exception:
-            print(
+            logger.info(
                 "WARNING: Could not set commit info metadata (likely Serverless restriction). Proceeding without commit tagging."
             )
 
@@ -137,12 +141,12 @@ class TransactionManager:
             if current_version > start_version and start_version >= 0:
                 # FINDING-019: Add messaging for version 0 rollback
                 if start_version == 0:
-                    print(
+                    logger.info(
                         f"TRANSACTION FAILED on first run. Restoring table to empty state (version 0). "
                         f"You may want to DROP TABLE {table_name} and re-run if this persists."
                     )
                 else:
-                    print(
+                    logger.info(
                         f"TRANSACTION FAILED: {e}. Initiating rollback from {current_version} to {start_version}."
                     )
                 self._rollback(table_name, start_version)

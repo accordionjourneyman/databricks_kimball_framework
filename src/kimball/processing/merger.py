@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 import time
 from collections.abc import Callable
 from datetime import date, datetime
@@ -90,7 +94,7 @@ def retry_on_concurrent_exception(
                     # Only retry on concurrent exceptions, not all PySpark exceptions
                     if is_concurrent_exception(e) and attempt < max_retries:
                         wait_time = backoff_base**attempt
-                        print(
+                        logger.info(
                             f"Concurrent write detected, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries + 1})"
                         )
                         time.sleep(wait_time)
@@ -404,7 +408,7 @@ class SCD2Strategy:
             # Debug: show delete detection
             if not delete_rows.isEmpty():
 
-                print(
+                logger.info(
                     f"SCD2: Processing {delete_rows.count()} delete(s) - expiring current versions"
                 )
                 delta_table = DeltaTable.forName(get_spark(), self.target_table_name)
@@ -435,7 +439,7 @@ class SCD2Strategy:
                         "__is_deleted": "true",
                     }
                 ).execute()
-                print("SCD2: Deleted keys expired successfully")
+                logger.info("SCD2: Deleted keys expired successfully")
 
             # Filter out deletes from main processing
             source_df = source_df.filter(col("_change_type") != "delete")
@@ -470,7 +474,7 @@ class SCD2Strategy:
         tracked_cols = set(self.track_history_columns or [])
         untracked = source_cols - tracked_cols
         if untracked and self.schema_evolution:
-            print(
+            logger.info(
                 f"WARNING: Schema drift detected. Columns {sorted(untracked)} are NOT tracked "
                 f"for SCD2 history changes. Changes to these columns will NOT trigger new versions. "
                 f"Add to track_history_columns in config if history tracking is needed."
@@ -623,7 +627,7 @@ class SCD2Strategy:
                 stacklevel=2,
             )
 
-        print(f"SCD2 time semantics: using {validity_note} for history boundaries")
+        logger.info(f"SCD2 time semantics: using {validity_note} for history boundaries")
 
         insert_values.update(
             {
@@ -838,7 +842,7 @@ class DeltaMerger:
                 if matching and matching.operationMetrics:
                     return dict(matching.operationMetrics)
                 # Fallback to latest if batch_id not found (Serverless may not tag)
-                print(
+                logger.info(
                     f"Warning: Could not find commit with batch_id={batch_id}. "
                     "Using latest commit metrics (may be inaccurate if concurrent pipelines)."
                 )
@@ -864,7 +868,7 @@ class DeltaMerger:
         """
         # Table must exist (Orchestrator creates it as Delta before calling this)
         if not self.get_spark().catalog.tableExists(target_table_name):
-            print(
+            logger.info(
                 f"ensure_scd2_defaults: table {target_table_name} does not exist. Skipping."
             )
             return
@@ -954,7 +958,7 @@ class DeltaMerger:
             rows_to_insert.append(row)
 
         if rows_to_insert:
-            print(
+            logger.info(
                 f"Seeding {len(rows_to_insert)} default rows into {target_table_name}..."
             )
             df = self.get_spark().createDataFrame(rows_to_insert, schema)
@@ -978,7 +982,7 @@ class DeltaMerger:
         """
         # Table must exist (Orchestrator creates it as Delta before calling this)
         if not self.get_spark().catalog.tableExists(target_table_name):
-            print(
+            logger.info(
                 f"ensure_scd1_defaults: table {target_table_name} does not exist. Skipping."
             )
             return
@@ -1049,7 +1053,7 @@ class DeltaMerger:
             rows_to_insert.append(row)
 
         if rows_to_insert:
-            print(
+            logger.info(
                 f"Seeding {len(rows_to_insert)} default rows into {target_table_name}..."
             )
             df = self.get_spark().createDataFrame(rows_to_insert, schema)
@@ -1069,7 +1073,7 @@ class DeltaMerger:
             table_name: The table to optimize
             cluster_by: Optional list of columns for clustering (Liquid Clustering)
         """
-        print(f"Optimizing table {table_name}...")
+        logger.info(f"Optimizing table {table_name}...")
 
         if cluster_by:
             # If cluster_by is specified, ensure the table is configured for Liquid Clustering
@@ -1077,9 +1081,9 @@ class DeltaMerger:
             # We just run OPTIMIZE, which will use the existing clustering spec
             quoted_table_name = quote_table_name(table_name)
             self.get_spark().sql(f"OPTIMIZE {quoted_table_name}")
-            print(f"Optimized {table_name} using Liquid Clustering on {cluster_by}")
+            logger.info(f"Optimized {table_name} using Liquid Clustering on {cluster_by}")
         else:
             # Standard OPTIMIZE without clustering
             quoted_table_name = quote_table_name(table_name)
             self.get_spark().sql(f"OPTIMIZE {quoted_table_name}")
-            print(f"Optimized {table_name}")
+            logger.info(f"Optimized {table_name}")

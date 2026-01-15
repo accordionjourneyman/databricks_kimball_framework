@@ -1,4 +1,8 @@
+import logging
+
 from delta.tables import DeltaTable
+
+logger = logging.getLogger(__name__)
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import col, current_timestamp, lit
 
@@ -38,7 +42,7 @@ class SkeletonGenerator:
             batch_id: Optional batch ID for audit trail (links skeleton to originating fact batch).
         """
         if not self.spark.catalog.tableExists(dim_table_name):
-            print(
+            logger.info(
                 f"Dimension table {dim_table_name} does not exist. Skipping skeleton generation."
             )
             return
@@ -56,10 +60,10 @@ class SkeletonGenerator:
         missing_keys = fact_keys.join(dim_keys, "key", "left_anti")
 
         if missing_keys.isEmpty():
-            print(f"No missing keys found for {dim_table_name}.")
+            logger.info(f"No missing keys found for {dim_table_name}.")
             return
 
-        print(f"Found missing keys for {dim_table_name}. Generating skeletons...")
+        logger.info(f"Found missing keys for {dim_table_name}. Generating skeletons...")
 
         # 4. Prepare Skeleton Rows
         # We need to match the schema of the dimension table.
@@ -142,4 +146,4 @@ class SkeletonGenerator:
             final_skeletons.alias("source"),
             f"target.{dim_join_key} <=> source.{dim_join_key}",
         ).whenNotMatchedInsertAll().execute()
-        print(f"Inserted skeleton rows into {dim_table_name} (via atomic MERGE).")
+        logger.info(f"Inserted skeleton rows into {dim_table_name} (via atomic MERGE).")

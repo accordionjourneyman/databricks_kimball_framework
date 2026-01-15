@@ -1,5 +1,4 @@
-"""
-ETL Control Manager - Kimball-style batch auditing and watermark management.
+"""ETL Control Manager - Kimball-style batch auditing and watermark management.
 
 This module provides:
 - Watermark tracking for incremental ETL (last_processed_version)
@@ -16,6 +15,7 @@ Environment Variables:
 
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 import warnings
@@ -35,6 +35,8 @@ from pyspark.sql.types import (
 
 if TYPE_CHECKING:
     pass
+
+logger = logging.getLogger(__name__)
 
 # Environment variable for default ETL schema
 KIMBALL_ETL_SCHEMA_ENV = "KIMBALL_ETL_SCHEMA"
@@ -250,11 +252,11 @@ class ETLControlManager:
                     self.spark.sql(
                         f"ALTER TABLE {self.fq_table} ADD COLUMN {col_name} {col_type}"
                     )
-                    print(f"ETL control table migration: Added column {col_name}")
+                    logger.info(f"ETL control table migration: Added column {col_name}")
                 except Exception as e:
                     # Column might already exist or other error
                     if "already exists" not in str(e).lower():
-                        print(
+                        logger.info(
                             f"Warning: Could not add column {col_name} to {self.fq_table}: {e}"
                         )
 
