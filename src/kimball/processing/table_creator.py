@@ -4,7 +4,7 @@ import logging
 import re
 from typing import Any
 
-from databricks.sdk.runtime import spark
+from kimball.common.spark_session import get_spark
 from pyspark.sql import DataFrame
 
 from kimball.common.constants import SPARK_CONF_AUTO_MERGE
@@ -109,7 +109,7 @@ class TableCreator:
             surrogate_key_col: Name of the surrogate key column (if any)
             surrogate_key_strategy: Strategy for SK generation ('identity', 'hash', 'sequence')
         """
-        if spark.catalog.tableExists(table_name):
+        if get_spark().catalog.tableExists(table_name):
             print(f"Table {table_name} already exists. Skipping creation.")
             return
 
@@ -175,7 +175,7 @@ class TableCreator:
             print(f"  - Surrogate key '{surrogate_key_col}' using IDENTITY column")
         if cluster_by:
             logger.info(f"  - Liquid Clustering on {cluster_by}")
-        spark.sql(create_sql)
+        get_spark().sql(create_sql)
         logger.info(f"Table {table_name} created successfully.")
 
         # Enable Delta optimizations after table creation (optional features, may fail on Free Edition)
@@ -228,7 +228,7 @@ class TableCreator:
         if surrogate_key_col:
             alter_sql = f"ALTER TABLE {quoted_table_name} ADD CONSTRAINT sk_not_null CHECK (`{surrogate_key_col}` IS NOT NULL)"
             try:
-                spark.sql(alter_sql)
+                get_spark().sql(alter_sql)
                 print("Applied surrogate key NOT NULL constraint")
             except Exception as e:
                 print(f"Warning: Could not apply surrogate key constraint: {e}")
@@ -237,7 +237,7 @@ class TableCreator:
         if schema_df and "__is_current" in [f.name for f in schema_df.schema.fields]:
             alter_sql = f"ALTER TABLE {quoted_table_name} ADD CONSTRAINT is_current_check CHECK (__is_current IN (true, false))"
             try:
-                spark.sql(alter_sql)
+                get_spark().sql(alter_sql)
                 print("Applied is_current boolean constraint")
             except Exception as e:
                 print(f"Warning: Could not apply is_current constraint: {e}")
@@ -261,7 +261,7 @@ class TableCreator:
                 f"ALTER TABLE {quoted_table_name} ALTER COLUMN `{key}` SET NOT NULL"
             )
             try:
-                spark.sql(alter_sql)
+                get_spark().sql(alter_sql)
                 logger.info(f"Applied NOT NULL constraint to {key}")
             except Exception as e:
                 logger.error(f"Failed to apply NOT NULL to {key}: {e}")
@@ -282,7 +282,7 @@ class TableCreator:
                     constraint_name = f"fk_{fk_col}_not_null"
                     alter_sql = f"ALTER TABLE {quoted_table_name} ADD CONSTRAINT `{constraint_name}` CHECK (`{fk_col}` IS NOT NULL)"
                     try:
-                        spark.sql(alter_sql)
+                        get_spark().sql(alter_sql)
                         print(f"Applied FK NOT NULL constraint: {constraint_name}")
                     except Exception as e:
                         print(
@@ -308,7 +308,7 @@ class TableCreator:
 
                 alter_sql = f"ALTER TABLE {quoted_table_name} ADD CONSTRAINT `{constraint_name}` CHECK ({constraint_expr})"
                 try:
-                    spark.sql(alter_sql)
+                    get_spark().sql(alter_sql)
                     logger.info(f"Applied constraint {constraint_name}")
                 except Exception as e:
                     logger.error(f"Failed to apply constraint {constraint_name}: {e}")
@@ -317,7 +317,7 @@ class TableCreator:
         """
         Enable schema auto-merge for the current session.
         """
-        spark.conf.set(SPARK_CONF_AUTO_MERGE, "true")
+        get_spark().conf.set(SPARK_CONF_AUTO_MERGE, "true")
         logger.info("Enabled schema auto-merge for current session")
 
     def enable_delta_features(self, table_name: str) -> None:
@@ -337,7 +337,7 @@ class TableCreator:
         alter_sql = (
             f"ALTER TABLE {quoted_table_name} SET TBLPROPERTIES ({', '.join(features)})"
         )
-        spark.sql(alter_sql)
+        get_spark().sql(alter_sql)
         print(f"Delta features enabled for {table_name}")
 
     def enable_predictive_optimization(self, table_name: str) -> None:
@@ -347,7 +347,7 @@ class TableCreator:
         """
         quoted_table_name = quote_table_name(table_name)
         alter_sql = f"ALTER TABLE {quoted_table_name} SET TBLPROPERTIES ('delta.enablePredictiveOptimization' = 'true')"
-        spark.sql(alter_sql)
+        get_spark().sql(alter_sql)
         print(f"Predictive Optimization enabled for {table_name}")
 
     def enable_deletion_vectors(self, table_name: str) -> None:
@@ -357,5 +357,5 @@ class TableCreator:
         """
         quoted_table_name = quote_table_name(table_name)
         alter_sql = f"ALTER TABLE {quoted_table_name} SET TBLPROPERTIES ('delta.enableDeletionVectors' = 'true')"
-        spark.sql(alter_sql)
+        get_spark().sql(alter_sql)
         print(f"Deletion Vectors enabled for {table_name}")

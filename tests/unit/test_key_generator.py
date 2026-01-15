@@ -44,21 +44,11 @@ def test_hash_key_generator_mock():
 
 
 def test_sequence_key_generator_mock():
-    with (
-        patch("kimball.processing.key_generator.row_number") as mock_row_number,
-        patch("kimball.processing.key_generator.Window"),
-        patch("kimball.processing.key_generator.lit"),
-    ):
-        gen = SequenceKeyGenerator()
-        df = MagicMock()
+    """SequenceKeyGenerator is blocked by default - verify it raises."""
+    import pytest
 
+    gen = SequenceKeyGenerator()
+    df = MagicMock()
+
+    with pytest.raises(RuntimeError, match="BLOCKED"):
         gen.generate_keys(df, "sk", existing_max_key=10)
-
-        # Should call withColumn
-        df.withColumn.assert_called()
-        args = df.withColumn.call_args
-        assert args[0][0] == "sk"
-
-        # Should use row_number
-        mock_row_number.assert_called()
-        mock_row_number.return_value.over.assert_called()

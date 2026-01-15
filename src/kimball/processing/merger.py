@@ -6,7 +6,7 @@ from datetime import date, datetime
 from functools import reduce, wraps
 from typing import Any, Protocol, cast
 
-from databricks.sdk.runtime import spark
+from kimball.common.spark_session import get_spark
 from delta.tables import DeltaTable
 from pyspark.sql import Column, DataFrame
 from pyspark.sql.functions import (
@@ -110,7 +110,7 @@ def set_table_auto_merge(table_name: str, enabled: bool) -> None:
     val = "true" if enabled else "false"
     quoted_table_name = quote_table_name(table_name)
     sql = f"ALTER TABLE {quoted_table_name} SET TBLPROPERTIES ('delta.schema.autoMerge.enabled' = '{val}')"
-    spark.sql(sql)
+    get_spark().sql(sql)
 
 
 class MergeStrategy(Protocol):
@@ -258,7 +258,7 @@ class SCD1Strategy:
             [f"target.{k} <=> source.{k}" for k in self.join_keys]
         )
 
-        delta_table = DeltaTable.forName(spark, self.target_table_name)
+        delta_table = DeltaTable.forName(get_spark(), self.target_table_name)
 
         if self.schema_evolution:
             try:
@@ -407,7 +407,7 @@ class SCD2Strategy:
                 print(
                     f"SCD2: Processing {delete_rows.count()} delete(s) - expiring current versions"
                 )
-                delta_table = DeltaTable.forName(spark, self.target_table_name)
+                delta_table = DeltaTable.forName(get_spark(), self.target_table_name)
 
                 # Determine validity column for __valid_to
                 if (
@@ -446,7 +446,7 @@ class SCD2Strategy:
             except Exception:
                 pass
 
-        delta_table = DeltaTable.forName(spark, self.target_table_name)
+        delta_table = DeltaTable.forName(get_spark(), self.target_table_name)
 
         source_df = source_df.withColumn(
             "hashdiff", compute_hashdiff(self.track_history_columns)
@@ -733,7 +733,7 @@ class DeltaMerger:
         Initialize DeltaMerger with optional SparkSession injection.
 
         Args:
-            spark_session: Optional SparkSession. If None, uses global Databricks spark.
+            spark_session: Optional SparkSession. If None, uses global Databricks get_spark().
         """
         self._spark = spark_session
 
@@ -863,7 +863,7 @@ class DeltaMerger:
         Ensures that the standard SCD2 default rows (-1, -2, -3) exist in the table.
         """
         # Table must exist (Orchestrator creates it as Delta before calling this)
-        if not self.spark.catalog.tableExists(target_table_name):
+        if not self.get_spark().catalog.tableExists(target_table_name):
             print(
                 f"ensure_scd2_defaults: table {target_table_name} does not exist. Skipping."
             )
@@ -957,7 +957,7 @@ class DeltaMerger:
             print(
                 f"Seeding {len(rows_to_insert)} default rows into {target_table_name}..."
             )
-            df = self.spark.createDataFrame(rows_to_insert, schema)
+            df = self.get_spark().createDataFrame(rows_to_insert, schema)
 
             # Use atomic MERGE operation to prevent duplicates in concurrent environments
             delta_table.alias("target").merge(
@@ -977,7 +977,7 @@ class DeltaMerger:
         Similar to SCD2 but without the SCD2-specific system columns.
         """
         # Table must exist (Orchestrator creates it as Delta before calling this)
-        if not self.spark.catalog.tableExists(target_table_name):
+        if not self.get_spark().catalog.tableExists(target_table_name):
             print(
                 f"ensure_scd1_defaults: table {target_table_name} does not exist. Skipping."
             )
@@ -1052,7 +1052,7 @@ class DeltaMerger:
             print(
                 f"Seeding {len(rows_to_insert)} default rows into {target_table_name}..."
             )
-            df = self.spark.createDataFrame(rows_to_insert, schema)
+            df = self.get_spark().createDataFrame(rows_to_insert, schema)
 
             # Use atomic MERGE operation to prevent duplicates in concurrent environments
             delta_table.alias("target").merge(
@@ -1076,10 +1076,10 @@ class DeltaMerger:
             # Note: This assumes the table was created with CLUSTER BY clause
             # We just run OPTIMIZE, which will use the existing clustering spec
             quoted_table_name = quote_table_name(table_name)
-            self.spark.sql(f"OPTIMIZE {quoted_table_name}")
+            self.get_spark().sql(f"OPTIMIZE {quoted_table_name}")
             print(f"Optimized {table_name} using Liquid Clustering on {cluster_by}")
         else:
             # Standard OPTIMIZE without clustering
             quoted_table_name = quote_table_name(table_name)
-            self.spark.sql(f"OPTIMIZE {quoted_table_name}")
+            self.get_spark().sql(f"OPTIMIZE {quoted_table_name}")
             print(f"Optimized {table_name}")

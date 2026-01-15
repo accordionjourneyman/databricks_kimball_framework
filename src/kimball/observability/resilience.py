@@ -23,7 +23,7 @@ import traceback
 from types import TracebackType
 from typing import Any, cast
 
-from databricks.sdk.runtime import spark
+from kimball.common.spark_session import get_spark
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import col, current_timestamp, desc
 from pyspark.sql.types import StringType, StructField, StructType, TimestampType
@@ -153,7 +153,7 @@ class StagingCleanupManager:
 
     def _ensure_registry_table(self) -> None:
         """Ensure the registry Delta table exists."""
-        if not spark.catalog.tableExists(self.registry_table):
+        if not get_spark().catalog.tableExists(self.registry_table):
             schema = StructType(
                 [
                     StructField("pipeline_id", StringType(), True),
@@ -162,7 +162,7 @@ class StagingCleanupManager:
                     StructField("batch_id", StringType(), True),
                 ]
             )
-            empty_df = spark.createDataFrame([], schema)
+            empty_df = get_spark().createDataFrame([], schema)
             empty_df.write.format("delta").saveAsTable(self.registry_table)
             print(f"Created staging cleanup registry table: {self.registry_table}")
 
@@ -176,7 +176,7 @@ class StagingCleanupManager:
         from delta.tables import DeltaTable
 
         # Create DataFrame for the new entry
-        new_entry = spark.createDataFrame(
+        new_entry = get_spark().createDataFrame(
             [(pipeline_id or "unknown", staging_table, batch_id or "unknown")],
             ["pipeline_id", "staging_table", "batch_id"],
         ).withColumn("created_at", current_timestamp())
@@ -209,7 +209,7 @@ class StagingCleanupManager:
         driver-side cleanup (avoiding DeltaTable serialization issues).
 
         Args:
-            spark_session: Spark session to use. Defaults to global spark.
+            spark_session: Spark session to use. Defaults to global get_spark().
             pipeline_id: Optional filter for specific pipeline's tables.
             max_age_hours: Remove tables older than this. Default 24h. Use 0 to disable.
 
@@ -336,7 +336,7 @@ class StagingTableManager:
 
                 # Quote each part of the table name for safety
                 quoted = ".".join([f"`{part}`" for part in staging_table.split(".")])
-                spark.sql(f"DROP TABLE IF EXISTS {quoted}")
+                get_spark().sql(f"DROP TABLE IF EXISTS {quoted}")
                 self.cleanup_manager.unregister_staging_table(staging_table)
                 print(
                     f"Cleaned up staging table during exception recovery: {staging_table}"
@@ -363,7 +363,7 @@ class PipelineCheckpoint:
 
     def _ensure_checkpoint_table(self) -> None:
         """Ensure the checkpoint Delta table exists."""
-        if not spark.catalog.tableExists(self.checkpoint_table):
+        if not get_spark().catalog.tableExists(self.checkpoint_table):
             schema = StructType(
                 [
                     StructField("pipeline_id", StringType(), True),
@@ -372,7 +372,7 @@ class PipelineCheckpoint:
                     StructField("state", StringType(), True),
                 ]
             )
-            empty_df = spark.createDataFrame([], schema)
+            empty_df = get_spark().createDataFrame([], schema)
             empty_df.write.format("delta").partitionBy("pipeline_id").saveAsTable(
                 self.checkpoint_table
             )
@@ -396,7 +396,7 @@ class PipelineCheckpoint:
         state_json = json.dumps(state)
 
         # Create DataFrame for the checkpoint entry
-        checkpoint_entry = spark.createDataFrame(
+        checkpoint_entry = get_spark().createDataFrame(
             [(pipeline_id, stage, state_json)], ["pipeline_id", "stage", "state"]
         ).withColumn("timestamp", current_timestamp())
 
@@ -421,7 +421,7 @@ class PipelineCheckpoint:
         Returns:
             State dictionary if found, None if checkpoint doesn't exist or load fails.
         """
-        checkpoint_df = spark.table(self.checkpoint_table)
+        checkpoint_df = get_spark().table(self.checkpoint_table)
         result_df = (
             checkpoint_df.filter(
                 (col("pipeline_id") == pipeline_id) & (col("stage") == stage)
@@ -455,7 +455,7 @@ class PipelineCheckpoint:
 
     def list_checkpoints(self, pipeline_id: str | None = None) -> DataFrame:
         """List all checkpoints, optionally filtered by pipeline_id."""
-        checkpoint_df = spark.table(self.checkpoint_table)
+        checkpoint_df = get_spark().table(self.checkpoint_table)
         if pipeline_id:
             checkpoint_df = checkpoint_df.filter(col("pipeline_id") == pipeline_id)
         return cast(

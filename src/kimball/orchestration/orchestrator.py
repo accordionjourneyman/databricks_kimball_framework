@@ -1,15 +1,19 @@
+"""Orchestrator module for Kimball ETL pipelines.
+
+This module coordinates the ETL process for dimensional modeling on Databricks.
+NOTE: Requires Databricks Runtime - SparkSession is obtained lazily at runtime.
+"""
+
+from __future__ import annotations
+
 import logging
 import os
 import time
 import uuid
 import warnings
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from databricks.sdk.runtime import spark
 from pyspark.sql.functions import col
-
-# C-04: Add structured logging for exception visibility
-logger = logging.getLogger(__name__)
 
 from kimball.common.config import ConfigLoader
 from kimball.common.constants import (
@@ -31,6 +35,25 @@ from kimball.processing.loader import DataLoader
 from kimball.processing.merger import DeltaMerger
 from kimball.processing.skeleton_generator import SkeletonGenerator
 from kimball.processing.table_creator import TableCreator
+
+if TYPE_CHECKING:
+    from pyspark.sql import SparkSession
+
+logger = logging.getLogger(__name__)
+
+
+def _get_spark() -> SparkSession:
+    """Get SparkSession lazily - works in Databricks or with injected session."""
+    try:
+        from databricks.sdk.runtime import spark
+
+        return spark
+    except ImportError:
+        # Fallback for non-Databricks environments (e.g., local testing with SparkSession.builder)
+        from pyspark.sql import SparkSession
+
+        return SparkSession.builder.getOrCreate()
+
 
 # Session-level flag to avoid repeated cleanup scans per table
 _staging_cleanup_done_this_session = False
@@ -90,9 +113,9 @@ class Orchestrator:
 
         # Enable Photon and AQE for performance (best-effort, may not be available on Spark Connect)
         try:
-            spark.conf.set(SPARK_CONF_AQE_ENABLED, "true")
-            spark.conf.set(SPARK_CONF_AQE_SKEW_JOIN, "true")
-            spark.conf.set(SPARK_CONF_AQE_COALESCE, "true")
+            _get_spark().conf.set(SPARK_CONF_AQE_ENABLED, "true")
+            _get_spark().conf.set(SPARK_CONF_AQE_SKEW_JOIN, "true")
+            _get_spark().conf.set(SPARK_CONF_AQE_COALESCE, "true")
         except Exception as e:
             # C-04: Log instead of silent pass for debugging
             logger.debug(f"Could not set Spark AQE configs (likely Spark Connect): {e}")
@@ -130,7 +153,7 @@ class Orchestrator:
 
         if checkpoint_root:
             print(f"Setting Spark checkpoint directory to: {checkpoint_root}")
-            spark.sparkContext.setCheckpointDir(checkpoint_root)
+            _get_spark().sparkContext.setCheckpointDir(checkpoint_root)
         else:
             print(
                 "Warning: No checkpoint_root provided. Using local checkpointing which is unreliable in production."
@@ -139,10 +162,9 @@ class Orchestrator:
         self.etl_control = etl_control or ETLControlManager(etl_schema=etl_schema)
         self.loader = loader or DataLoader()
         self.merger = merger or DeltaMerger()
-        self.merger = merger or DeltaMerger()
         self.skeleton_generator = skeleton_generator or SkeletonGenerator()
         self.table_creator = table_creator or TableCreator()
-        self.transaction_manager = transaction_manager or TransactionManager(spark)
+        self.transaction_manager = transaction_manager or TransactionManager(_get_spark())
 
         # Initialize observability and resilience features (opt-in via feature flags)
         self.metrics_collector = (
@@ -269,17 +291,17 @@ class Orchestrator:
             # Check if we can tag commits (required for zombie recovery)
             can_tag_commits = True
             try:
-                spark.conf.get("spark.databricks.delta.commitInfo.userMetadata")
+                _get_spark().conf.get("_get_spark().databricks.delta.commitInfo.userMetadata")
             except Exception:
                 # If we can't get the config, assume we can set it
                 pass
 
             # Try to detect Serverless by attempting to set commit metadata
             try:
-                spark.conf.set(
-                    "spark.databricks.delta.commitInfo.userMetadata", "__test__"
+                _get_spark().conf.set(
+                    "_get_spark().databricks.delta.commitInfo.userMetadata", "__test__"
                 )
-                spark.conf.unset("spark.databricks.delta.commitInfo.userMetadata")
+                _get_spark().conf.unset("_get_spark().databricks.delta.commitInfo.userMetadata")
             except Exception:
                 can_tag_commits = False
                 print(
@@ -489,7 +511,7 @@ class Orchestrator:
                             f"Got: {self.config.transformation_sql[:50]}..."
                         )
                     print("Executing Transformation SQL...")
-                    transformed_df = spark.sql(self.config.transformation_sql)
+                    transformed_df = _get_spark().sql(self.config.transformation_sql)
 
                     # AUTO-PRESERVE _change_type for CDF sources
                     # If source has _change_type (CDF) but transformation stripped it, carry it through
@@ -660,7 +682,7 @@ class Orchestrator:
                     # Ensure table exists and has defaults (if SCD2)
                     # We need to create the table if it doesn't exist to seed defaults
                     table_created = False
-                    if not spark.catalog.tableExists(self.config.table_name):
+                    if not _get_spark().catalog.tableExists(self.config.table_name):
                         print(f"Creating table {self.config.table_name}...")
                         # Add system columns to transformed_df schema for table creation
                         schema_df = self.table_creator.add_system_columns(
@@ -697,7 +719,7 @@ class Orchestrator:
 
                     # Seed default rows (-1, -2, -3) ONLY on table creation (not every run)
                     if table_created and self.config.table_type == "dimension":
-                        target_schema = spark.table(self.config.table_name).schema
+                        target_schema = _get_spark().table(self.config.table_name).schema
                         if self.config.scd_type == 2:
                             self.merger.ensure_scd2_defaults(
                                 self.config.table_name,
@@ -724,7 +746,7 @@ class Orchestrator:
                     if getattr(self.config, "enable_lineage_truncation", False):
                         # Use reliable checkpoint() only when lineage truncation is explicitly requested
                         try:
-                            checkpoint_dir = spark.sparkContext.getCheckpointDir()
+                            checkpoint_dir = _get_spark().sparkContext.getCheckpointDir()
                             if checkpoint_dir:
                                 print(
                                     f"Using reliable checkpoint directory: {checkpoint_dir}"
@@ -757,10 +779,10 @@ class Orchestrator:
                     # Column pruning: Select only columns that exist in target schema
                     # Only perform pruning if target table already exists AND schema evolution is disabled
                     if (
-                        spark.catalog.tableExists(self.config.table_name)
+                        _get_spark().catalog.tableExists(self.config.table_name)
                         and not self.config.schema_evolution
                     ):
-                        target_schema = spark.table(self.config.table_name).schema
+                        target_schema = _get_spark().table(self.config.table_name).schema
                         target_columns = [f.name for f in target_schema.fields]
 
                         # System columns that must always be included for proper merge operations
