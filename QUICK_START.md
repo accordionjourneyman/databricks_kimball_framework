@@ -10,7 +10,7 @@ python -m build
 Your wheel will be created at:
 
 ```
-dist/kimball_framework-0.1.1-py3-none-any.whl
+dist/kimball_framework-0.2.0-py3-none-any.whl
 ```
 
 ## Step 2: Upload to Databricks
@@ -20,7 +20,7 @@ dist/kimball_framework-0.1.1-py3-none-any.whl
 1. In VSCode, open the Databricks extension panel
 2. Navigate to "Workspace" or "DBFS"
 3. Right-click and select "Upload File"
-4. Upload `dist/kimball_framework-0.1.1-py3-none-any.whl`
+4. Upload `dist/kimball_framework-0.2.0-py3-none-any.whl`
 5. Upload to `/FileStore/wheels/` (create if needed)
 
 ### Option B: Via Databricks UI
@@ -28,7 +28,7 @@ dist/kimball_framework-0.1.1-py3-none-any.whl
 1. Go to your Databricks workspace
 2. Click "Data" in the left sidebar
 3. Click "Create Table" → "Upload File"
-4. Upload `kimball_framework-0.1.1-py3-none-any.whl`
+4. Upload `kimball_framework-0.2.0-py3-none-any.whl`
 5. Note the DBFS path shown
 
 ## Step 3: Use in Your Notebook
@@ -37,7 +37,7 @@ Add this as the **first cell** in your notebook:
 
 ```python
 # Install the Kimball framework
-%pip install /dbfs/FileStore/wheels/kimball_framework-0.1.1-py3-none-any.whl
+%pip install /dbfs/FileStore/wheels/kimball_framework-0.2.0-py3-none-any.whl
 
 # Restart Python kernel to use the new package
 dbutils.library.restartPython()
@@ -70,7 +70,7 @@ If you're developing and want to test changes quickly:
 2. Click "Libraries" tab
 3. Click "Install New"
 4. Select "DBFS"
-5. Enter: `dbfs:/FileStore/wheels/kimball_framework-0.1.1-py3-none-any.whl`
+5. Enter: `dbfs:/FileStore/wheels/kimball_framework-0.2.0-py3-none-any.whl`
 6. Click "Install"
 7. Restart cluster
 

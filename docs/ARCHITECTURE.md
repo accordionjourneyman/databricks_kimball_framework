@@ -4,7 +4,7 @@
 
 1. **Declarative Configuration** - Define what, not how
 2. **Separation of Concerns** - Business logic (SQL) separate from infrastructure (CDF, watermarking)
-3. **Exactly-Once Semantics** - Watermark-based processing guarantees
+3. **Idempotent with Watermarking** - Resilient processing guarantees using checkpoints and watermarks
 4. **Kimball Compliance** - Follows dimensional modeling best practices
 5. **Delta Lake Native** - Leverages ACID transactions and time travel
 

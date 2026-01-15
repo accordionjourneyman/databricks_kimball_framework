@@ -175,7 +175,7 @@ class DataQualityValidator:
         try:
             # Performance: Only compute total_rows in dev mode
             is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
-            
+
             if is_dev_mode:
                 total_rows = df.count()
             else:
@@ -252,7 +252,7 @@ class DataQualityValidator:
         try:
             # Performance: Only compute total_rows in dev mode
             is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
-            
+
             if is_dev_mode:
                 total_rows = df.count()
             else:
@@ -328,7 +328,7 @@ class DataQualityValidator:
         try:
             # Performance: Only compute total_rows in dev mode
             is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
-            
+
             if is_dev_mode:
                 total_rows = df.count()
             else:
@@ -406,7 +406,7 @@ class DataQualityValidator:
         try:
             # Performance: Only compute total_rows in dev mode
             is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
-            
+
             if is_dev_mode:
                 total_rows = df.count()
             else:
@@ -523,7 +523,7 @@ class DataQualityValidator:
 
             # Performance: Only compute total_rows in dev mode
             is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
-            
+
             if is_dev_mode:
                 total_rows = df.count()
             else:

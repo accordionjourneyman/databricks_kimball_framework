@@ -54,7 +54,7 @@ class SkeletonGenerator:
         # - fact_keys.distinct(): Necessary to avoid creating duplicate skeleton rows when fact has duplicate refs
         # - dim_keys.distinct(): Can be skipped if dim_join_key is guaranteed unique (natural key)
         #   but kept for safety in case of data quality issues or composite keys
-        
+
         # 1. Identify Distinct Keys in Fact
         fact_keys = fact_df.select(col(fact_join_key).alias("key")).distinct()
 

@@ -21,12 +21,12 @@ from kimball.common.constants import (
     SPARK_CONF_AQE_ENABLED,
     SPARK_CONF_AQE_SKEW_JOIN,
     SPARK_CONF_SHUFFLE_PARTITIONS,
-    SPARK_CONF_SKEW_SIZE_THRESHOLD,
     SPARK_CONF_SKEW_FACTOR,
+    SPARK_CONF_SKEW_SIZE_THRESHOLD,
 )
-from kimball.common.runtime import RuntimeOptions
 from kimball.common.errors import NonRetriableError, RetriableError
 from kimball.common.exceptions import PYSPARK_EXCEPTION_BASE
+from kimball.common.runtime import RuntimeOptions
 from kimball.observability.resilience import (
     PipelineCheckpoint,
     QueryMetricsCollector,
@@ -122,40 +122,39 @@ class Orchestrator:
         # These settings have MASSIVE impact on GC pressure and shuffle efficiency
         try:
             spark = _get_spark()
-            
+
             # AQE (Adaptive Query Execution) - always enable, it's free optimization
             spark.conf.set(SPARK_CONF_AQE_ENABLED, "true")
             spark.conf.set(SPARK_CONF_AQE_SKEW_JOIN, "true")
             spark.conf.set(SPARK_CONF_AQE_COALESCE, "true")
-            
+
             # Shuffle partitions: 'auto' lets AQE optimize, explicit int overrides
             # Spark default (200) is wrong for almost everyone
             if self.runtime_options.shuffle_partitions != "auto":
                 spark.conf.set(
                     SPARK_CONF_SHUFFLE_PARTITIONS,
-                    str(self.runtime_options.shuffle_partitions)
+                    str(self.runtime_options.shuffle_partitions),
                 )
                 logger.info(
                     f"Set shuffle.partitions={self.runtime_options.shuffle_partitions} "
                     f"(override Spark default of 200)"
                 )
             # else: AQE will auto-coalesce partitions based on data size
-            
+
             # Skew handling: prevent OOM when partitioning by keys with hot values
             # (e.g., dimension default -1 with 10M rows going to one executor)
             spark.conf.set(
                 SPARK_CONF_SKEW_SIZE_THRESHOLD,
-                f"{self.runtime_options.skew_threshold_mb}MB"
+                f"{self.runtime_options.skew_threshold_mb}MB",
             )
             spark.conf.set(
-                SPARK_CONF_SKEW_FACTOR,
-                str(self.runtime_options.skew_factor)
+                SPARK_CONF_SKEW_FACTOR, str(self.runtime_options.skew_factor)
             )
             logger.debug(
                 f"Skew handling: threshold={self.runtime_options.skew_threshold_mb}MB, "
                 f"factor={self.runtime_options.skew_factor}x"
             )
-            
+
         except Exception as e:
             # May fail on Spark Connect or restricted environments
             logger.debug(f"Could not set Spark configs (likely Spark Connect): {e}")
@@ -204,7 +203,9 @@ class Orchestrator:
         self.merger = merger or DeltaMerger()
         self.skeleton_generator = skeleton_generator or SkeletonGenerator()
         self.table_creator = table_creator or TableCreator()
-        self.transaction_manager = transaction_manager or TransactionManager(_get_spark())
+        self.transaction_manager = transaction_manager or TransactionManager(
+            _get_spark()
+        )
 
         # Initialize observability and resilience features (opt-in via feature flags)
         self.metrics_collector = (
@@ -232,7 +233,9 @@ class Orchestrator:
             pipeline_id: Optional pipeline ID to filter cleanup (for targeted cleanup)
             max_age_hours: Maximum age of staging tables to clean up (default 24 hours)
         """
-        logger.info(f"Checking for orphaned staging tables (max age: {max_age_hours}h)...")
+        logger.info(
+            f"Checking for orphaned staging tables (max age: {max_age_hours}h)..."
+        )
 
         # Use TTL-based cleanup to avoid interfering with concurrent pipelines
         if self.cleanup_manager is None:
@@ -331,24 +334,32 @@ class Orchestrator:
             # Check if we can tag commits (required for zombie recovery)
             can_tag_commits = True
             try:
-                _get_spark().conf.get("_get_spark().databricks.delta.commitInfo.userMetadata")
+                _get_spark().conf.get(
+                    "_get_spark().databricks.delta.commitInfo.userMetadata"
+                )
             except Exception:
                 # If we can't get the config, assume we can set it
                 pass
 
-            # Try to detect Serverless by attempting to set commit metadata
-            try:
-                _get_spark().conf.set(
-                    "_get_spark().databricks.delta.commitInfo.userMetadata", "__test__"
+            # Check for Serverless Compute
+            # Serverless does not support setting custom commit metadata, which breaks zombie detection
+            is_serverless = (
+                _get_spark().conf.get(
+                    "spark.databricks.service.serverless.enabled", "false"
                 )
-                _get_spark().conf.unset("_get_spark().databricks.delta.commitInfo.userMetadata")
-            except Exception:
+                == "true"
+            )
+
+            if is_serverless:
                 can_tag_commits = False
                 logger.info(
-                    "WARNING: Crash recovery unavailable (Serverless limitation). "
-                    "Commits cannot be tagged with batch_id for rollback detection. "
-                    "Proceeding without zombie detection. See KNOWN_LIMITATIONS.md."
+                    "WARNING: Serverless Compute detected. "
+                    "Crash recovery / Zombie detection is disabled because commit tagging is unsupported. "
+                    "Pipelines will rely on idempotency for recovery."
                 )
+            else:
+                # On non-serverless, we assume we can tag commits unless proven otherwise
+                can_tag_commits = True
 
             if can_tag_commits:
                 running_batches = self.etl_control.get_running_batches(
@@ -492,7 +503,9 @@ class Orchestrator:
 
                 # Early exit if no sources loaded (all skipped - already at version)
                 if not active_dfs:
-                    logger.info("All sources already at current version. Nothing to process.")
+                    logger.info(
+                        "All sources already at current version. Nothing to process."
+                    )
                     return {"rows_read": 0, "rows_written": 0}
 
                 # 2. Early Arriving Facts (Skeleton Generation)
@@ -552,7 +565,7 @@ class Orchestrator:
                         )
                     logger.info("Executing Transformation SQL...")
                     transformed_df = _get_spark().sql(self.config.transformation_sql)
-                    
+
                     # Warn if CDF source has _change_type but transformation SQL stripped it
                     # User must explicitly include _change_type for delete detection in SCD2
                     for source in self.config.sources:
@@ -631,7 +644,9 @@ class Orchestrator:
                 if getattr(self.config, "tests", None):
                     from kimball.validation import DataQualityValidator
 
-                    logger.info("Running data quality validation on transformed data...")
+                    logger.info(
+                        "Running data quality validation on transformed data..."
+                    )
                     validator = DataQualityValidator()
                     report = validator.run_config_tests(self.config, df=transformed_df)
                     report.raise_on_failure()
@@ -754,7 +769,9 @@ class Orchestrator:
 
                     # Seed default rows (-1, -2, -3) ONLY on table creation (not every run)
                     if table_created and self.config.table_type == "dimension":
-                        target_schema = _get_spark().table(self.config.table_name).schema
+                        target_schema = (
+                            _get_spark().table(self.config.table_name).schema
+                        )
                         if self.config.scd_type == 2:
                             self.merger.ensure_scd2_defaults(
                                 self.config.table_name,
@@ -781,7 +798,9 @@ class Orchestrator:
                     if getattr(self.config, "enable_lineage_truncation", False):
                         # Use reliable checkpoint() only when lineage truncation is explicitly requested
                         try:
-                            checkpoint_dir = _get_spark().sparkContext.getCheckpointDir()
+                            checkpoint_dir = (
+                                _get_spark().sparkContext.getCheckpointDir()
+                            )
                             if checkpoint_dir:
                                 logger.info(
                                     f"Using reliable checkpoint directory: {checkpoint_dir}"
@@ -801,7 +820,9 @@ class Orchestrator:
                             checkpointed_df = transformed_df.localCheckpoint()
                         except Exception as e:
                             # Log any other unexpected errors and fallback to local checkpoint
-                            logger.info(f"Unexpected error during checkpoint setup: {e}")
+                            logger.info(
+                                f"Unexpected error during checkpoint setup: {e}"
+                            )
                             logger.info("Using local checkpoint (less reliable)")
                             checkpointed_df = transformed_df.localCheckpoint()
                     else:
@@ -821,7 +842,9 @@ class Orchestrator:
                         _get_spark().catalog.tableExists(self.config.table_name)
                         and not self.config.schema_evolution
                     ):
-                        target_schema = _get_spark().table(self.config.table_name).schema
+                        target_schema = (
+                            _get_spark().table(self.config.table_name).schema
+                        )
                         target_columns = [f.name for f in target_schema.fields]
 
                         # System columns that must always be included for proper merge operations

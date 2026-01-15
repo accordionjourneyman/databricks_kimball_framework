@@ -33,10 +33,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/your-username/databricks_kimball_framework"
-Documentation = "https://github.com/your-username/databricks_kimball_framework#readme"
-Repository = "https://github.com/your-username/databricks_kimball_framework"
-Changelog = "https://github.com/your-username/databricks_kimball_framework/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/accordionjourneyman/databricks_kimball_framework"
+Documentation = "https://github.com/accordionjourneyman/databricks_kimball_framework#readme"
+Repository = "https://github.com/accordionjourneyman/databricks_kimball_framework"
+Changelog = "https://github.com/accordionjourneyman/databricks_kimball_framework/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 # For local development/testing outside Databricks

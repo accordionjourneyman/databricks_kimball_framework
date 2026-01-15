@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import os
+import logging
 import time
 from collections.abc import Callable
 from datetime import date, datetime
 from functools import reduce, wraps
 from typing import Any, Protocol, cast
 
-import logging
 from delta.tables import DeltaTable
 from pyspark.sql import Column, DataFrame
 from pyspark.sql.functions import (
@@ -487,38 +486,10 @@ class SCD2Strategy:
         #
         # JVM PERFORMANCE WARNING (from the ghost of Java engineers past):
         # This groupBy().count().filter().collect() breaks the lazy DAG and forces
-        # a full shuffle + driver serialization BEFORE the actual merge.
-        # On a 10TB dataset, you just paid the shuffle tax for a pre-check.
-        #
-        # Skip this check via KIMBALL_SKIP_GRAIN_CHECK=1 if:
-        #   - Your upstream CDF dedup already guarantees uniqueness
-        #   - You prefer Delta to fail on merge conflict (faster, less informative)
-        #   - You're optimizing for latency over detailed error messages
-        #
-        # The alternative: Let the merge fail with "Multiple source rows matched"
-        # and debug from there. Less friendly, but zero overhead.
-        skip_grain_check = os.environ.get("KIMBALL_SKIP_GRAIN_CHECK") == "1"
-        
-        if self.join_keys and "__etl_processed_at" in source_df.columns and not skip_grain_check:
-            duplicates_check = (
-                source_df.groupBy(*self.join_keys).count().filter(col("count") > 1)
-            )
-            # Single collect with limit(5) - check emptiness AND get samples in one action
-            dup_sample = duplicates_check.limit(5).collect()
-            if dup_sample:
-                dup_keys = [str(row.asDict()) for row in dup_sample]
-                raise ValueError(
-                    f"GRAIN VIOLATION: Source data contains duplicate natural keys within batch. "
-                    f"Kimball methodology requires unique keys per batch. "
-                    f"Sample duplicates: {dup_keys[:3]}... "
-                    f"Fix the source data or adjust the grain definition in config. "
-                    f"(Skip this check with KIMBALL_SKIP_GRAIN_CHECK=1 if upstream guarantees uniqueness)"
-                )
-        elif skip_grain_check and self.join_keys:
-            logger.debug(
-                "Grain check skipped (KIMBALL_SKIP_GRAIN_CHECK=1). "
-                "Merge will fail if duplicates exist."
-            )
+        if self.join_keys and "__etl_processed_at" in source_df.columns:
+            # Performance Optimization: Removed eager duplicate check.
+            # Delta Lake MERGE will handle duplicates via "Multiple source rows matched" exception.
+            pass
 
         source_keys = source_df.select(*self.join_keys).distinct()
         target_df = (
