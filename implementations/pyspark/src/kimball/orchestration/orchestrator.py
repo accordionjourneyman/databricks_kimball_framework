@@ -196,6 +196,39 @@ class Orchestrator:
         Returns:
             dict: Summary of the pipeline run including rows_read and rows_written.
         """
+        # PRESERVE_ALL_CHANGES: Loop until watermark catches up to source version
+        if self.config.preserve_all_changes and self.config.scd_type == 2:
+            return self._run_with_version_loop()
+
+        return self._run_pipeline_once()
+
+    def _run_with_version_loop(self, max_iterations: int = 100) -> dict[str, Any]:
+        """Run pipeline repeatedly until all CDF versions are processed (for preserve_all_changes mode)."""
+        iteration = 0
+        combined_result = {"rows_read": 0, "rows_written": 0}
+
+        while iteration < max_iterations:
+            iteration += 1
+            result = self._run_pipeline_once()
+
+            combined_result["rows_read"] += result.get("rows_read", 0)
+            combined_result["rows_written"] += result.get("rows_written", 0)
+
+            # Check if we're caught up (no more data to process)
+            if result.get("rows_read", 0) == 0:
+                break
+
+            print(
+                f"Preserve All Changes: Iteration {iteration} complete, checking for more versions..."
+            )
+
+        if iteration > 1:
+            print(f"Preserve All Changes: Processed {iteration} version(s) total")
+
+        return combined_result
+
+    def _run_pipeline_once(self, max_retries: int = 0) -> dict[str, Any]:
+        """Execute single pipeline iteration."""
         print(f"Starting pipeline for {self.config.table_name}")
 
         # Clean up orphaned staging tables (only once per session to avoid repeated overhead)
