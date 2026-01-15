@@ -1,10 +1,10 @@
 import logging
 
 from delta.tables import DeltaTable
-
-logger = logging.getLogger(__name__)
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import col, current_timestamp, lit
+
+logger = logging.getLogger(__name__)
 
 
 class SkeletonGenerator:

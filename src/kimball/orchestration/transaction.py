@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import logging
-
-logger = logging.getLogger(__name__)
-
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
@@ -11,6 +8,8 @@ from typing import TYPE_CHECKING
 from delta.tables import DeltaTable
 
 from kimball.common.spark_session import get_spark
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
@@ -43,7 +42,9 @@ class TransactionManager:
 
     def _rollback(self, table_name: str, version: int) -> None:
         """Rollback table to a specific version using RESTORE."""
-        logger.info(f"TRANSACTION ROLLBACK: Restoring {table_name} to version {version}...")
+        logger.info(
+            f"TRANSACTION ROLLBACK: Restoring {table_name} to version {version}..."
+        )
         try:
             self.spark.sql(f"RESTORE TABLE {table_name} TO VERSION AS OF {version}")
             logger.info(f"ROLLBACK COMPLETE: {table_name} restored to {version}.")
@@ -65,7 +66,9 @@ class TransactionManager:
         try:
             # Check if table exists first
             if not self.spark.catalog.tableExists(table_name):
-                logger.info(f"ZOMBIE RECOVERY SKIPPED: Table {table_name} does not exist.")
+                logger.info(
+                    f"ZOMBIE RECOVERY SKIPPED: Table {table_name} does not exist."
+                )
                 return False
 
             # Check history for commits tagged with this batch_id

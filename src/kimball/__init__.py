@@ -11,6 +11,7 @@ from kimball.common.errors import (
     TransformationSQLError,
     TransientSparkError,
 )
+from kimball.common.runtime import RuntimeOptions
 from kimball.observability.bus_matrix import generate_bus_matrix
 from kimball.observability.resilience import (
     PipelineCheckpoint,
@@ -36,6 +37,8 @@ __all__ = [
     "PipelineResult",
     "ExecutionSummary",
     "generate_bus_matrix",
+    # Configuration
+    "RuntimeOptions",
     # ETL Control
     "ETLControlManager",
     "get_etl_schema",

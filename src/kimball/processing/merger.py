@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-import logging
-
-logger = logging.getLogger(__name__)
-
 import time
 from collections.abc import Callable
 from datetime import date, datetime
 from functools import reduce, wraps
 from typing import Any, Protocol, cast
 
+import logging
 from delta.tables import DeltaTable
 from pyspark.sql import Column, DataFrame
 from pyspark.sql.functions import (
@@ -48,6 +45,8 @@ from kimball.processing.key_generator import (
     IdentityKeyGenerator,
     KeyGenerator,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def retry_on_concurrent_exception(
@@ -407,7 +406,6 @@ class SCD2Strategy:
             delete_rows = source_df.filter(col("_change_type") == "delete")
             # Debug: show delete detection
             if not delete_rows.isEmpty():
-
                 logger.info(
                     f"SCD2: Processing {delete_rows.count()} delete(s) - expiring current versions"
                 )
@@ -627,7 +625,9 @@ class SCD2Strategy:
                 stacklevel=2,
             )
 
-        logger.info(f"SCD2 time semantics: using {validity_note} for history boundaries")
+        logger.info(
+            f"SCD2 time semantics: using {validity_note} for history boundaries"
+        )
 
         insert_values.update(
             {
@@ -1081,7 +1081,9 @@ class DeltaMerger:
             # We just run OPTIMIZE, which will use the existing clustering spec
             quoted_table_name = quote_table_name(table_name)
             self.get_spark().sql(f"OPTIMIZE {quoted_table_name}")
-            logger.info(f"Optimized {table_name} using Liquid Clustering on {cluster_by}")
+            logger.info(
+                f"Optimized {table_name} using Liquid Clustering on {cluster_by}"
+            )
         else:
             # Standard OPTIMIZE without clustering
             quoted_table_name = quote_table_name(table_name)

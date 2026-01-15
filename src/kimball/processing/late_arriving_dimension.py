@@ -1,7 +1,4 @@
-"""
-import logging
-logger = logging.getLogger(__name__)
-Late Arriving Dimension Processor - Handles updating facts when dimensions arrive late.
+"""Late Arriving Dimension Processor - Handles updating facts when dimensions arrive late.
 
 This module complements the SkeletonGenerator by handling the reverse case:
 - SkeletonGenerator: Creates placeholder dimension rows when facts reference missing dimensions
@@ -24,11 +21,17 @@ Usage:
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from delta.tables import DeltaTable
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col
+
+if TYPE_CHECKING:
+    import pyspark.sql
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     pass
@@ -124,7 +127,9 @@ class LateArrivingDimensionProcessor:
             source_df.alias("source"), merge_condition
         ).whenMatchedUpdate(set=update_set).execute()
 
-        logger.info(f"Updated skeleton rows in {dimension_table} with real dimension data.")
+        logger.info(
+            f"Updated skeleton rows in {dimension_table} with real dimension data."
+        )
 
         # Return count of updated rows (from merge metrics)
         try:
@@ -170,7 +175,7 @@ class LateArrivingDimensionProcessor:
             logger.info(f"Dimension table {dimension_table} does not exist. Skipping.")
             return 0
 
-        fact_delta = DeltaTable.forName(self.spark, fact_table)
+        # fact_delta = DeltaTable.forName(self.spark, fact_table)  # Unused for now
         dim_df = self.spark.table(dimension_table)
 
         # Get current dimension records only

@@ -1,7 +1,4 @@
-"""
-import logging
-logger = logging.getLogger(__name__)
-PipelineExecutor - Wave-based pipeline execution for notebooks.
+"""PipelineExecutor - Wave-based pipeline execution for notebooks.
 
 This module provides an executor for running multiple Kimball pipelines
 with automatic dependency ordering (dimensions before facts).
@@ -52,6 +49,7 @@ Example:
 """
 
 import concurrent.futures
+import logging
 import time
 import warnings
 from dataclasses import dataclass, field
@@ -61,6 +59,8 @@ from kimball.common.config import ConfigLoader
 from kimball.common.errors import NonRetriableError
 from kimball.orchestration.orchestrator import Orchestrator
 from kimball.orchestration.watermark import get_etl_schema
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -361,7 +361,9 @@ class PipelineExecutor:
         dim_failures = [r for r in dim_results if r.status == "FAILED"]
         if dim_failures and self.stop_on_failure:
             wave_failed = True
-            logger.info(f"\n⚠ {len(dim_failures)} dimension(s) failed. Skipping facts wave.")
+            logger.info(
+                f"\n⚠ {len(dim_failures)} dimension(s) failed. Skipping facts wave."
+            )
 
             # Mark facts as skipped
             for fact in self.facts:
@@ -421,7 +423,9 @@ class PipelineExecutor:
             logger.info(f"  {i}. {fact['table_name']} ({fact['path']})")
 
         logger.info("\nExecution Order:")
-        logger.info(f"  1. All dimensions run in parallel (max {self.max_workers} workers)")
+        logger.info(
+            f"  1. All dimensions run in parallel (max {self.max_workers} workers)"
+        )
         logger.info("  2. After ALL dimensions complete, facts run in parallel")
         if self.stop_on_failure:
             logger.info("  3. If any dimension fails, facts wave is skipped")
