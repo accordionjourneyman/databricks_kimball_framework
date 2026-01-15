@@ -399,11 +399,12 @@ class SCD2Strategy:
         # FINDING-003: Handle deletes first - expire current version for deleted keys
         if "_change_type" in source_df.columns:
             delete_rows = source_df.filter(col("_change_type") == "delete")
+            # Debug: show delete detection
             if not delete_rows.isEmpty():
                 from pyspark.sql import functions as F
 
                 print(
-                    f"SCD2: Processing deletes - expiring current versions for deleted keys"
+                    f"SCD2: Processing {delete_rows.count()} delete(s) - expiring current versions"
                 )
                 delta_table = DeltaTable.forName(spark, self.target_table_name)
 

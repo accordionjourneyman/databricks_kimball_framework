@@ -124,6 +124,7 @@ sources:
 transformation_sql: |
   SELECT customer_id, first_name, last_name, email, address, updated_at FROM c
 audit_columns: true
+preserve_all_changes: true  # Process one CDF version at a time for complete SCD2 history
 """
 
 dim_product_yaml = """table_name: demo_gold.dim_product

@@ -334,14 +334,32 @@ class Orchestrator:
                                     rows_written=0,
                                 )
                                 continue
-                            # Pass primary_keys for deduplication to handle multiple updates to same row
-                            # Pass ending_version=latest_v to prevent processing data that arrived during the run
-                            df = self.loader.load_cdf(
-                                source.name,
-                                wm + 1,
-                                deduplicate_keys=source.primary_keys,
-                                ending_version=latest_v,
-                            )
+
+                            # PRESERVE_ALL_CHANGES: For SCD2, process one version at a time
+                            if (
+                                self.config.preserve_all_changes
+                                and self.config.scd_type == 2
+                            ):
+                                # Load just ONE version (wm+1) instead of the full range
+                                # Subsequent versions will be picked up in the next run
+                                print(
+                                    f"Preserve All Changes: Processing version {wm + 1} only"
+                                )
+                                df = self.loader.load_cdf(
+                                    source.name,
+                                    wm + 1,
+                                    deduplicate_keys=source.primary_keys,
+                                    ending_version=wm + 1,  # Single version
+                                )
+                                source_versions[source.name] = wm + 1
+                            else:
+                                # Standard fast-forward mode (default)
+                                df = self.loader.load_cdf(
+                                    source.name,
+                                    wm + 1,
+                                    deduplicate_keys=source.primary_keys,
+                                    ending_version=latest_v,
+                                )
                     elif source.cdc_strategy == "timestamp":
                         raise NotImplementedError(
                             f"cdc_strategy='timestamp' is not yet implemented for source '{source.name}'. "
@@ -425,6 +443,28 @@ class Orchestrator:
                         )
                     print("Executing Transformation SQL...")
                     transformed_df = spark.sql(self.config.transformation_sql)
+
+                    # AUTO-PRESERVE _change_type for CDF sources
+                    # If source has _change_type (CDF) but transformation stripped it, carry it through
+                    # This enables delete detection in SCD2 without requiring users to include _change_type in SQL
+                    if len(self.config.sources) == 1:
+                        source_df = active_dfs[self.config.sources[0].name]
+                        if (
+                            "_change_type" in source_df.columns
+                            and "_change_type" not in transformed_df.columns
+                        ):
+                            # Join back _change_type on all columns that exist in both DataFrames
+                            # For single-source, natural keys should be sufficient
+                            pk_cols = self.config.sources[0].primary_keys
+                            if pk_cols:
+                                print(
+                                    f"Auto-preserving _change_type through transformation"
+                                )
+                                transformed_df = transformed_df.join(
+                                    source_df.select(*pk_cols, "_change_type"),
+                                    on=pk_cols,
+                                    how="left",
+                                )
                 else:
                     # No transformation SQL - use source data directly
                     if len(self.config.sources) == 1:

@@ -84,6 +84,12 @@ class TableConfig(BaseModel):
     merge_keys: list[str] | None = None
     foreign_keys: list[ForeignKeyConfig] | None = None
     enable_lineage_truncation: bool = False
+    preserve_all_changes: bool = Field(
+        default=False,
+        description="For SCD2: When True, processes each CDF version separately to preserve "
+        "all intermediate state changes. When False (default), fast-forwards to latest state. "
+        "Enable this if capturing every historical state change is critical.",
+    )
 
     @model_validator(mode="before")
     @classmethod
