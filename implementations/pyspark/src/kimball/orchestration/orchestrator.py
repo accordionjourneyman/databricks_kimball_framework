@@ -772,6 +772,7 @@ class Orchestrator:
                             "__valid_to",
                             "__etl_processed_at",
                             "__is_deleted",
+                            "_change_type",  # CDF metadata for delete detection
                         }
 
                         # Include system columns even if not in target schema
