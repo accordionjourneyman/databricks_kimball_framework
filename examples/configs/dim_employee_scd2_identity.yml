@@ -18,7 +18,7 @@ track_history_columns:
 effective_at: updated_at
 
 default_rows:
-  -1: "Unknown"
+  "-1": "Unknown"
 
 sources:
   - name: {{ env }}_silver.employees

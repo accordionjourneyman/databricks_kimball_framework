@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Callable
 from datetime import date, datetime
@@ -405,9 +406,12 @@ class SCD2Strategy:
         if "_change_type" in source_df.columns:
             delete_rows = source_df.filter(col("_change_type") == "delete")
             # Debug: show delete detection
+            # Performance Note: We check isEmpty() first (cheap), then count() only if deletes exist
+            # This is acceptable because deletes are typically rare and the count is for logging only
             if not delete_rows.isEmpty():
+                delete_count = delete_rows.count()
                 logger.info(
-                    f"SCD2: Processing {delete_rows.count()} delete(s) - expiring current versions"
+                    f"SCD2: Processing {delete_count} delete(s) - expiring current versions"
                 )
                 delta_table = DeltaTable.forName(get_spark(), self.target_table_name)
 
@@ -478,22 +482,43 @@ class SCD2Strategy:
                 f"Add to track_history_columns in config if history tracking is needed."
             )
 
-        if self.join_keys and "__etl_processed_at" in source_df.columns:
-            # FINDING-007: Always validate grain - Kimball methodology requires unique natural keys per batch
-            # This prevents "Multiple source rows matched" merge errors and ensures data integrity
+        # GRAIN VALIDATION: Check for duplicate natural keys in source batch
+        # This prevents "Multiple source rows matched" merge errors
+        #
+        # JVM PERFORMANCE WARNING (from the ghost of Java engineers past):
+        # This groupBy().count().filter().collect() breaks the lazy DAG and forces
+        # a full shuffle + driver serialization BEFORE the actual merge.
+        # On a 10TB dataset, you just paid the shuffle tax for a pre-check.
+        #
+        # Skip this check via KIMBALL_SKIP_GRAIN_CHECK=1 if:
+        #   - Your upstream CDF dedup already guarantees uniqueness
+        #   - You prefer Delta to fail on merge conflict (faster, less informative)
+        #   - You're optimizing for latency over detailed error messages
+        #
+        # The alternative: Let the merge fail with "Multiple source rows matched"
+        # and debug from there. Less friendly, but zero overhead.
+        skip_grain_check = os.environ.get("KIMBALL_SKIP_GRAIN_CHECK") == "1"
+        
+        if self.join_keys and "__etl_processed_at" in source_df.columns and not skip_grain_check:
             duplicates_check = (
                 source_df.groupBy(*self.join_keys).count().filter(col("count") > 1)
             )
-            if not duplicates_check.limit(1).isEmpty():
-                # Get sample duplicates for error message
-                dup_sample = duplicates_check.limit(5).collect()
+            # Single collect with limit(5) - check emptiness AND get samples in one action
+            dup_sample = duplicates_check.limit(5).collect()
+            if dup_sample:
                 dup_keys = [str(row.asDict()) for row in dup_sample]
                 raise ValueError(
                     f"GRAIN VIOLATION: Source data contains duplicate natural keys within batch. "
                     f"Kimball methodology requires unique keys per batch. "
                     f"Sample duplicates: {dup_keys[:3]}... "
-                    f"Fix the source data or adjust the grain definition in config."
+                    f"Fix the source data or adjust the grain definition in config. "
+                    f"(Skip this check with KIMBALL_SKIP_GRAIN_CHECK=1 if upstream guarantees uniqueness)"
                 )
+        elif skip_grain_check and self.join_keys:
+            logger.debug(
+                "Grain check skipped (KIMBALL_SKIP_GRAIN_CHECK=1). "
+                "Merge will fail if duplicates exist."
+            )
 
         source_keys = source_df.select(*self.join_keys).distinct()
         target_df = (

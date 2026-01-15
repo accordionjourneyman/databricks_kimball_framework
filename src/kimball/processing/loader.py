@@ -109,6 +109,16 @@ class DataLoader:
 
         # Deduplicate: keep only the latest version per key
         # FINDING-002: Add secondary ordering by _change_type to ensure deletes win
+        # 
+        # Performance Note: Window function with row_number() over partitionBy(keys)
+        # Complexity: O(n log n) per partition (sort within partition) + shuffle by key
+        # This is the "correct algorithm" for latest-per-key semantics with change_type priority
+        # Cost factors:
+        # - Partitioning: shuffle if keys aren't already co-located
+        # - Sorting: per-partition sort by version + change_type
+        # - Projection should happen BEFORE this window to minimize shuffle data size
+        # Alternative approach (not implemented): groupBy + max(struct(...)) can avoid row_number
+        # but is harder to get correct with change_type priority logic
         if deduplicate_keys and "_commit_version" in df.columns:
             from pyspark.sql import functions as F
 

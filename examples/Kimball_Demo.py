@@ -122,7 +122,7 @@ sources:
     cdc_strategy: cdf
     primary_keys: [customer_id]  # Required for CDF deduplication
 transformation_sql: |
-  SELECT customer_id, first_name, last_name, email, address, updated_at FROM c
+  SELECT customer_id, first_name, last_name, email, address, updated_at, _change_type FROM c
 audit_columns: true
 preserve_all_changes: true  # Process one CDF version at a time for complete SCD2 history
 """
@@ -140,7 +140,7 @@ sources:
     cdc_strategy: cdf
     primary_keys: [product_id]  # Required for CDF deduplication
 transformation_sql: |
-  SELECT product_id, name, category, unit_cost, updated_at FROM p
+  SELECT product_id, name, category, unit_cost, updated_at, _change_type FROM p
 audit_columns: true
 """
 

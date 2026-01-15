@@ -90,6 +90,12 @@ class LateArrivingDimensionProcessor:
 
         # Find skeleton rows that match incoming source data
         skeleton_rows = dim_df.filter(col("__is_skeleton") == True)  # noqa: E712
+        
+        # Performance Note: isEmpty() triggers a Spark action (limit(1).count)
+        # Trade-off:
+        # - If skeletons are rare: this fast-path saves the MERGE operation
+        # - If skeletons are common: this adds overhead before MERGE
+        # Current design assumes skeletons are rare in production (most dimensions arrive before facts)
         if skeleton_rows.isEmpty():
             logger.info(f"No skeleton rows found in {dimension_table}.")
             return 0

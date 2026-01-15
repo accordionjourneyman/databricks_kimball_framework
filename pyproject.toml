@@ -9,7 +9,7 @@ description = "A declarative, CDF-based ETL framework implementing Kimball dimen
 authors = [{name = "Tiago Marques"}]
 license = {text = "Apache-2.0"}
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.13"
 keywords = ["databricks", "kimball", "etl", "delta-lake", "dimensional-modeling", "scd", "data-warehouse"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -91,3 +91,4 @@ reportMissingImports = "none"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+pythonpath = ["implementations/pyspark/src"]

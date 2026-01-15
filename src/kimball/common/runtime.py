@@ -44,6 +44,28 @@ class RuntimeOptions:
         enable_metrics: Enable query metrics collection (default: from mode).
         enable_auto_cluster: Enable auto-clustering (default: from mode).
         spark_session: Optional injected SparkSession for testing.
+
+    JVM Performance Tuning (read this before going to production):
+        shuffle_partitions: Number of partitions for shuffles. Spark's default (200)
+            is almost always wrong:
+            - Too HIGH for small data: creates tiny partitions, namenode pressure,
+              excessive task scheduling overhead
+            - Too LOW for large data: creates huge partitions that spill to disk
+              and cause GC thrashing
+            Set to 'auto' (recommended) to let AQE handle it dynamically, or
+            calculate: target_partition_size_mb * num_partitions ≈ shuffle_data_size
+            Rule of thumb: 128-256MB per partition.
+
+        skew_threshold_mb: Partition size threshold for skew detection (default: 256MB).
+            If you have dimension defaults like -1 or 'Unknown' with millions of rows,
+            those partitions will be skewed. AQE will split them if > this threshold.
+
+        skip_grain_check: Skip the pre-merge duplicate key validation. This check
+            causes a full shuffle + collect() which breaks the DAG and adds latency.
+            Set to True if:
+            - Your upstream (CDF dedup) already guarantees uniqueness
+            - You prefer to let Delta's merge fail on duplicates instead of pre-checking
+            - You're optimizing for latency over detailed error messages
     """
 
     etl_schema: str | None = None
@@ -55,6 +77,13 @@ class RuntimeOptions:
     enable_staging_cleanup: bool | None = None
     enable_metrics: bool | None = None
     enable_auto_cluster: bool | None = None
+
+    # JVM/Spark Performance Tuning
+    # These settings have direct impact on GC pressure and shuffle efficiency
+    shuffle_partitions: str | int = "auto"  # 'auto' = let AQE decide, or explicit int
+    skew_threshold_mb: int = 256  # Partition size threshold for skew handling
+    skew_factor: int = 5  # Partition Nx larger than median = skewed
+    skip_grain_check: bool = False  # Skip expensive pre-merge duplicate validation
 
     # Injected dependencies (for testing)
     spark_session: SparkSession | None = field(default=None, repr=False)
@@ -108,6 +137,11 @@ class RuntimeOptions:
             enable_staging_cleanup=_flag("KIMBALL_ENABLE_STAGING_CLEANUP"),
             enable_metrics=_flag("KIMBALL_ENABLE_METRICS"),
             enable_auto_cluster=_flag("KIMBALL_ENABLE_AUTO_CLUSTER"),
+            # JVM Performance Tuning
+            shuffle_partitions=os.environ.get("KIMBALL_SHUFFLE_PARTITIONS", "auto"),
+            skew_threshold_mb=int(os.environ.get("KIMBALL_SKEW_THRESHOLD_MB", "256")),
+            skew_factor=int(os.environ.get("KIMBALL_SKEW_FACTOR", "5")),
+            skip_grain_check=os.environ.get("KIMBALL_SKIP_GRAIN_CHECK", "") == "1",
         )
 
     def feature_enabled(self, feature: str) -> bool:

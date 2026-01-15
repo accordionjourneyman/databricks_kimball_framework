@@ -20,7 +20,13 @@ keys:
   natural_keys: [customer_id]  # Can be composite: [region, customer_id]
 
 # Optional: Surrogate key generation strategy (default: identity)
-surrogate_key_strategy: hash  # Options: identity, hash, sequence
+# WARNING: SCD2 dimensions MUST use 'identity' - hash is INVALID for SCD2!
+# Hash SK breaks when dimension rows get new versions (hash changes on any column change).
+# Options:
+#   - identity: Auto-incrementing ID (required for SCD2, recommended for most dimensions)
+#   - hash: Deterministic hash of natural keys (SCD1/junk dimensions ONLY)
+#   - sequence: Named sequence (legacy compatibility)
+surrogate_key_strategy: identity
 
 # Required for SCD2: Columns that trigger new versions
 track_history_columns:
@@ -43,7 +49,7 @@ early_arriving_facts:
     fact_join_key: customer_id
     dimension_join_key: customer_id
     surrogate_key_col: customer_sk
-    surrogate_key_strategy: hash
+    surrogate_key_strategy: identity  # Use identity for dimension surrogates
 
 # Required: Source tables
 sources:
@@ -220,17 +226,34 @@ Spark SQL to transform source data.
 
 - Use source aliases defined in `sources`
 - Standard Spark SQL syntax
-- CDF metadata flows through automatically
+
+> [!IMPORTANT]
+> **CDF Delete Detection:** If any source uses `cdf` strategy and you need delete detection, you **must** explicitly include `_change_type` in your SELECT clause. The framework will warn if this is missing.
 
 **Example:**
 
 ```yaml
+# CDF source with delete detection
+transformation_sql: |
+  SELECT
+    c.customer_id,
+    c.first_name,
+    c.last_name,
+    c._change_type  -- Required for delete detection
+  FROM c
+```
+
+**Example with JOINs:**
+
+```yaml
+# For facts: include _change_type from the primary CDF source
 transformation_sql: |
   SELECT
     oi.order_item_id,
     o.order_date,
     c.customer_sk,
-    oi.quantity * p.unit_price as amount
+    oi.quantity * p.unit_price as amount,
+    oi._change_type  -- From primary CDF source (order_items)
   FROM oi
   JOIN o ON oi.order_id = o.order_id
   LEFT JOIN c ON o.customer_id = c.customer_id
@@ -259,7 +282,7 @@ early_arriving_facts:
     fact_join_key: employee_id
     dimension_join_key: employee_id
     surrogate_key_col: employee_sk
-    surrogate_key_strategy: hash
+    surrogate_key_strategy: identity  # Use identity for dimension surrogates
 ```
 
 ## Standard Columns

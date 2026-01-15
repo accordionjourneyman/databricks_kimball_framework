@@ -173,10 +173,13 @@ class DataQualityValidator:
         test_name = f"unique({', '.join(columns)})"
 
         try:
-            total_rows = df.count()
-
-            # Performance: Use lightweight existence check unless in DEV/Strict mode
+            # Performance: Only compute total_rows in dev mode
             is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
+            
+            if is_dev_mode:
+                total_rows = df.count()
+            else:
+                total_rows = -1  # Skip expensive count in production mode
 
             # Find duplicates: group by columns and count > 1
             duplicates = (
@@ -247,7 +250,13 @@ class DataQualityValidator:
         test_name = f"not_null({', '.join(columns)})"
 
         try:
-            total_rows = df.count()
+            # Performance: Only compute total_rows in dev mode
+            is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
+            
+            if is_dev_mode:
+                total_rows = df.count()
+            else:
+                total_rows = -1  # Skip expensive count in production mode
 
             # Build filter for any null in specified columns
             null_condition = F.lit(False)
@@ -255,9 +264,6 @@ class DataQualityValidator:
                 null_condition = null_condition | F.col(col).isNull()
 
             null_rows = df.filter(null_condition)
-
-            # Performance: Use lightweight existence check unless in DEV/Strict mode
-            is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
 
             if is_dev_mode:
                 null_count = null_rows.count()
@@ -320,13 +326,16 @@ class DataQualityValidator:
         test_name = f"accepted_values({column})"
 
         try:
-            total_rows = df.count()
+            # Performance: Only compute total_rows in dev mode
+            is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
+            
+            if is_dev_mode:
+                total_rows = df.count()
+            else:
+                total_rows = -1  # Skip expensive count in production mode
 
             # Find rows with values not in accepted list
             invalid_rows = df.filter(~F.col(column).isin(values))
-
-            # Performance: Use lightweight existence check unless in DEV/Strict mode
-            is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
 
             if is_dev_mode:
                 invalid_count = invalid_rows.count()
@@ -395,7 +404,13 @@ class DataQualityValidator:
         )
 
         try:
-            total_rows = df.count()
+            # Performance: Only compute total_rows in dev mode
+            is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
+            
+            if is_dev_mode:
+                total_rows = df.count()
+            else:
+                total_rows = -1  # Skip expensive count in production mode
 
             # Load dimension table
             dim_df = self.spark.table(reference_table)
@@ -410,9 +425,6 @@ class DataQualityValidator:
 
             # Exclude nulls (nulls are handled by not_null test)
             orphans = orphans.filter(F.col(fk_column).isNotNull())
-
-            # Performance: Use lightweight existence check unless in DEV/Strict mode
-            is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
 
             if is_dev_mode:
                 orphan_count = orphans.count()
@@ -509,13 +521,16 @@ class DataQualityValidator:
                         f"Only boolean filter expressions are allowed.",
                     )
 
-            total_rows = df.count()
+            # Performance: Only compute total_rows in dev mode
+            is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
+            
+            if is_dev_mode:
+                total_rows = df.count()
+            else:
+                total_rows = -1  # Skip expensive count in production mode
 
             # Find rows where expression is false - wrap in parens for safety
             invalid_rows = df.filter(~F.expr(f"({expression})"))
-
-            # Performance: Use lightweight existence check unless in DEV/Strict mode
-            is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
 
             if is_dev_mode:
                 invalid_count = invalid_rows.count()

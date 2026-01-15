@@ -6,7 +6,8 @@ keys:
   natural_keys: [customer_id]
 
 # New configuration for surrogate key strategy
-surrogate_key_strategy: hash # Options: identity, hash, sequence
+# SCD2 requires identity strategy; hash violates Kimball principles for versioned dimensions
+surrogate_key_strategy: identity  # Options: identity, hash (SCD1 only), sequence
 
 # Columns that trigger a new SCD2 version when changed
 track_history_columns: 
@@ -21,8 +22,8 @@ track_history_columns:
 
 # Default rows to seed into the dimension
 default_rows:
-  -1: "Unknown"
-  -2: "N/A"
+  "-1": "Unknown"
+  "-2": "N/A"
 
 # Liquid Clustering for optimal query performance
 cluster_by: [customer_id]
@@ -41,7 +42,8 @@ transformation_sql: |
     c.last_name,
     c.email,
     c.address,
-    c.updated_at
+    c.updated_at,
+    c._change_type  -- Required for CDF delete detection
   FROM c
 
 audit_columns: true

@@ -2,7 +2,7 @@ import logging
 
 from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.functions import col, current_timestamp, lit
+from pyspark.sql.functions import broadcast, col, current_timestamp, lit
 
 logger = logging.getLogger(__name__)
 
@@ -50,14 +50,25 @@ class SkeletonGenerator:
         dim_table = DeltaTable.forName(self.spark, dim_table_name)
         dim_df = dim_table.toDF()
 
+        # Performance Note: Two distinct() operations below
+        # - fact_keys.distinct(): Necessary to avoid creating duplicate skeleton rows when fact has duplicate refs
+        # - dim_keys.distinct(): Can be skipped if dim_join_key is guaranteed unique (natural key)
+        #   but kept for safety in case of data quality issues or composite keys
+        
         # 1. Identify Distinct Keys in Fact
         fact_keys = fact_df.select(col(fact_join_key).alias("key")).distinct()
 
         # 2. Identify Existing Keys in Dimension
-        dim_keys = dim_df.select(col(dim_join_key).alias("key")).distinct()
+        # Note: Dimension natural keys are unique by Kimball definition (enforced by grain validation)
+        # No distinct() needed - saves a full shuffle operation
+        dim_keys = dim_df.select(col(dim_join_key).alias("key"))
 
         # 3. Find Missing Keys (Left Anti Join)
-        missing_keys = fact_keys.join(dim_keys, "key", "left_anti")
+        # JVM OPTIMIZATION (Gosling approved): Broadcast the dimension keys!
+        # Dimensions are typically millions of rows (10-100MB), facts are billions.
+        # Without broadcast: shuffle join - every fact key crosses the network.
+        # With broadcast: dimension replicated to executors, join is local.
+        missing_keys = fact_keys.join(broadcast(dim_keys), "key", "left_anti")
 
         if missing_keys.isEmpty():
             logger.info(f"No missing keys found for {dim_table_name}.")

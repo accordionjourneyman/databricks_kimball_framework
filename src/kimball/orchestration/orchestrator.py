@@ -20,7 +20,11 @@ from kimball.common.constants import (
     SPARK_CONF_AQE_COALESCE,
     SPARK_CONF_AQE_ENABLED,
     SPARK_CONF_AQE_SKEW_JOIN,
+    SPARK_CONF_SHUFFLE_PARTITIONS,
+    SPARK_CONF_SKEW_SIZE_THRESHOLD,
+    SPARK_CONF_SKEW_FACTOR,
 )
+from kimball.common.runtime import RuntimeOptions
 from kimball.common.errors import NonRetriableError, RetriableError
 from kimball.common.exceptions import PYSPARK_EXCEPTION_BASE
 from kimball.observability.resilience import (
@@ -111,14 +115,50 @@ class Orchestrator:
         self.config_loader = ConfigLoader()
         self.config = self.config_loader.load_config(config_path)
 
-        # Enable Photon and AQE for performance (best-effort, may not be available on Spark Connect)
+        # Load runtime options for JVM tuning (can be overridden via env vars)
+        self.runtime_options = RuntimeOptions.from_environment()
+
+        # Apply Spark configuration for JVM performance
+        # These settings have MASSIVE impact on GC pressure and shuffle efficiency
         try:
-            _get_spark().conf.set(SPARK_CONF_AQE_ENABLED, "true")
-            _get_spark().conf.set(SPARK_CONF_AQE_SKEW_JOIN, "true")
-            _get_spark().conf.set(SPARK_CONF_AQE_COALESCE, "true")
+            spark = _get_spark()
+            
+            # AQE (Adaptive Query Execution) - always enable, it's free optimization
+            spark.conf.set(SPARK_CONF_AQE_ENABLED, "true")
+            spark.conf.set(SPARK_CONF_AQE_SKEW_JOIN, "true")
+            spark.conf.set(SPARK_CONF_AQE_COALESCE, "true")
+            
+            # Shuffle partitions: 'auto' lets AQE optimize, explicit int overrides
+            # Spark default (200) is wrong for almost everyone
+            if self.runtime_options.shuffle_partitions != "auto":
+                spark.conf.set(
+                    SPARK_CONF_SHUFFLE_PARTITIONS,
+                    str(self.runtime_options.shuffle_partitions)
+                )
+                logger.info(
+                    f"Set shuffle.partitions={self.runtime_options.shuffle_partitions} "
+                    f"(override Spark default of 200)"
+                )
+            # else: AQE will auto-coalesce partitions based on data size
+            
+            # Skew handling: prevent OOM when partitioning by keys with hot values
+            # (e.g., dimension default -1 with 10M rows going to one executor)
+            spark.conf.set(
+                SPARK_CONF_SKEW_SIZE_THRESHOLD,
+                f"{self.runtime_options.skew_threshold_mb}MB"
+            )
+            spark.conf.set(
+                SPARK_CONF_SKEW_FACTOR,
+                str(self.runtime_options.skew_factor)
+            )
+            logger.debug(
+                f"Skew handling: threshold={self.runtime_options.skew_threshold_mb}MB, "
+                f"factor={self.runtime_options.skew_factor}x"
+            )
+            
         except Exception as e:
-            # C-04: Log instead of silent pass for debugging
-            logger.debug(f"Could not set Spark AQE configs (likely Spark Connect): {e}")
+            # May fail on Spark Connect or restricted environments
+            logger.debug(f"Could not set Spark configs (likely Spark Connect): {e}")
 
         # Handle deprecated 'watermark_database' parameter
         if watermark_database is not None:
@@ -512,28 +552,23 @@ class Orchestrator:
                         )
                     logger.info("Executing Transformation SQL...")
                     transformed_df = _get_spark().sql(self.config.transformation_sql)
-
-                    # AUTO-PRESERVE _change_type for CDF sources
-                    # If source has _change_type (CDF) but transformation stripped it, carry it through
-                    # This enables delete detection in SCD2 without requiring users to include _change_type in SQL
-                    if len(self.config.sources) == 1:
-                        source_df = active_dfs[self.config.sources[0].name]
-                        if (
-                            "_change_type" in source_df.columns
-                            and "_change_type" not in transformed_df.columns
-                        ):
-                            # Join back _change_type on all columns that exist in both DataFrames
-                            # For single-source, natural keys should be sufficient
-                            pk_cols = self.config.sources[0].primary_keys
-                            if pk_cols:
-                                logger.info(
-                                    "Auto-preserving _change_type through transformation"
+                    
+                    # Warn if CDF source has _change_type but transformation SQL stripped it
+                    # User must explicitly include _change_type for delete detection in SCD2
+                    for source in self.config.sources:
+                        if source.cdc_strategy == "cdf":
+                            source_df = active_dfs.get(source.name)
+                            if (
+                                source_df is not None
+                                and "_change_type" in source_df.columns
+                                and "_change_type" not in transformed_df.columns
+                            ):
+                                logger.warning(
+                                    f"CDF source '{source.name}' has _change_type column but it's not in "
+                                    f"transformation SQL output. Delete detection will NOT work. "
+                                    f"Add '_change_type' to your SELECT clause for proper SCD2 delete handling."
                                 )
-                                transformed_df = transformed_df.join(
-                                    source_df.select(*pk_cols, "_change_type"),
-                                    on=pk_cols,
-                                    how="left",
-                                )
+                                break  # Only warn once
                 else:
                     # No transformation SQL - use source data directly
                     if len(self.config.sources) == 1:
@@ -771,9 +806,13 @@ class Orchestrator:
                             checkpointed_df = transformed_df.localCheckpoint()
                     else:
                         # Use efficient localCheckpoint() by default - no disk I/O overhead
+                        # WARNING (Ritchie): localCheckpoint() materializes the ENTIRE DataFrame
+                        # into executor heap memory. For a 10GB merge, this doubles memory usage.
+                        # This is like strdup() on a 10GB string - the "local" in the name is misleading.
+                        # Cost: O(input_size) memory, NOT O(1). Consider if lineage depth warrants it.
                         checkpointed_df = transformed_df.localCheckpoint()
                         logger.info(
-                            "Using local checkpoint (efficient, no lineage truncation)"
+                            "Using local checkpoint (materializes to executor heap - not free)"
                         )
 
                     # Column pruning: Select only columns that exist in target schema
@@ -989,13 +1028,24 @@ class Orchestrator:
             # Re-raise exception to ensure TransactionManager context manager catches it and rolls back
             raise e
 
-            # Re-raise based on error type
-            if isinstance(e, RetriableError) and max_retries > 0:
-                logger.info(f"Retriable error encountered. Retries remaining: {max_retries}")
-                time.sleep(30)  # Backoff before retry
-                return self.run(max_retries=max_retries - 1)
+        finally:
+            # RESOURCE CLEANUP (Dennis Ritchie would approve)
+            # Release DataFrame references from executors to prevent memory leaks
+            for source_name, df in active_dfs.items():
+                try:
+                    df.unpersist(blocking=False)
+                    logger.debug(f"Released DataFrame for source: {source_name}")
+                except Exception:
+                    pass  # Best effort - may already be garbage collected
+            active_dfs.clear()
 
-            raise
+            # Drop temp views to prevent global namespace pollution
+            for source in self.config.sources:
+                try:
+                    _get_spark().catalog.dropTempView(source.alias)
+                    logger.debug(f"Dropped temp view: {source.alias}")
+                except Exception:
+                    pass  # View may not exist if pipeline failed early
 
     def run_with_retry(
         self, max_retries: int = 3, backoff_seconds: int = 30

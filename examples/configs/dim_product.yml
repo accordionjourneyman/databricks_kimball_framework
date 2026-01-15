@@ -17,7 +17,8 @@ transformation_sql: |
     p.name,
     p.category,
     p.unit_cost,
-    p.updated_at
+    p.updated_at,
+    p._change_type  -- Required for CDF delete detection
   FROM p
 
 audit_columns: true
