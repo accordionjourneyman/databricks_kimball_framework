@@ -313,10 +313,14 @@ class SCD1Strategy:
             else None
         )
 
-        source_cols_map = {c: f"source.{c}" for c in source_df.columns}
+        source_cols_map = {
+            c: f"source.{c}" for c in source_df.columns if c != "_change_type"
+        }
 
         update_map: dict[str, str | Column] = {
-            c: f"source.{c}" for c in source_df.columns if c != self.surrogate_key_col
+            c: f"source.{c}"
+            for c in source_df.columns
+            if c not in (self.surrogate_key_col, "_change_type")
         }
         update_map["__is_deleted"] = "false"
         update_map["__etl_processed_at"] = "current_timestamp()"
@@ -589,8 +593,15 @@ class SCD2Strategy:
         )
 
         insert_values = {}
+        # CDF metadata columns should not be written to target
+        CDF_METADATA = {
+            "_change_type",
+            "_commit_version",
+            "_commit_timestamp",
+            "__merge_action",
+        }
         for c in source_df.columns:
-            if c == "__merge_action":
+            if c in CDF_METADATA:
                 continue
             if c in self.join_keys:
                 insert_values[c] = f"source.__orig_{c}"
@@ -647,8 +658,15 @@ class SCD2Strategy:
             # Build skeleton hydration update set - update all source columns in place
             # This keeps the SK but replaces placeholder NULLs with real data
             skeleton_hydration_set = {}
+            # CDF metadata columns should not be written to target
+            CDF_METADATA = {
+                "_change_type",
+                "_commit_version",
+                "_commit_timestamp",
+                "__merge_action",
+            }
             for c in source_df.columns:
-                if c == "__merge_action":
+                if c in CDF_METADATA:
                     continue
                 if c in self.join_keys:
                     skeleton_hydration_set[c] = f"source.__orig_{c}"
