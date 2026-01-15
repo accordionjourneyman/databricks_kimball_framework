@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import time
 from collections.abc import Callable
 from datetime import date, datetime
@@ -44,7 +43,6 @@ from kimball.processing.key_generator import (
     HashKeyGenerator,
     IdentityKeyGenerator,
     KeyGenerator,
-    SequenceKeyGenerator,
 )
 
 
@@ -405,7 +403,6 @@ class SCD2Strategy:
             delete_rows = source_df.filter(col("_change_type") == "delete")
             # Debug: show delete detection
             if not delete_rows.isEmpty():
-                from pyspark.sql import functions as F
 
                 print(
                     f"SCD2: Processing {delete_rows.count()} delete(s) - expiring current versions"
@@ -438,7 +435,7 @@ class SCD2Strategy:
                         "__is_deleted": "true",
                     }
                 ).execute()
-                print(f"SCD2: Deleted keys expired successfully")
+                print("SCD2: Deleted keys expired successfully")
 
             # Filter out deletes from main processing
             source_df = source_df.filter(col("_change_type") != "delete")

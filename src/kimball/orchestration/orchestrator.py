@@ -1,13 +1,12 @@
+import logging
 import os
 import time
 import uuid
 import warnings
-import logging
 from typing import Any
 
 from databricks.sdk.runtime import spark
-from pyspark.sql import DataFrame
-from pyspark.sql.functions import col, lit
+from pyspark.sql.functions import col
 
 # C-04: Add structured logging for exception visibility
 logger = logging.getLogger(__name__)
@@ -506,7 +505,7 @@ class Orchestrator:
                             pk_cols = self.config.sources[0].primary_keys
                             if pk_cols:
                                 print(
-                                    f"Auto-preserving _change_type through transformation"
+                                    "Auto-preserving _change_type through transformation"
                                 )
                                 transformed_df = transformed_df.join(
                                     source_df.select(*pk_cols, "_change_type"),
@@ -530,8 +529,8 @@ class Orchestrator:
                 # FINDING-017: Only fill NULLs that result from failed dimension lookups
                 # Preserves intentional NULLs (e.g., anonymous sales) while filling lookup failures
                 if self.config.foreign_keys:
-                    from pyspark.sql.types import StringType
                     from pyspark.sql import functions as F
+                    from pyspark.sql.types import StringType
 
                     for fk in self.config.foreign_keys:
                         col_name = fk.column

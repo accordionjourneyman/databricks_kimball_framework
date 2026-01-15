@@ -140,8 +140,8 @@ class ConfigLoader:
             raw_content = f.read()
 
         # FINDING-023: Use sandboxed environment to prevent SSTI attacks
-        from jinja2.sandbox import SandboxedEnvironment
         from jinja2 import StrictUndefined
+        from jinja2.sandbox import SandboxedEnvironment
 
         env = SandboxedEnvironment(undefined=StrictUndefined)
         template = env.from_string(raw_content)

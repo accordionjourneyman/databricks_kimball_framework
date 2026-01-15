@@ -14,21 +14,21 @@ dependencies = [
     "pyyaml",
     "jinja2",
     "jsonschema>=4.0.0",
-    "pydantic>=2.0.0",
-    "pyspark>=3.4.0",
-    "delta-spark>=2.4.0"
+    "pydantic>=2.0.0,<2.10.0",
+    "typing-extensions>=4.6.0"
 ]
 
 [tool.setuptools.packages.find]
-where = ["implementations/pyspark/src"]
+where = ["src"]
 
 [project.optional-dependencies]
 dev = [
     "pytest",
-    "black",
-    "isort",
+    "ruff",
     "mypy",
-    "ruff"
+    "pyright",
+    "pyspark>=3.4.0",
+    "delta-spark>=2.4.0"
 ]
 
 [tool.ruff]
@@ -37,8 +37,17 @@ target-version = "py310"
 exclude = ["examples"]
 
 [tool.ruff.lint]
-select = ["E", "W", "F", "I", "B", "UP"]
-ignore = ["E501"]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "B",  # flake8-bugbear
+    "UP", # pyupgrade
+]
+ignore = [
+    "E501", # line too long (handled by formatter)
+]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -50,3 +59,13 @@ warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
 exclude = ["examples"]
+
+[tool.pyright]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
+reportMissingImports = "none"
+exclude = ["examples"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

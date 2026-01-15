@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 
 from delta.tables import DeltaTable
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, lit
+from pyspark.sql.functions import col
 
 if TYPE_CHECKING:
     pass
@@ -52,7 +52,7 @@ class LateArrivingDimensionProcessor:
     def update_skeletons_with_real_data(
         self,
         dimension_table: str,
-        source_df: "pyspark.sql.DataFrame",  # noqa: F821
+        source_df: pyspark.sql.DataFrame,  # noqa: F821
         natural_keys: list[str],
         exclude_columns: list[str] | None = None,
     ) -> int:
@@ -192,7 +192,7 @@ class LateArrivingDimensionProcessor:
     def process_late_arriving_dimension(
         self,
         dimension_table: str,
-        source_df: "pyspark.sql.DataFrame",  # noqa: F821
+        source_df: pyspark.sql.DataFrame,  # noqa: F821
         natural_keys: list[str],
         fact_tables: list[dict[str, str]] | None = None,
     ) -> dict[str, int]:

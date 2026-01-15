@@ -11,8 +11,6 @@ Provides:
 
 from __future__ import annotations
 
-from typing import Any
-
 # Handle PySpark exception location changes between Runtime versions
 # Databricks Runtime 13+ moved errors to pyspark.errors
 PYSPARK_EXCEPTION_BASE: type[Exception]
@@ -31,11 +29,11 @@ except ImportError:
 # FINDING-025: Re-export exceptions from errors.py to avoid duplicate definitions
 # This maintains backward compatibility for code that imports from exceptions.py
 from kimball.common.errors import (
-    KimballError,
-    RetriableError,
-    NonRetriableError,
-    DataQualityError,
     ConfigurationError,
+    DataQualityError,
+    KimballError,
+    NonRetriableError,
+    RetriableError,
 )
 
 # Also export SchemaEvolutionError for backward compatibility

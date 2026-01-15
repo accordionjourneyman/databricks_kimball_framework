@@ -1,47 +1,37 @@
 # Databricks Kimball Framework
 
-A configurable ETL framework implementing Kimball dimensional modeling patterns on Databricks with Delta Lake.
-
-## Implementations
-
-This repository provides multiple implementations of the same Kimball patterns:
-
-| Implementation                          | Language | Best For                                      |
-| --------------------------------------- | -------- | --------------------------------------------- |
-| [**PySpark**](implementations/pyspark/) | Python   | Production Databricks workloads, full control |
-| [**dbt**](implementations/dbt/)         | SQL      | SQL-first teams, simpler configurations       |
+A declarative, CDF-based ETL framework implementing Kimball dimensional modeling patterns on Databricks with Delta Lake.
 
 ## Quick Start
 
-### PySpark Implementation
-
 ```bash
-cd implementations/pyspark
 pip install .
 ```
 
 Then open `examples/Kimball_Demo.py` in Databricks.
 
-### dbt Implementation
-
-```bash
-cd implementations/dbt
-dbt deps
-dbt run
-```
-
-Then open `examples/dbt_Kimball_Demo.py` in Databricks.
-
 ## Features
-
-Both implementations support:
 
 - **SCD Type 1**: Overwrite in place
 - **SCD Type 2**: Track history with valid_from/valid_to
-- **Surrogate Keys**: Hash or identity-based
-- **Change Data Feed (CDF)**: Incremental processing
+- **Surrogate Keys**: Hash or identity-based (Delta Identity Columns)
+- **Change Data Feed (CDF)**: Incremental processing with watermark tracking
 - **Foreign Key Lookups**: With Kimball-style defaults (-1 for unknown)
 - **Performance Optimized**: Configurable "lite" validations vs "strict" dev checks
+- **Crash Recovery**: Transactional batch recovery with rollback support
+
+## Project Structure
+
+```
+├── src/kimball/           # Core framework code
+│   ├── common/            # Config, errors, utilities
+│   ├── orchestration/     # Orchestrator, watermarks, executor
+│   ├── processing/        # Loader, merger, key generators
+│   └── observability/     # Bus matrix, resilience features
+├── tests/                 # Unit and integration tests
+├── examples/              # Demo notebook and YAML configs
+└── docs/                  # Detailed documentation
+```
 
 ## Documentation
 
@@ -50,12 +40,21 @@ See [docs/](docs/) for detailed documentation:
 - [Getting Started](docs/GETTING_STARTED.md)
 - [Configuration](docs/CONFIGURATION.md)
 - [Architecture](docs/ARCHITECTURE.md)
-- [Known Limitations (PySpark)](implementations/pyspark/KNOWN_LIMITATIONS.md)
+- [Known Limitations](KNOWN_LIMITATIONS.md)
 
-## Benchmarking
+## Usage
 
-Both demos collect timing metrics for comparison. Run both demos and check the benchmark output at the end of each notebook.
+```python
+import os
+from kimball import Orchestrator
+
+# Configure ETL schema
+os.environ["KIMBALL_ETL_SCHEMA"] = "gold"
+
+# Run a dimension pipeline
+Orchestrator("examples/configs/dim_customer.yml").run()
+```
 
 ## License
 
-Apache 2.0 - See [LICENSE](implementations/pyspark/LICENSE)
+Apache 2.0 - See [LICENSE](LICENSE)
