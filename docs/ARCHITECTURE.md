@@ -157,9 +157,12 @@ sources:
 
 **Implementations:**
 
-- `IdentityKeyGenerator` - Uses Delta Identity Columns
-- `HashKeyGenerator` - xxhash64 of natural keys
-- `SequenceKeyGenerator` - Row number + max key
+- `IdentityKeyGenerator` - Uses Delta Identity Columns (**required for SCD2 dimensions**)
+- `HashKeyGenerator` - xxhash64 of natural keys (for junk dimensions only, NOT SCD2)
+- `SequenceKeyGenerator` - **Deprecated/blocked** - unsafe global sort
+
+> **Note:** SCD2 dimensions require `surrogate_key_strategy: identity` because hash-based
+> keys cannot track version history. The framework enforces this in config validation.
 
 ### Resilience Module (kimball.resilience)
 

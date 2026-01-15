@@ -1,5 +1,4 @@
-"""
-Kimball Framework Error Classification
+"""Kimball Framework Error Classification
 
 Errors are divided into two categories:
 - RetriableError: Transient issues that may succeed on retry (environment issues)
@@ -8,16 +7,19 @@ Errors are divided into two categories:
 The principle is: Retry is the exception, not the norm.
 """
 
+from collections.abc import Mapping
+from typing import Any
+
 
 class KimballError(Exception):
     """Base exception for all Kimball framework errors."""
 
     retriable = False
 
-    def __init__(self, message: str, details: dict[str, str] | None = None):
+    def __init__(self, message: str, details: Mapping[str, Any] | None = None):
         super().__init__(message)
         self.message = message
-        self.details = details or {}
+        self.details: Mapping[str, Any] = details or {}
 
 
 # =============================================================================
