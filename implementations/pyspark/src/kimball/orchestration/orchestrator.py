@@ -209,17 +209,27 @@ class Orchestrator:
 
         while iteration < max_iterations:
             iteration += 1
+
+            # Check if we're caught up BEFORE running (compare watermark to source version)
+            for source in self.config.sources:
+                if source.cdc_strategy == "cdf":
+                    source_version = self.loader.get_latest_version(source.name)
+                    wm = self.etl_control.get_watermark(
+                        self.config.table_name, source.name
+                    )
+                    if wm is not None and wm >= source_version:
+                        print(
+                            f"Preserve All Changes: Caught up (watermark {wm} >= source {source_version})"
+                        )
+                        return combined_result
+
             result = self._run_pipeline_once()
 
             combined_result["rows_read"] += result.get("rows_read", 0)
             combined_result["rows_written"] += result.get("rows_written", 0)
 
-            # Check if we're caught up (no more data to process)
-            if result.get("rows_read", 0) == 0:
-                break
-
             print(
-                f"Preserve All Changes: Iteration {iteration} complete, checking for more versions..."
+                f"Preserve All Changes: Iteration {iteration} processed, checking for more versions..."
             )
 
         if iteration > 1:
