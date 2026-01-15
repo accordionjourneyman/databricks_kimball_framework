@@ -6,7 +6,6 @@ from datetime import date, datetime
 from functools import reduce, wraps
 from typing import Any, Protocol, cast
 
-from kimball.common.spark_session import get_spark
 from delta.tables import DeltaTable
 from pyspark.sql import Column, DataFrame
 from pyspark.sql.functions import (
@@ -37,6 +36,7 @@ from kimball.common.constants import (
     SQL_DEFAULT_VALID_TO,
 )
 from kimball.common.exceptions import PYSPARK_EXCEPTION_BASE
+from kimball.common.spark_session import get_spark
 from kimball.common.utils import quote_table_name
 from kimball.processing.hashing import compute_hashdiff
 from kimball.processing.key_generator import (

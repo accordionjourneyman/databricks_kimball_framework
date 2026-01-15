@@ -23,10 +23,11 @@ import traceback
 from types import TracebackType
 from typing import Any, cast
 
-from kimball.common.spark_session import get_spark
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import col, current_timestamp, desc
 from pyspark.sql.types import StringType, StructField, StructType, TimestampType
+
+from kimball.common.spark_session import get_spark
 
 
 def _feature_enabled(feature: str) -> bool:
@@ -182,7 +183,7 @@ class StagingCleanupManager:
         ).withColumn("created_at", current_timestamp())
 
         # Use DeltaTable API for atomic registration
-        registry_table = DeltaTable.forName(spark, self.registry_table)
+        registry_table = DeltaTable.forName(get_spark(), self.registry_table)
         registry_table.alias("target").merge(
             new_entry.alias("source"), "target.staging_table = source.staging_table"
         ).whenNotMatchedInsertAll().execute()
@@ -193,7 +194,7 @@ class StagingCleanupManager:
         """Unregister a staging table after successful cleanup."""
         from delta.tables import DeltaTable
 
-        registry_table = DeltaTable.forName(spark, self.registry_table)
+        registry_table = DeltaTable.forName(get_spark(), self.registry_table)
         registry_table.delete(col("staging_table") == staging_table)
         print(f"Unregistered staging table from cleanup: {staging_table}")
 
@@ -217,7 +218,7 @@ class StagingCleanupManager:
             Tuple of (cleaned_count, failed_count).
         """
         if spark_session is None:
-            spark_session = spark
+            spark_session = get_spark()
 
         from pyspark.sql.functions import expr
 
@@ -401,7 +402,7 @@ class PipelineCheckpoint:
         ).withColumn("timestamp", current_timestamp())
 
         # Use DeltaTable API for atomic checkpoint updates
-        checkpoint_table = DeltaTable.forName(spark, self.checkpoint_table)
+        checkpoint_table = DeltaTable.forName(get_spark(), self.checkpoint_table)
         checkpoint_table.alias("target").merge(
             checkpoint_entry.alias("source"),
             "target.pipeline_id = source.pipeline_id AND target.stage = source.stage",
@@ -446,7 +447,7 @@ class PipelineCheckpoint:
         """Clear a checkpoint from Delta table."""
         from delta.tables import DeltaTable
 
-        checkpoint_table = DeltaTable.forName(spark, self.checkpoint_table)
+        checkpoint_table = DeltaTable.forName(get_spark(), self.checkpoint_table)
         checkpoint_table.delete(
             (col("pipeline_id") == pipeline_id) & (col("stage") == stage)
         )

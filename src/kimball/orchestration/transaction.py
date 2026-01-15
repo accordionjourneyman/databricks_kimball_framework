@@ -4,8 +4,9 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
-from kimball.common.spark_session import get_spark
 from delta.tables import DeltaTable
+
+from kimball.common.spark_session import get_spark
 
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
@@ -22,7 +23,7 @@ class TransactionManager:
     """
 
     def __init__(self, spark_session: SparkSession | None = None) -> None:
-        self.spark = spark_session or spark
+        self.spark = spark_session or get_spark()
 
     def _get_table_version(self, table_name: str) -> int:
         """Get the current committed version of a Delta table."""
@@ -40,7 +41,7 @@ class TransactionManager:
         """Rollback table to a specific version using RESTORE."""
         print(f"TRANSACTION ROLLBACK: Restoring {table_name} to version {version}...")
         try:
-            self.get_spark().sql(f"RESTORE TABLE {table_name} TO VERSION AS OF {version}")
+            self.spark.sql(f"RESTORE TABLE {table_name} TO VERSION AS OF {version}")
             print(f"ROLLBACK COMPLETE: {table_name} restored to {version}.")
         except Exception as e:
             print(f"CRITICAL: Failed to rollback {table_name}: {e}")
@@ -59,7 +60,7 @@ class TransactionManager:
         """
         try:
             # Check if table exists first
-            if not self.get_spark().catalog.tableExists(table_name):
+            if not self.spark.catalog.tableExists(table_name):
                 print(f"ZOMBIE RECOVERY SKIPPED: Table {table_name} does not exist.")
                 return False
 
@@ -119,8 +120,8 @@ class TransactionManager:
 
         # Set commit tagging - lenient on errors (e.g. Serverless limitations)
         try:
-            self.get_spark().conf.set(
-                "get_spark().databricks.delta.commitInfo.userMetadata", str(batch_id)
+            self.spark.conf.set(
+                "spark.databricks.delta.commitInfo.userMetadata", str(batch_id)
             )
         except Exception:
             print(
@@ -150,6 +151,6 @@ class TransactionManager:
         finally:
             # Always clear metadata to avoid polluting future commits
             try:
-                self.get_spark().conf.unset("get_spark().databricks.delta.commitInfo.userMetadata")
+                self.spark.conf.unset("spark.databricks.delta.commitInfo.userMetadata")
             except Exception:
                 pass

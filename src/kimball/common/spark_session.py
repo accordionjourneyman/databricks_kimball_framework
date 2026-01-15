@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from pyspark.sql import SparkSession
 
 
-def get_spark() -> "SparkSession":
+def get_spark() -> SparkSession:
     """Get SparkSession lazily.
 
     In Databricks: Returns the runtime-provided spark session.

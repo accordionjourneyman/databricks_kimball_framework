@@ -4,10 +4,10 @@ import logging
 import re
 from typing import Any
 
-from kimball.common.spark_session import get_spark
 from pyspark.sql import DataFrame
 
 from kimball.common.constants import SPARK_CONF_AUTO_MERGE
+from kimball.common.spark_session import get_spark
 from kimball.common.utils import quote_table_name
 
 logger = logging.getLogger(__name__)
