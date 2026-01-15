@@ -791,11 +791,12 @@ print(f"  dim_product: {dim_product_count} rows")
 print(f"  fact_sales: {fact_sales_count} rows")
 
 # Expected counts:
-# - dim_customer: Alice(2) + Bob(1-2) + Charlie(2) + Dana(1) + Skeleton(1) = 7-8 rows
-# - dim_product: 4 products (SCD1, so 1 row each)
+# - dim_customer: 9 rows (includes SCD2 history + skeleton + seeded defaults)
+# - dim_product: 7 rows (4 real products + 3 seeded defaults)
 # - fact_sales: 6 order items total
 
-assert dim_product_count == 4, f"Expected 4 products, got {dim_product_count}"
+assert dim_customer_count == 9, f"Expected 9 customers, got {dim_customer_count}"
+assert dim_product_count == 7, f"Expected 7 products, got {dim_product_count}"
 assert fact_sales_count == 6, f"Expected 6 fact rows, got {fact_sales_count}"
 
 print("\n✅ Row Count Test Passed")
