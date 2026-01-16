@@ -133,8 +133,22 @@ class TableCreator:
         # Build CREATE TABLE statement
         # We'll use the DataFrame schema to infer column definitions
         columns = []
+
+        # CDF metadata columns should not be part of the table schema
+        # They are internal to Delta Lake's CDF feature
+        CDF_METADATA = {
+            "_change_type",
+            "_commit_version",
+            "_commit_timestamp",
+            "__merge_action",
+        }
+
         for field in schema_df.schema.fields:
             col_name = field.name
+
+            # Skip CDF internal columns
+            if col_name in CDF_METADATA:
+                continue
 
             # Check if this is the surrogate key column with identity strategy
             if col_name == surrogate_key_col and surrogate_key_strategy == "identity":
@@ -172,7 +186,9 @@ class TableCreator:
         create_sql += "\nTBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"
 
         if surrogate_key_col and surrogate_key_strategy == "identity":
-            logger.info(f"  - Surrogate key '{surrogate_key_col}' using IDENTITY column")
+            logger.info(
+                f"  - Surrogate key '{surrogate_key_col}' using IDENTITY column"
+            )
         if cluster_by:
             logger.info(f"  - Liquid Clustering on {cluster_by}")
         get_spark().sql(create_sql)
@@ -283,7 +299,9 @@ class TableCreator:
                     alter_sql = f"ALTER TABLE {quoted_table_name} ADD CONSTRAINT `{constraint_name}` CHECK (`{fk_col}` IS NOT NULL)"
                     try:
                         get_spark().sql(alter_sql)
-                        logger.info(f"Applied FK NOT NULL constraint: {constraint_name}")
+                        logger.info(
+                            f"Applied FK NOT NULL constraint: {constraint_name}"
+                        )
                     except Exception as e:
                         logger.info(
                             f"Warning: Could not apply FK constraint {constraint_name}: {e}"
