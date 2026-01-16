@@ -19,6 +19,11 @@ class SourceConfig(BaseModel):
     primary_keys: list[str] | None = Field(
         default=None, description="Keys for CDF deduplication"
     )
+    starting_version: int = Field(
+        default=0,
+        description="Version to start reading CDF from during initial load. Defaults to 0.",
+        ge=0,
+    )
 
     @model_validator(mode="before")
     @classmethod

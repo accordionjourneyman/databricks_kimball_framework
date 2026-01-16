@@ -429,13 +429,17 @@ class Orchestrator:
                         )
                         if wm is None:
                             logger.info(
-                                f"No watermark for {source.name}. Performing Full Snapshot."
+                                f"No watermark for {source.name}. "
+                                f"Performing Initial Load via CDF from Version 0 (to preserve _change_type)."
                             )
-                            df = self.loader.load_full_snapshot(
+                            # Use CDF from source.starting_version (default 0) to ensure _change_type is present for initial load
+                            df = self.loader.load_cdf(
                                 source.name,
-                                format=source.format,
-                                options=source.options,
+                                starting_version=source.starting_version,
+                                deduplicate_keys=source.primary_keys,
+                                ending_version=latest_v,
                             )
+                            source_versions[source.name] = latest_v
                         else:
                             if wm >= latest_v:
                                 logger.info(
