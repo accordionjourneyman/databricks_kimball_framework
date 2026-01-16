@@ -120,6 +120,7 @@ sources:
   - name: demo_silver.customers
     alias: c
     cdc_strategy: cdf
+    starting_version: 0
     primary_keys: [customer_id]  # Required for CDF deduplication
 transformation_sql: |
   SELECT customer_id, first_name, last_name, email, address, updated_at, _change_type FROM c
@@ -138,6 +139,7 @@ sources:
   - name: demo_silver.products
     alias: p
     cdc_strategy: cdf
+    starting_version: 0
     primary_keys: [product_id]  # Required for CDF deduplication
 transformation_sql: |
   SELECT product_id, name, category, unit_cost, updated_at, _change_type FROM p
@@ -162,10 +164,12 @@ sources:
   - name: demo_silver.order_items
     alias: oi
     cdc_strategy: cdf
+    starting_version: 0
     primary_keys: [order_item_id]  # Required for CDF deduplication
   - name: demo_silver.orders
     alias: o
     cdc_strategy: cdf
+    starting_version: 0
     primary_keys: [order_id]  # Required for CDF deduplication
   - name: demo_gold.dim_customer
     alias: c
