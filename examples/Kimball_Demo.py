@@ -195,6 +195,12 @@ transformation_sql: |
              AND (c.__valid_to IS NULL OR CAST(o.order_date AS DATE) < CAST(c.__valid_to AS DATE))
   LEFT JOIN p ON oi.product_id = p.product_id
 audit_columns: true
+early_arriving_facts:
+  - dimension_table: demo_gold.dim_customer
+    fact_join_key: customer_id
+    dimension_join_key: customer_id
+    surrogate_key_col: customer_sk
+    surrogate_key_strategy: identity
 """
 
 # Write configs using dbutils (workspace file I/O)
@@ -570,7 +576,7 @@ print("\n✅ Fact Linkage Test Passed")
 
 # MAGIC %md
 # MAGIC ## 6. Day 3: Advanced Scenarios
-# MAGIC Testing deletes, SCD2 tracked column updates, new rows, and **late-arriving facts** (skeleton generation).
+# MAGIC Testing deletes, SCD2 tracked column updates, new rows, and **early-arriving facts** (skeleton generation).
 # MAGIC *   **Deleted**: Bob (customer_id=2) is deleted from source
 # MAGIC *   **SCD2 Update**: Charlie's email changes (tracked column)
 # MAGIC *   **New Customer**: Dana (customer_id=4)
@@ -659,7 +665,7 @@ print(f"Day 3 Data Ingested in {_day3_load_time:.2f}s (Bob deleted from source)"
 # MAGIC 1. Soft-delete Bob (SCD2 delete handling)
 # MAGIC 2. Create new version for Charlie (email changed)
 # MAGIC 3. Insert Dana as new customer
-# MAGIC 4. **Generate skeleton row for customer_id=999** (late-arriving fact)
+# MAGIC 4. **Generate skeleton row for customer_id=999** (early-arriving fact)
 
 # COMMAND ----------
 
