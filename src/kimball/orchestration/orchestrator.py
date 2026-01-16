@@ -341,25 +341,26 @@ class Orchestrator:
                 # If we can't get the config, assume we can set it
                 pass
 
-            # Check for Serverless Compute
-            # Serverless does not support setting custom commit metadata, which breaks zombie detection
-            is_serverless = (
-                _get_spark().conf.get(
-                    "spark.databricks.service.serverless.enabled", "false"
+            # Check for Serverless Compute / Capability to Tag Commits
+            # Serverless allows reading some configs but blocks others, and explicitly blocks setting userMetadata.
+            # Instead of checking a config flag (which might be restricted), we check the CAPABILITY directly.
+            try:
+                # Try to set the property we actually need
+                _get_spark().conf.set(
+                    "spark.databricks.delta.commitInfo.userMetadata", "test"
                 )
-                == "true"
-            )
-
-            if is_serverless:
+                _get_spark().conf.unset(
+                    "spark.databricks.delta.commitInfo.userMetadata"
+                )
+                can_tag_commits = True
+            except Exception:
+                # If we can't set it, we are likely on Serverless or a restricted cluster
                 can_tag_commits = False
                 logger.info(
-                    "WARNING: Serverless Compute detected. "
-                    "Crash recovery / Zombie detection is disabled because commit tagging is unsupported. "
+                    "WARNING: Commit tagging unavailable (likely Serverless Compute). "
+                    "Crash recovery / Zombie detection is disabled. "
                     "Pipelines will rely on idempotency for recovery."
                 )
-            else:
-                # On non-serverless, we assume we can tag commits unless proven otherwise
-                can_tag_commits = True
 
             if can_tag_commits:
                 running_batches = self.etl_control.get_running_batches(

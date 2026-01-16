@@ -16,7 +16,7 @@ _nb_path = (
     .get()
 )
 # Go up: examples → pyspark → implementations → repo_root
-_pyspark_root = "/Workspace" + os.path.dirname(os.path.dirname(_nb_path))
+_pyspark_root = "/Workspace" + os.path.dirname(os.path.dirname(_nb_path)) + "/"
 _repo_root = os.path.dirname(os.path.dirname(_pyspark_root))
 subprocess.check_call(["pip", "install", _pyspark_root, "-q"])
 print(f"✓ Installed kimball from {_repo_root}")
@@ -236,6 +236,7 @@ def ingest_silver(table_name, data, schema, merge_keys):
 
 from concurrent.futures import ThreadPoolExecutor
 
+
 def ingest_parallel(tasks):
     """
     Executes multiple ingest_silver calls in parallel.
@@ -243,14 +244,10 @@ def ingest_parallel(tasks):
     """
     print(f"Ingesting {len(tasks)} tables in parallel...")
     with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
-        futures = [
-            executor.submit(ingest_silver, *task)
-            for task in tasks
-        ]
+        futures = [executor.submit(ingest_silver, *task) for task in tasks]
         # Wait for all to complete and raise any exceptions
         for future in futures:
             future.result()
-
 
 
 # COMMAND ----------
@@ -341,15 +338,22 @@ os.environ["env"] = "demo"
 # Run Dimensions and Facts (PipelineExecutor handles dependency order automatically)
 _t_transform_start = time.perf_counter()
 
-executor = PipelineExecutor([
-    f"{CONFIG_PATH}/dim_customer.yml",
-    f"{CONFIG_PATH}/dim_product.yml",
-    f"{CONFIG_PATH}/fact_sales.yml"
-])
-executor.run()
+executor = PipelineExecutor(
+    [
+        f"{CONFIG_PATH}/dim_customer.yml",
+        f"{CONFIG_PATH}/dim_product.yml",
+        f"{CONFIG_PATH}/fact_sales.yml",
+    ]
+)
+result = executor.run()
+if result.failed > 0:
+    raise RuntimeError(
+        f"Pipeline failed! {result.failed} pipelines failed. Check logs above."
+    )
+
 _day1_transform_time = time.perf_counter() - _t_transform_start
 
-_day1_rows = spark.table("demo_gold.fact_sales").count() 
+_day1_rows = spark.table("demo_gold.fact_sales").count()
 benchmark_metrics.append(
     {
         "framework": "pyspark",
@@ -367,7 +371,7 @@ print(f"Day 1 Pipeline Complete in {_day1_transform_time:.2f}s ({_day1_rows} row
 
 # Verify Day 1 Results
 display(spark.table("demo_gold.dim_customer"))
-display(spark.table("demo_gold.fact_sales")) 
+display(spark.table("demo_gold.fact_sales"))
 # COMMAND ----------
 
 # MAGIC %md
@@ -450,12 +454,19 @@ print(f"Day 2 Data Ingested in {_day2_load_time:.2f}s")
 # Run Dimensions and Facts in parallel waves
 _t_transform_start = time.perf_counter()
 
-executor = PipelineExecutor([
-    f"{CONFIG_PATH}/dim_customer.yml",
-    f"{CONFIG_PATH}/dim_product.yml",
-    f"{CONFIG_PATH}/fact_sales.yml"
-])
-executor.run()
+executor = PipelineExecutor(
+    [
+        f"{CONFIG_PATH}/dim_customer.yml",
+        f"{CONFIG_PATH}/dim_product.yml",
+        f"{CONFIG_PATH}/fact_sales.yml",
+    ]
+)
+result = executor.run()
+if result.failed > 0:
+    raise RuntimeError(
+        f"Pipeline failed! {result.failed} pipelines failed. Check logs above."
+    )
+
 _day2_transform_time = time.perf_counter() - _t_transform_start
 
 _day2_rows = spark.table("demo_gold.fact_sales").count()
@@ -566,10 +577,31 @@ print("\n✅ Fact Linkage Test Passed")
 
 # Customers: Bob DELETED (not in list), Charlie email updated, new Dana
 customers_day3 = [
-    (1, "Alice", "Smith", "alice@example.com", "789 Cherry Ln, LA", "2025-01-02T11:00:00"),  # Same (no change)
+    (
+        1,
+        "Alice",
+        "Smith",
+        "alice@example.com",
+        "789 Cherry Ln, LA",
+        "2025-01-02T11:00:00",
+    ),  # Same (no change)
     # Bob (2) is DELETED - not included
-    (3, "Charlie", "Brown", "charlie.brown@newmail.com", "321 Date Dr, TX", "2025-01-03T09:00:00"),  # Email updated (SCD2)
-    (4, "Dana", "White", "dana@example.com", "555 Elm St, WA", "2025-01-03T10:00:00"),  # New customer
+    (
+        3,
+        "Charlie",
+        "Brown",
+        "charlie.brown@newmail.com",
+        "321 Date Dr, TX",
+        "2025-01-03T09:00:00",
+    ),  # Email updated (SCD2)
+    (
+        4,
+        "Dana",
+        "White",
+        "dana@example.com",
+        "555 Elm St, WA",
+        "2025-01-03T10:00:00",
+    ),  # New customer
 ]
 
 products_day3 = [
@@ -581,7 +613,13 @@ products_day3 = [
 
 orders_day3 = [
     (1005, 4, "2025-01-03", "Processing", "2025-01-03T12:00:00"),  # Dana's order
-    (1006, 999, "2025-01-03", "Shipped", "2025-01-03T13:00:00"),  # LATE-ARRIVING: customer 999 doesn't exist!
+    (
+        1006,
+        999,
+        "2025-01-03",
+        "Shipped",
+        "2025-01-03T13:00:00",
+    ),  # LATE-ARRIVING: customer 999 doesn't exist!
 ]
 
 order_items_day3 = [
@@ -623,12 +661,19 @@ print(f"Day 3 Data Ingested in {_day3_load_time:.2f}s (Bob deleted from source)"
 # Run Dimensions and Facts
 _t_transform_start = time.perf_counter()
 
-executor = PipelineExecutor([
-    f"{CONFIG_PATH}/dim_customer.yml",
-    f"{CONFIG_PATH}/dim_product.yml",
-    f"{CONFIG_PATH}/fact_sales.yml"
-])
-executor.run()
+executor = PipelineExecutor(
+    [
+        f"{CONFIG_PATH}/dim_customer.yml",
+        f"{CONFIG_PATH}/dim_product.yml",
+        f"{CONFIG_PATH}/fact_sales.yml",
+    ]
+)
+result = executor.run()
+if result.failed > 0:
+    raise RuntimeError(
+        f"Pipeline failed! {result.failed} pipelines failed. Check logs above."
+    )
+
 _day3_transform_time = time.perf_counter() - _t_transform_start
 
 _day3_rows = spark.table("demo_gold.fact_sales").count()
@@ -670,7 +715,9 @@ assert len(bob_check) >= 1, "Bob should still exist in dimension (soft delete)"
 # The current version should be marked as deleted
 current_bob = [r for r in bob_check if r["__is_current"] == True]
 if current_bob:
-    assert current_bob[0]["__is_deleted"] == True, "Bob's current row should be marked as deleted"
+    assert current_bob[0]["__is_deleted"] == True, (
+        "Bob's current row should be marked as deleted"
+    )
 else:
     # All rows expired (valid_to set)
     assert all(r["__valid_to"] is not None for r in bob_check), "Bob should be expired"
@@ -693,9 +740,15 @@ print("Charlie History (SCD2 Email Change):")
 for row in charlie_history:
     print(row)
 
-assert len(charlie_history) == 2, "Charlie should have 2 history rows after email update"
-assert charlie_history[0]["email"] == "charlie@example.com", "First version should have old email"
-assert charlie_history[1]["email"] == "charlie.brown@newmail.com", "Second version should have new email"
+assert len(charlie_history) == 2, (
+    "Charlie should have 2 history rows after email update"
+)
+assert charlie_history[0]["email"] == "charlie@example.com", (
+    "First version should have old email"
+)
+assert charlie_history[1]["email"] == "charlie.brown@newmail.com", (
+    "Second version should have new email"
+)
 assert charlie_history[1]["__is_current"] == True, "Latest version should be current"
 
 print("\n✅ SCD2 Tracked Column Update Test Passed")
@@ -739,14 +792,22 @@ for row in skeleton_check:
 
 # Check if skeleton was generated
 if len(skeleton_check) > 0:
-    assert skeleton_check[0]["__is_skeleton"] == True, "Row should be marked as skeleton"
-    assert skeleton_check[0]["first_name"] is None, "Skeleton should have NULL for non-key columns"
+    assert skeleton_check[0]["__is_skeleton"] == True, (
+        "Row should be marked as skeleton"
+    )
+    assert skeleton_check[0]["first_name"] is None, (
+        "Skeleton should have NULL for non-key columns"
+    )
     # Check sentinel date (1800-01-01)
     valid_from = skeleton_check[0]["__valid_from"]
-    assert valid_from.year == 1800, f"Skeleton __valid_from should be 1800-01-01 sentinel, got {valid_from}"
+    assert valid_from.year == 1800, (
+        f"Skeleton __valid_from should be 1800-01-01 sentinel, got {valid_from}"
+    )
     print("\n✅ Skeleton Generation Test Passed")
 else:
-    print("\n⚠️ Skeleton not generated - this may be expected if skeleton generation is disabled")
+    print(
+        "\n⚠️ Skeleton not generated - this may be expected if skeleton generation is disabled"
+    )
     print("   Check enable_skeleton_rows in fact_sales config")
 
 # COMMAND ----------
@@ -787,7 +848,7 @@ dim_product_count = spark.table("demo_gold.dim_product").count()
 fact_sales_count = spark.table("demo_gold.fact_sales").count()
 
 print(f"  dim_customer: {dim_customer_count} rows")
-print(f"  dim_product: {dim_product_count} rows") 
+print(f"  dim_product: {dim_product_count} rows")
 print(f"  fact_sales: {fact_sales_count} rows")
 
 # Expected counts:
@@ -837,4 +898,3 @@ except Exception as e:
     print(f"\n⚠️ Could not save to file ({e})")
     print("Metrics JSON:")
     print(metrics_json)
-
