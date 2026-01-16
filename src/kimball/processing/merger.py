@@ -863,7 +863,7 @@ class DeltaMerger:
         Ensures that the standard SCD2 default rows (-1, -2, -3) exist in the table.
         """
         # Table must exist (Orchestrator creates it as Delta before calling this)
-        if not self.get_spark().catalog.tableExists(target_table_name):
+        if not self.spark.catalog.tableExists(target_table_name):
             logger.info(
                 f"ensure_scd2_defaults: table {target_table_name} does not exist. Skipping."
             )
@@ -957,7 +957,7 @@ class DeltaMerger:
             logger.info(
                 f"Seeding {len(rows_to_insert)} default rows into {target_table_name}..."
             )
-            df = self.get_spark().createDataFrame(rows_to_insert, schema)
+            df = self.spark.createDataFrame(rows_to_insert, schema)
 
             # Use atomic MERGE operation to prevent duplicates in concurrent environments
             delta_table.alias("target").merge(
@@ -977,7 +977,7 @@ class DeltaMerger:
         Similar to SCD2 but without the SCD2-specific system columns.
         """
         # Table must exist (Orchestrator creates it as Delta before calling this)
-        if not self.get_spark().catalog.tableExists(target_table_name):
+        if not self.spark.catalog.tableExists(target_table_name):
             logger.info(
                 f"ensure_scd1_defaults: table {target_table_name} does not exist. Skipping."
             )
@@ -1052,7 +1052,7 @@ class DeltaMerger:
             logger.info(
                 f"Seeding {len(rows_to_insert)} default rows into {target_table_name}..."
             )
-            df = self.get_spark().createDataFrame(rows_to_insert, schema)
+            df = self.spark.createDataFrame(rows_to_insert, schema)
 
             # Use atomic MERGE operation to prevent duplicates in concurrent environments
             delta_table.alias("target").merge(
@@ -1076,12 +1076,12 @@ class DeltaMerger:
             # Note: This assumes the table was created with CLUSTER BY clause
             # We just run OPTIMIZE, which will use the existing clustering spec
             quoted_table_name = quote_table_name(table_name)
-            self.get_spark().sql(f"OPTIMIZE {quoted_table_name}")
+            self.spark.sql(f"OPTIMIZE {quoted_table_name}")
             logger.info(
                 f"Optimized {table_name} using Liquid Clustering on {cluster_by}"
             )
         else:
             # Standard OPTIMIZE without clustering
             quoted_table_name = quote_table_name(table_name)
-            self.get_spark().sql(f"OPTIMIZE {quoted_table_name}")
+            self.spark.sql(f"OPTIMIZE {quoted_table_name}")
             logger.info(f"Optimized {table_name}")
