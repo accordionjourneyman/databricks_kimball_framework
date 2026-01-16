@@ -186,7 +186,8 @@ transformation_sql: |
     o.order_date,
     oi.quantity,
     oi.sales_amount,
-    (oi.sales_amount - (p.unit_cost * oi.quantity)) as net_profit
+    (oi.sales_amount - (p.unit_cost * oi.quantity)) as net_profit,
+    oi._change_type
   FROM oi
   JOIN o ON oi.order_id = o.order_id
   LEFT JOIN c ON o.customer_id = c.customer_id 
