@@ -155,6 +155,17 @@ class ETLControlNotFoundError(NonRetriableError):
 WatermarkNotFoundError = ETLControlNotFoundError
 
 
+class SchemaEvolutionError(RetriableError):
+    """Raised when schema evolution fails but might succeed on retry.
+
+    Examples:
+    - Schema mismatch during merge with autoMerge disabled
+    - Column type conflicts that might resolve with relaxed mode
+    """
+
+    pass
+
+
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================

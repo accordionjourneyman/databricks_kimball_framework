@@ -5,11 +5,12 @@ import time
 from collections.abc import Callable
 from datetime import date, datetime
 from functools import reduce, wraps
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
 from delta.tables import DeltaTable
 from pyspark.sql import Column, DataFrame
 from pyspark.sql.functions import (
+    broadcast,
     col,
     current_timestamp,
     lit,
@@ -147,6 +148,8 @@ def create_merge_strategy(
     surrogate_key_strategy: str = "identity",
     schema_evolution: bool = False,
     effective_at_column: str | None = None,
+    history_table: str | None = None,
+    current_value_columns: list[str] | None = None,
 ) -> MergeStrategy:
     """
     Factory function to create the appropriate merge strategy.
@@ -155,24 +158,34 @@ def create_merge_strategy(
     by registering new strategy classes without modifying this function.
 
     Args:
-        scd_type: SCD type (1 or 2)
+        scd_type: SCD type (1, 2, 4, or 6)
         target_table_name: Target Delta table name
         join_keys: Natural key columns for matching
         delete_strategy: "hard" or "soft" (SCD1 only)
-        track_history_columns: Columns to track for changes (SCD2 only)
+        track_history_columns: Columns to track for changes (SCD2, SCD4)
         surrogate_key_col: Surrogate key column name
         surrogate_key_strategy: "identity", "hash", or "sequence"
         schema_evolution: Enable schema auto-merge
-        effective_at_column: Column containing business effective date for SCD2.
-                            If None, uses processing time (__etl_processed_at).
+        effective_at_column: Column containing business effective date.
+        history_table: EAV history table name (SCD4 only)
+        current_value_columns: Columns for current_* backfill (SCD6 only)
 
     Returns:
         MergeStrategy implementation for the specified SCD type.
 
     Raises:
-        ValueError: If SCD type is not supported.
+        ValueError: If SCD type is not supported or required params missing.
     """
-    if scd_type == 2:
+    if scd_type == 1:
+        return SCD1Strategy(
+            target_table_name,
+            join_keys,
+            delete_strategy,
+            schema_evolution,
+            surrogate_key_col,
+            surrogate_key_strategy,
+        )
+    elif scd_type == 2:
         return SCD2Strategy(
             target_table_name,
             join_keys,
@@ -182,14 +195,31 @@ def create_merge_strategy(
             schema_evolution,
             effective_at_column,
         )
-    elif scd_type == 1:
-        return SCD1Strategy(
+    elif scd_type == 4:
+        if not history_table:
+            raise ValueError("scd_type=4 requires history_table parameter")
+        return SCD4Strategy(
             target_table_name,
+            history_table,
             join_keys,
-            delete_strategy,
-            schema_evolution,
+            track_history_columns or ["*"],
             surrogate_key_col,
             surrogate_key_strategy,
+            schema_evolution,
+            effective_at_column,
+        )
+    elif scd_type == 6:
+        if not current_value_columns:
+            raise ValueError("scd_type=6 requires current_value_columns parameter")
+        return SCD6Strategy(
+            target_table_name,
+            join_keys,
+            track_history_columns or [],
+            current_value_columns,
+            surrogate_key_col,
+            surrogate_key_strategy,
+            schema_evolution,
+            effective_at_column,
         )
     else:
         # Check registry for custom strategies
@@ -204,10 +234,11 @@ def create_merge_strategy(
                 schema_evolution,
             )
         raise ValueError(
-            f"Unsupported SCD type: {scd_type}. Supported: 1, 2, or register custom via @register_strategy"
+            f"Unsupported SCD type: {scd_type}. Supported: 1, 2, 4, 6, or register custom via @register_strategy"
         )
 
 
+@register_strategy(1)
 class SCD1Strategy:
     """
     Implements SCD Type 1 (Overwrite) merge logic.
@@ -289,8 +320,9 @@ class SCD1Strategy:
                     source_df, self.surrogate_key_col, existing_max_key=max_key
                 )
 
+        # Broadcast source for optimal join (CDC batches are typically small)
         merge_builder = delta_table.alias("target").merge(
-            source_df.alias("source"), merge_condition
+            broadcast(source_df).alias("source"), merge_condition
         )
 
         if "_change_type" in source_df.columns:
@@ -339,16 +371,17 @@ class SCD1Strategy:
             del insert_map[self.surrogate_key_col]
 
         merge_builder = merge_builder.whenMatchedUpdate(
-            condition=cast(Column, update_condition_col), set=update_map
+            condition=update_condition_col, set=update_map
         )
 
         merge_builder = merge_builder.whenNotMatchedInsert(
-            condition=cast(Column, update_condition_col), values=insert_map
+            condition=update_condition_col, values=insert_map
         )
 
         merge_builder.execute()
 
 
+@register_strategy(2)
 class SCD2Strategy:
     """
     Implements SCD Type 2 (History Tracking) merge logic.
@@ -491,7 +524,8 @@ class SCD2Strategy:
             # Delta Lake MERGE will handle duplicates via "Multiple source rows matched" exception.
             pass
 
-        source_keys = source_df.select(*self.join_keys).distinct()
+        # Broadcast source keys for optimal join (CDC batches are typically small)
+        source_keys = broadcast(source_df.select(*self.join_keys).distinct())
         target_df = (
             delta_table.toDF()
             .filter("__is_current = true")
@@ -692,7 +726,7 @@ class SCD2Strategy:
                 # update in-place (keep SK, update attributes). This prevents the
                 # "same customer, two SKs" bug from skeleton getting SCD2 versioned.
                 condition="target.__is_skeleton = true AND source.__merge_action = 'INSERT_NEW'",
-                set=cast(dict[str, str | Column], skeleton_hydration_set),
+                set=skeleton_hydration_set,
             ).whenMatchedUpdate(
                 # Normal SCD2 expiration for non-skeleton rows
                 condition="source.__merge_action = 'UPDATE_EXPIRE'",
@@ -701,9 +735,7 @@ class SCD2Strategy:
                     "__valid_to": validity_col,
                     "__etl_processed_at": "current_timestamp()",
                 },
-            ).whenNotMatchedInsert(
-                values=cast(dict[str, str | Column], insert_values)
-            ).execute()
+            ).whenNotMatchedInsert(values=insert_values).execute()
         else:
             # Legacy table without __is_skeleton column - use standard merge
             delta_table.alias("target").merge(
@@ -715,9 +747,258 @@ class SCD2Strategy:
                     "__valid_to": validity_col,
                     "__etl_processed_at": "current_timestamp()",
                 },
-            ).whenNotMatchedInsert(
-                values=cast(dict[str, str | Column], insert_values)
-            ).execute()
+            ).whenNotMatchedInsert(values=insert_values).execute()
+
+
+@register_strategy(4)
+class SCD4Strategy:
+    """
+    SCD Type 4: Dual-table pattern.
+    - Current dimension (SCD1): Always has latest values
+    - EAV history table: Unpivoted field-level change tracking
+
+    The history table schema:
+        (surrogate_key, field, value, valid_from, valid_to, __is_current)
+    """
+
+    def __init__(
+        self,
+        target_table_name: str,
+        history_table_name: str,
+        join_keys: list[str],
+        track_history_columns: list[str],
+        surrogate_key_col: str = "surrogate_key",
+        surrogate_key_strategy: str = "identity",
+        schema_evolution: bool = False,
+        effective_at_column: str | None = None,
+    ):
+        self.target_table_name = target_table_name
+        self.history_table_name = history_table_name
+        self.join_keys = join_keys
+        self.track_columns = track_history_columns
+        self.surrogate_key_col = surrogate_key_col
+        self.surrogate_key_strategy = surrogate_key_strategy
+        self.schema_evolution = schema_evolution
+        self.effective_at_column = effective_at_column or "__etl_processed_at"
+
+        # Compose SCD1 for current dimension
+        self.scd1 = SCD1Strategy(
+            target_table_name,
+            join_keys,
+            delete_strategy="hard",
+            schema_evolution=schema_evolution,
+            surrogate_key_col=surrogate_key_col,
+            surrogate_key_strategy=surrogate_key_strategy,
+        )
+
+    def merge(self, source_df: DataFrame) -> None:
+        """
+        Execute SCD4 merge: SCD1 on current dimension + EAV on history table.
+        """
+        # Step 1: Run SCD1 on current dimension
+        self.scd1.merge(source_df)
+
+        # Step 2: Merge EAV history
+        self._merge_history(source_df)
+
+    def _merge_history(self, source_df: DataFrame) -> None:
+        """Merge unpivoted changes to EAV history table."""
+        spark = source_df.sparkSession
+
+        # Determine columns to track ("*" means all business columns)
+        if self.track_columns == ["*"]:
+            exclude = {
+                self.surrogate_key_col,
+                self.effective_at_column,
+                "_change_type",
+                "__etl_processed_at",
+                "__etl_batch_id",
+            }
+            track_cols = [
+                c
+                for c in source_df.columns
+                if c not in exclude and not c.startswith("__")
+            ]
+        else:
+            track_cols = self.track_columns
+
+        # Unpivot source: (sk, field, value, effective_at)
+        stack_expr = ", ".join([f"'{c}', cast({c} as string)" for c in track_cols])
+        unpivoted = source_df.selectExpr(
+            self.surrogate_key_col,
+            f"stack({len(track_cols)}, {stack_expr}) as (field, value)",
+            f"{self.effective_at_column} as effective_at",
+        )
+
+        # Join with current history to detect changes (broadcast unpivoted - it's small)
+        history = spark.table(self.history_table_name).filter("__is_current = true")
+
+        compared = (
+            broadcast(unpivoted)
+            .alias("src")
+            .join(
+                history.alias("tgt"),
+                (col("src." + self.surrogate_key_col) == col("tgt.surrogate_key"))
+                & (col("src.field") == col("tgt.field")),
+                "left",
+            )
+            .filter(col("tgt.value").isNull() | (col("tgt.value") != col("src.value")))
+            .select(col("src.*"), col("tgt.value").alias("old_value"))
+        )
+
+        # Build staged source: UNION inserts + expires
+        inserts = compared.select(
+            col(self.surrogate_key_col).alias("surrogate_key"),
+            col("field"),
+            col("value"),
+            col("effective_at").alias("valid_from"),
+            lit("9999-12-31 23:59:59").cast("timestamp").alias("valid_to"),
+            lit(True).alias("__is_current"),
+            lit("INSERT").alias("__action"),
+        )
+
+        from pyspark.sql.functions import expr
+
+        expires = compared.filter(col("old_value").isNotNull()).select(
+            col(self.surrogate_key_col).alias("surrogate_key"),
+            col("field"),
+            col("old_value").alias("value"),
+            lit(None).cast("timestamp").alias("valid_from"),
+            (col("effective_at") - expr("INTERVAL 1 MICROSECOND")).alias("valid_to"),
+            lit(False).alias("__is_current"),
+            lit("EXPIRE").alias("__action"),
+        )
+
+        staged = inserts.unionByName(expires)
+
+        # Single MERGE
+        DeltaTable.forName(spark, self.history_table_name).alias("target").merge(
+            staged.alias("source"),
+            """target.surrogate_key = source.surrogate_key
+               AND target.field = source.field
+               AND target.value = source.value
+               AND target.__is_current = true
+               AND source.__action = 'EXPIRE'""",
+        ).whenMatchedUpdate(
+            set={"valid_to": "source.valid_to", "__is_current": "source.__is_current"}
+        ).whenNotMatchedInsert(
+            condition="source.__action = 'INSERT'",
+            values={
+                "surrogate_key": "source.surrogate_key",
+                "field": "source.field",
+                "value": "source.value",
+                "valid_from": "source.valid_from",
+                "valid_to": "source.valid_to",
+                "__is_current": "source.__is_current",
+            },
+        ).execute()
+
+
+@register_strategy(6)
+class SCD6Strategy:
+    """
+    SCD Type 6: SCD2 with current_* columns backfilled to all rows.
+
+    Every historical row has current_* columns showing the latest value,
+    enabling efficient reporting without self-joins.
+
+    Uses broadcast joins and single-pass MERGE for optimal performance.
+    """
+
+    def __init__(
+        self,
+        target_table_name: str,
+        join_keys: list[str],
+        track_history_columns: list[str],
+        current_value_columns: list[str],
+        surrogate_key_col: str = "surrogate_key",
+        surrogate_key_strategy: str = "identity",
+        schema_evolution: bool = False,
+        effective_at_column: str | None = None,
+    ):
+        self.target_table_name = target_table_name
+        self.join_keys = join_keys
+        self.track_history_columns = track_history_columns
+        self.current_columns = current_value_columns
+        self.surrogate_key_col = surrogate_key_col
+        self.surrogate_key_strategy = surrogate_key_strategy
+        self.schema_evolution = schema_evolution
+        self.effective_at_column = effective_at_column or "__etl_processed_at"
+
+    def merge(self, source_df: DataFrame) -> None:
+        """
+        Execute SCD6 merge: Single-pass with 3 actions.
+        - EXPIRE: Close old current row + update current_*
+        - UPDATE: Historical rows: only update current_*
+        - INSERT: New current row with current_* = its own values
+        """
+        spark = source_df.sparkSession
+        current_cols = self.current_columns
+
+        # Get all existing rows for entities being changed (broadcast small side)
+        changed_keys = broadcast(source_df.select(*self.join_keys).distinct())
+        all_existing = spark.table(self.target_table_name).join(
+            changed_keys, self.join_keys, "inner"
+        )
+
+        # Build current_values from source (these ARE the new current values)
+        current_values = broadcast(
+            source_df.select(
+                *self.join_keys,
+                *[col(c).alias(f"new_current_{c}") for c in current_cols],
+            )
+        )
+
+        # Historical rows: join with source to get new current_* values
+        from pyspark.sql.functions import when
+
+        staged_updates = (
+            all_existing.alias("old")
+            .join(current_values, self.join_keys)
+            .select(
+                col(f"old.{self.surrogate_key_col}"),
+                *[
+                    col(f"old.{c}")
+                    for c in all_existing.columns
+                    if c != self.surrogate_key_col
+                ],
+                *[col(f"new_current_{c}").alias(f"current_{c}") for c in current_cols],
+                when(col("old.__is_current"), lit("EXPIRE"))
+                .otherwise(lit("UPDATE"))
+                .alias("__action"),
+            )
+        )
+
+        # New row: INSERT with current_* = its own values
+        source_with_current = source_df.select(
+            *[col(c) for c in source_df.columns],
+            *[col(c).alias(f"current_{c}") for c in current_cols],
+            lit("INSERT").alias("__action"),
+        )
+
+        staged = source_with_current.unionByName(
+            staged_updates.select(*source_with_current.columns),
+            allowMissingColumns=True,
+        )
+
+        # SINGLE MERGE - three actions in one pass
+        DeltaTable.forName(spark, self.target_table_name).alias("t").merge(
+            staged.alias("s"),
+            f"t.{self.surrogate_key_col} = s.{self.surrogate_key_col}",
+        ).whenMatchedUpdate(
+            condition="s.__action = 'EXPIRE'",
+            set={
+                "__is_current": "false",
+                "__valid_to": f"s.{self.effective_at_column}",
+                **{f"current_{c}": f"s.current_{c}" for c in current_cols},
+            },
+        ).whenMatchedUpdate(
+            condition="s.__action = 'UPDATE'",
+            set={f"current_{c}": f"s.current_{c}" for c in current_cols},
+        ).whenNotMatchedInsert(
+            condition="s.__action = 'INSERT'",
+            values={c: f"s.{c}" for c in staged.columns if c != "__action"},
+        ).execute()
 
 
 class DeltaMerger:

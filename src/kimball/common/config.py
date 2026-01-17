@@ -73,8 +73,16 @@ class TableConfig(BaseModel):
         "soft"  # Kimball: preserve history for FK integrity
     )
     enable_audit_columns: bool = Field(alias="audit_columns", default=True)
-    scd_type: Literal[1, 2] = 1  # Pydantic coerces int to Literal[1, 2] if specific
+    scd_type: Literal[1, 2, 4, 6] = 1
     track_history_columns: list[str] | None = None
+    history_table: str | None = Field(
+        default=None,
+        description="EAV history table name for SCD4. Required when scd_type=4.",
+    )
+    current_value_columns: list[str] | None = Field(
+        default=None,
+        description="Columns to backfill as current_* for SCD6. Required when scd_type=6.",
+    )
     effective_at: str | None = Field(
         default=None,
         description="Column name containing business effective date for SCD2. "
@@ -124,6 +132,18 @@ class TableConfig(BaseModel):
                     "Hash-based keys produce identical values for all versions of the same natural key. "
                     "Use 'identity' instead."
                 )
+        # SCD4 requires history_table
+        if self.scd_type == 4 and not self.history_table:
+            raise ValueError(
+                "SCD Type 4 requires 'history_table' to be specified. "
+                "This is the EAV table that stores field-level change history."
+            )
+        # SCD6 requires current_value_columns
+        if self.scd_type == 6 and not self.current_value_columns:
+            raise ValueError(
+                "SCD Type 6 requires 'current_value_columns' to be specified. "
+                "These columns will be backfilled as current_* on all historical rows."
+            )
         return self
 
 

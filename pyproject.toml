@@ -28,7 +28,7 @@ dependencies = [
     "pyyaml",
     "jinja2",
     "jsonschema>=4.0.0",
-    "pydantic>=2.0.0,<2.10.0",
+    "pydantic>=2.0.0",
     "typing-extensions>=4.6.0",
 ]
 
@@ -91,4 +91,4 @@ reportMissingImports = "none"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-pythonpath = ["implementations/pyspark/src"]
+pythonpath = ["src"]

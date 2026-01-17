@@ -11,6 +11,9 @@ def spark_mock():
     return MagicMock(spec=SparkSession)
 
 
+@patch(
+    "kimball.processing.merger.broadcast", lambda x: x
+)  # Mock broadcast to pass-through
 @patch("kimball.processing.merger.current_timestamp")
 @patch("kimball.processing.merger.lit")
 @patch("kimball.processing.merger.col")
@@ -24,10 +27,6 @@ def test_merge_execution(
     mock_delta_table.forName.return_value = mock_dt_instance
     mock_dt_instance.alias.return_value = mock_dt_instance
     mock_dt_instance.merge.return_value = mock_dt_instance
-
-    # Also patch SCD1Strategy to avoid logic execution?
-    # Or let it run. It uses DeltaTable.forName.
-    # But it also uses set_table_auto_merge (which uses spark.sql).
 
     merger = DeltaMerger()
 
@@ -45,8 +44,9 @@ def test_merge_execution(
         delete_strategy="hard",
     )
 
-    # Verify DeltaTable was called
-    # Note: Deep mocking of the fluent API (merge.when.when.execute) is verbose,
-    # so we just check the entry point.
-    # In a real integration test, we would use a local Delta table.
-    pass  # Placeholder for unit test logic, relying on integration tests for full coverage.
+    # C-10: Verify DeltaTable was accessed
+    mock_delta_table.forName.assert_called_once()
+
+    # Verify merge chain was started
+    mock_dt_instance.alias.assert_called()
+    mock_dt_instance.merge.assert_called_once()

@@ -6,6 +6,12 @@ A declarative, CDF-based ETL framework implementing Kimball dimensional modeling
 
 - **Databricks Runtime**: 13.3 LTS or higher
 - **Python**: 3.10+
+- **Java** (for local testing): JDK 8+ with `JAVA_HOME` set
+  ```bash
+  # Ubuntu/Debian
+  sudo apt install openjdk-11-jdk
+  export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+  ```
 - **Delta Lake**: Provided by Databricks Runtime (or `delta-spark>=2.4.0` for local dev)
 
 > **Note**: PySpark and Delta Lake are _not_ installed by `pip install .` — they're provided by the Databricks Runtime. For local development, use `pip install ".[dev]"`.

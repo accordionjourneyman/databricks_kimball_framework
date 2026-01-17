@@ -33,21 +33,15 @@ except ImportError:
         PYSPARK_EXCEPTION_BASE = Exception
 
 
-# Re-export exceptions from errors.py to maintain backward compatibility
+# Re-export exceptions from errors.py (single canonical location)
 from kimball.common.errors import (  # noqa: E402
     ConfigurationError,
     DataQualityError,
     KimballError,
     NonRetriableError,
     RetriableError,
+    SchemaEvolutionError,
 )
-
-
-class SchemaEvolutionError(RetriableError):
-    """Raised when schema evolution fails but might succeed on retry."""
-
-    pass
-
 
 __all__ = [
     "PYSPARK_EXCEPTION_BASE",

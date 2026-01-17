@@ -81,16 +81,9 @@ class DataLoader:
                           CRITICAL for preventing race conditions if new data arrives
                           during processing.
         """
-        # FINDING-001: Warn if ending_version not provided (race condition risk)
+        # C-07: Fix race condition by auto-fetching latest version if not provided
         if ending_version is None:
-            import warnings
-
-            warnings.warn(
-                "load_cdf called without ending_version. This can cause race conditions "
-                "if new data arrives during processing. Pass ending_version for safety.",
-                UserWarning,
-                stacklevel=2,
-            )
+            ending_version = self.get_latest_version(table_name)
 
         reader = (
             self.spark.read.format("delta")

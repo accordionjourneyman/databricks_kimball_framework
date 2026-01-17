@@ -46,11 +46,13 @@ class TableCreator:
         scd_type: int,
         surrogate_key: str | None,
         surrogate_key_strategy: str,
+        current_value_columns: list[str] | None = None,
     ) -> DataFrame:
         """
         Add system/audit columns to a DataFrame for table creation.
         SCD1: __etl_processed_at, __etl_batch_id, __is_deleted (for soft deletes)
         SCD2: above + __is_current, __valid_from, __valid_to, hashdiff, __is_skeleton
+        SCD6: SCD2 + current_* columns for backfill
         """
         from pyspark.sql.functions import current_timestamp, lit
         from pyspark.sql.types import LongType, StringType, TimestampType
@@ -60,8 +62,8 @@ class TableCreator:
         result_df = result_df.withColumn("__etl_batch_id", lit(None).cast(StringType()))
         result_df = result_df.withColumn("__is_deleted", lit(False))
 
-        if scd_type == 2:
-            # SCD2 specific columns
+        if scd_type in (2, 6):
+            # SCD2/SCD6 specific columns
             result_df = result_df.withColumn("__is_current", lit(True))
             result_df = result_df.withColumn("__valid_from", current_timestamp())
             result_df = result_df.withColumn(
@@ -71,6 +73,16 @@ class TableCreator:
             result_df = result_df.withColumn(
                 "__is_skeleton", lit(False)
             )  # For skeleton hydration
+
+        # SCD6: Add current_* columns
+        if scd_type == 6 and current_value_columns:
+            for col_name in current_value_columns:
+                if col_name in df.columns:
+                    # Copy column type from source
+                    col_type = df.schema[col_name].dataType
+                    result_df = result_df.withColumn(
+                        f"current_{col_name}", lit(None).cast(col_type)
+                    )
 
         # Add surrogate key column according to strategy
         if surrogate_key:
@@ -86,6 +98,48 @@ class TableCreator:
                 )
 
         return result_df
+
+    def create_history_table(self, table_name: str) -> None:
+        """
+        Create EAV history table for SCD4.
+
+        Schema:
+            surrogate_key BIGINT - FK to current dimension
+            field STRING - Column name that changed
+            value STRING - Column value (cast to string)
+            valid_from TIMESTAMP - When this value became effective
+            valid_to TIMESTAMP - When this value was superseded
+            __is_current BOOLEAN - True for latest value per (sk, field)
+            __etl_processed_at TIMESTAMP - Processing timestamp
+        """
+        if get_spark().catalog.tableExists(table_name):
+            logger.info(
+                f"History table {table_name} already exists. Skipping creation."
+            )
+            return
+
+        quoted_table_name = quote_table_name(table_name)
+        create_sql = f"""
+        CREATE TABLE {quoted_table_name} (
+            surrogate_key BIGINT NOT NULL,
+            field STRING NOT NULL,
+            value STRING,
+            valid_from TIMESTAMP NOT NULL,
+            valid_to TIMESTAMP NOT NULL,
+            __is_current BOOLEAN NOT NULL,
+            __etl_processed_at TIMESTAMP
+        )
+        USING DELTA
+        TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
+        """
+        get_spark().sql(create_sql)
+        logger.info(f"EAV history table {table_name} created successfully.")
+
+        # Enable Delta optimizations
+        try:
+            self.enable_delta_features(table_name)
+        except Exception:
+            pass  # Serverless limitation
 
     def create_table_with_clustering(
         self,

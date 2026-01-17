@@ -59,10 +59,6 @@ def _get_spark() -> SparkSession:
         return SparkSession.builder.getOrCreate()
 
 
-# Session-level flag to avoid repeated cleanup scans per table
-_staging_cleanup_done_this_session = False
-
-
 class Orchestrator:
     """
     Coordinates the ETL process:
@@ -304,12 +300,6 @@ class Orchestrator:
     def _run_pipeline_once(self, max_retries: int = 0) -> dict[str, Any]:
         """Execute single pipeline iteration."""
         logger.info(f"Starting pipeline for {self.config.table_name}")
-
-        # Clean up orphaned staging tables (only once per session to avoid repeated overhead)
-        global _staging_cleanup_done_this_session
-        if self.cleanup_manager and not _staging_cleanup_done_this_session:
-            self.cleanup_orphaned_staging_tables()
-            _staging_cleanup_done_this_session = True
 
         batch_id = str(uuid.uuid4())
 
@@ -1025,6 +1015,11 @@ class Orchestrator:
                     self.checkpoint_manager.clear_checkpoint(
                         batch_id, "transformation_complete"
                     )
+
+                # C-09: Clean up orphaned staging tables after successful merge
+                # (runs per-merge instead of per-session for reliable cleanup)
+                if self.cleanup_manager:
+                    self.cleanup_orphaned_staging_tables()
 
                 return {
                     "status": "SUCCESS",
