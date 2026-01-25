@@ -4,6 +4,8 @@ from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import broadcast, col, current_timestamp, lit
 
+from kimball.common.constants import DEFAULT_VALID_FROM
+
 logger = logging.getLogger(__name__)
 
 
@@ -87,17 +89,15 @@ class SkeletonGenerator:
 
         # C-07: Use sentinel date for skeleton rows to distinguish from real dimensions
         # Skeletons represent "unknown" dimension members discovered via early-arriving facts.
-        # Using 1800-01-01 as sentinel makes it clear these are synthetic rows.
+        # Using DEFAULT_VALID_FROM (1900-01-01) as sentinel maintains consistency with other
+        # framework defaults and avoids potential issues with BI tools, date math operations,
+        # and timezone systems that may not handle dates from 1800.
         # When real dimension arrives, __valid_from should be set from source data.
-        from datetime import datetime
-
-        SKELETON_VALID_FROM = datetime(1800, 1, 1, 0, 0, 0)
-
         skeletons = (
             skeletons.withColumn("__is_current", lit(True))
             .withColumn(
-                "__valid_from", lit(SKELETON_VALID_FROM)
-            )  # Sentinel date - clearly artificial
+                "__valid_from", lit(DEFAULT_VALID_FROM)
+            )  # Sentinel date - consistent with framework defaults
             .withColumn("__valid_to", lit(None).cast("timestamp"))
             .withColumn("__etl_processed_at", current_timestamp())
             .withColumn("__etl_batch_id", lit(batch_id if batch_id else "SKELETON_GEN"))
