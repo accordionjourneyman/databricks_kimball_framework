@@ -1,8 +1,11 @@
 import glob
+import logging
 import os
 from collections import defaultdict
 
 from kimball.common.config import ConfigLoader, TableConfig
+
+logger = logging.getLogger(__name__)
 
 # FactName -> Set[DimName]
 MatrixData = dict[str, set[str]]
@@ -21,7 +24,7 @@ def parse_configs(config_dir: str) -> list[TableConfig]:
             config = loader.load_config(f)
             configs.append(config)
         except Exception as e:
-            print(f"Skipping {f}: {e}")
+            logger.warning(f"Skipping {f}: config load failed - {e}")
     return configs
 
 
@@ -147,7 +150,7 @@ def generate_bus_matrix(config_dir: str) -> str:
     # Validate conformed dimensions and print warnings
     conformity_warnings = validate_conformed_dimensions(configs)
     for warning in conformity_warnings:
-        print(f"⚠️ {warning}")
+        logger.warning(warning)
 
     sorted_facts, matrix_data, sorted_dims = analyze_dependencies(configs)
     return render_markdown(sorted_facts, matrix_data, sorted_dims)

@@ -181,26 +181,33 @@ class LateArrivingDimensionProcessor:
             logger.info(f"Dimension table {dimension_table} does not exist. Skipping.")
             return 0
 
-        # fact_delta = DeltaTable.forName(self.spark, fact_table)  # Unused for now
+        # Join facts to dimension on natural keys and update FK with new SK
         dim_df = self.spark.table(dimension_table)
 
-        # Get current dimension records only
-        if "__is_current" in dim_df.columns:
-            dim_df = dim_df.filter(col("__is_current") == True)  # noqa: E712
-
-        # This is a complex operation that requires:
-        # 1. Finding facts with orphan FKs (FK doesn't exist in dimension)
-        # 2. Joining to dimension on natural keys from the original skeleton
-        # 3. Updating fact FK with new dimension SK
-
-        # For now, we log a warning - full implementation requires natural key storage in facts
-        logger.info(
-            f"WARNING: FK reconciliation for {fact_table}.{fact_fk_col} -> "
-            f"{dimension_table}.{dimension_sk_col} requires manual review. "
-            "Full auto-reconciliation requires natural key storage in fact tables."
+        # Build merge condition on natural keys
+        merge_condition = " AND ".join(
+            [f"target.{k} <=> source.{k}" for k in dimension_nk_cols]
         )
 
-        return 0
+        try:
+            fact_delta = DeltaTable.forName(self.spark, fact_table)
+            fact_delta.alias("target").merge(
+                dim_df.alias("source"), merge_condition
+            ).whenMatchedUpdate(
+                set={fact_fk_col: f"source.{dimension_sk_col}"}
+            ).execute()
+
+            logger.info(
+                f"Updated fact {fact_table}.{fact_fk_col} with new dimension SK values from {dimension_table}."
+            )
+            return 1
+        except Exception as e:
+            logger.warning(
+                f"FK reconciliation for {fact_table}.{fact_fk_col} -> "
+                f"{dimension_table}.{dimension_sk_col} failed: {e}. "
+                "This may indicate natural key columns are missing from fact table."
+            )
+            return 0
 
     def process_late_arriving_dimension(
         self,

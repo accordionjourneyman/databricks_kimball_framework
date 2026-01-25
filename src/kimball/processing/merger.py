@@ -481,8 +481,10 @@ class SCD2Strategy:
         if self.schema_evolution:
             try:
                 set_table_auto_merge(self.target_table_name, True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(
+                    f"Could not enable schema auto-merge for {self.target_table_name}: {e}"
+                )
 
         delta_table = DeltaTable.forName(get_spark(), self.target_table_name)
 
@@ -1128,8 +1130,8 @@ class DeltaMerger:
             history = delta_table.history(1).select("operationMetrics").first()
             if history and history.operationMetrics:
                 return dict(history.operationMetrics)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Could not fetch merge metrics for {table_name}: {e}")
         return {}
 
     def ensure_scd2_defaults(

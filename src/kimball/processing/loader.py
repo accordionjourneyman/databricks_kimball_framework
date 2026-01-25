@@ -135,6 +135,8 @@ class DataLoader:
         Gets the latest commit version of a Delta table.
         Useful for updating the watermark after a successful load.
         """
+        if not self.spark.catalog.tableExists(table_name):
+            raise ValueError(f"Source table does not exist: {table_name}")
         dt = DeltaTable.forName(self.spark, table_name)
         row = dt.history(1).select("version").first()
         return row["version"] if row else 0

@@ -321,16 +321,6 @@ class Orchestrator:
         # This ensures we get a clean slate before starting potential new transaction
         # FINDING-014: Detect Serverless limitation where commit tagging is unavailable
         if getattr(self.config, "enable_crash_recovery", True):
-            # Check if we can tag commits (required for zombie recovery)
-            can_tag_commits = True
-            try:
-                _get_spark().conf.get(
-                    "_get_spark().databricks.delta.commitInfo.userMetadata"
-                )
-            except Exception:
-                # If we can't get the config, assume we can set it
-                pass
-
             # Check for Serverless Compute / Capability to Tag Commits
             # Serverless allows reading some configs but blocks others, and explicitly blocks setting userMetadata.
             # Instead of checking a config flag (which might be restricted), we check the CAPABILITY directly.

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from delta.tables import DeltaTable
 
 from kimball.common.spark_session import get_spark
+from kimball.common.utils import quote_table_name
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,9 @@ class TransactionManager:
             f"TRANSACTION ROLLBACK: Restoring {table_name} to version {version}..."
         )
         try:
-            self.spark.sql(f"RESTORE TABLE {table_name} TO VERSION AS OF {version}")
+            self.spark.sql(
+                f"RESTORE TABLE {quote_table_name(table_name)} TO VERSION AS OF {version}"
+            )
             logger.info(f"ROLLBACK COMPLETE: {table_name} restored to {version}.")
         except Exception as e:
             logger.info(f"CRITICAL: Failed to rollback {table_name}: {e}")
@@ -105,7 +108,7 @@ class TransactionManager:
             return True
 
         except Exception as e:
-            logger.info(f"ZOMBIE RECOVERY FAILED: {e}")
+            logger.warning(f"ZOMBIE RECOVERY FAILED: {e}")
             return False
 
     @contextmanager
@@ -141,18 +144,24 @@ class TransactionManager:
             # Failure detected - initiate rollback if table state advanced
             current_version = self._get_table_version(table_name)
 
-            if current_version > start_version and start_version >= 0:
-                # FINDING-019: Add messaging for version 0 rollback
-                if start_version == 0:
+            if current_version > start_version:
+                if start_version < 0:
+                    # Table was just created (started as -1), cannot restore to pre-creation state
+                    logger.warning(
+                        f"TRANSACTION FAILED on first run: Table {table_name} was created but operation failed. "
+                        f"Manual DROP TABLE {table_name} or manual recovery required."
+                    )
+                elif start_version == 0:
                     logger.info(
                         f"TRANSACTION FAILED on first run. Restoring table to empty state (version 0). "
                         f"You may want to DROP TABLE {table_name} and re-run if this persists."
                     )
+                    self._rollback(table_name, start_version)
                 else:
                     logger.info(
                         f"TRANSACTION FAILED: {e}. Initiating rollback from {current_version} to {start_version}."
                     )
-                self._rollback(table_name, start_version)
+                    self._rollback(table_name, start_version)
 
             raise e
         finally:

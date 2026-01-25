@@ -223,15 +223,8 @@ class PipelineExecutor:
                 else:
                     self.facts.append(pipeline_info)
             except Exception as e:
-                logger.info(f"Warning: Could not load config {path}: {e}")
-                # Add to facts wave (will fail during execution with proper error)
-                self.facts.append(
-                    {
-                        "path": path,
-                        "table_name": f"unknown ({path})",
-                        "table_type": "unknown",
-                    }
-                )
+                logger.error(f"FATAL: Could not load config {path}: {e}")
+                raise NonRetriableError(f"Invalid config file: {path}") from e
 
     def _run_single_pipeline(self, pipeline_info: dict[str, Any]) -> PipelineResult:
         """Execute a single pipeline and return the result."""
