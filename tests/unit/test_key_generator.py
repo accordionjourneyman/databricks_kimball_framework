@@ -12,16 +12,16 @@ def test_identity_key_generator_mock():
     df = MagicMock()
     df.columns = ["id", "val"]
 
-    # Case 1: Key exists
-    gen.generate_keys(df, "id")
-    df.drop.assert_not_called()
+    # Case 1: Key exists - DataFrame should be returned unchanged
+    # This allows explicit values for default rows (-1, -2, -3)
+    result = gen.generate_keys(df, "id")
+    assert result is df, "IdentityKeyGenerator should return DataFrame unchanged when key exists"
 
-    # Case 2: Key does not exist
+    # Case 2: Key does not exist - DataFrame should still be returned unchanged
+    # Delta Lake will auto-generate the identity column on INSERT
     df.columns = ["val"]
-    gen.generate_keys(df, "id")
-    # Should not call drop (or at least return df)
-    # We can't easily check "not called" on the *same* mock if we don't reset,
-    # but here we just check it returns something.
+    result = gen.generate_keys(df, "id")
+    assert result is df, "IdentityKeyGenerator should return DataFrame unchanged when key is missing"
 
 
 def test_hash_key_generator_mock():
