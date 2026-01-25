@@ -4,15 +4,13 @@ Unit tests for SCD4 and SCD6 strategies.
 Tests the new SCD Type 4 (EAV History) and SCD Type 6 (Current Columns) implementations.
 """
 
-from unittest.mock import MagicMock, patch
-
 import pytest
 
 from kimball.processing.merger import (
+    _STRATEGY_REGISTRY,
     SCD4Strategy,
     SCD6Strategy,
     create_merge_strategy,
-    _STRATEGY_REGISTRY,
 )
 
 
