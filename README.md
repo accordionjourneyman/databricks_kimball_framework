@@ -3,7 +3,6 @@
 A declarative, CDF-based ETL framework implementing Kimball dimensional modeling patterns on Databricks with Delta Lake.
 
 ## Requirements
-
 - **Databricks Runtime**: 13.3 LTS or higher
 - **Python**: 3.10+
 - **Java** (for local testing): JDK 8+ with `JAVA_HOME` set
@@ -69,4 +68,5 @@ Orchestrator("examples/configs/dim_customer.yml").run()
 
 ## License
 
-Apache 2.0 - See [LICENSE](LICENSE)
+Licensed under the Apache License, Version 2.0. See the `LICENSE` file for details.
+
