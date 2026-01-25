@@ -1,0 +1,43 @@
+# SCD Type 4: Current Dimension + EAV History Table
+#
+# SCD4 maintains two tables:
+# 1. Current dimension (SCD1): Always has latest values
+# 2. EAV history table: Unpivoted field-level change tracking
+#
+# The history table schema:
+#   (surrogate_key, field, value, valid_from, valid_to, __is_current)
+
+table_name: gold.dim_product
+table_type: dimension
+scd_type: 4
+
+keys:
+  surrogate_key: product_sk
+  natural_keys: [product_id]
+
+# EAV history table for field-level change tracking
+history_table: gold.dim_product_history
+
+# Track all business columns ("*") or specific list
+track_history_columns: ["*"]
+
+# Column containing business effective timestamp
+effective_at: updated_at
+
+# Surrogate key strategy
+surrogate_key_strategy: identity
+
+sources:
+  - name: silver.products
+    cdc_strategy: cdf
+
+transformation_sql: |
+  SELECT 
+    product_id,
+    product_name,
+    category,
+    subcategory,
+    price,
+    cost,
+    updated_at
+  FROM silver_products

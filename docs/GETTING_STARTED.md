@@ -4,26 +4,29 @@ This guide will walk you through setting up and running your first Kimball pipel
 
 ## Prerequisites
 
-- Databricks workspace (DBR 11.3+)
-- Python 3.8+
+- Databricks workspace (DBR 13+)
+- Python 3.10+
 - Delta Lake enabled
 
 ## Installation
 
 1. Clone the repository:
+
 ```bash
-git clone <repository-url>
+git clone https://github.com/your-username/databricks_kimball_framework.git
 cd databricks_kimball_framework
 ```
 
-2. Install dependencies:
+2. Install the framework:
+
 ```bash
-pip install -r requirements.txt
+pip install .
 ```
 
-3. Install the framework in editable mode:
+Or in editable mode for development:
+
 ```bash
-pip install -e .
+pip install -e ".[dev]"
 ```
 
 ## Your First Pipeline
@@ -62,14 +65,14 @@ keys:
   surrogate_key: customer_sk
   natural_keys: [customer_id]
 
-surrogate_key_strategy: hash
+surrogate_key_strategy: identity  # SCD2 requires identity strategy
 track_history_columns: [first_name, last_name, email, address]
 
 sources:
   - name: dev_silver.customers
     alias: c
     cdc_strategy: cdf
-    primary_keys: [customer_id]  # Required for CDF deduplication
+    primary_keys: [customer_id] # Required for CDF deduplication
 
 transformation_sql: |
   SELECT
@@ -104,6 +107,7 @@ SELECT * FROM dev_gold.dim_customer;
 ```
 
 You should see:
+
 - 2 rows with `__is_current = true`
 - Surrogate keys generated
 - SCD2 columns populated
@@ -134,6 +138,7 @@ ORDER BY __valid_from;
 ```
 
 You should see:
+
 - Old row with `__is_current = false` and `__valid_to` set
 - New row with `__is_current = true` and updated address
 
@@ -145,11 +150,13 @@ You should see:
 ## Common Issues
 
 **Pipeline runs but no data appears:**
+
 - Verify source table exists and has data
 - Check that CDF is enabled on source table
 - Review Spark logs for errors
 
 **"ETL schema must be specified" error:**
+
 - Set `KIMBALL_ETL_SCHEMA` environment variable before running:
   ```python
   import os
@@ -157,9 +164,11 @@ You should see:
   ```
 
 **"Table not found" error:**
+
 - Ensure you're using the correct catalog/schema names
 - Verify table names match your environment (dev/prod)
 
 **Watermark not advancing:**
+
 - Check source table has new versions: `DESCRIBE HISTORY source_table`
 - Verify transformation SQL doesn't filter out all rows

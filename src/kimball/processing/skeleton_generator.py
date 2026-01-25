@@ -1,0 +1,160 @@
+import logging
+
+from delta.tables import DeltaTable
+from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql.functions import broadcast, col, current_timestamp, lit
+
+logger = logging.getLogger(__name__)
+
+
+class SkeletonGenerator:
+    """
+    Handles the generation of 'Skeleton' dimension rows for Early Arriving Facts.
+    """
+
+    def __init__(self, spark_session: SparkSession | None = None) -> None:
+        if spark_session is None:
+            from databricks.sdk.runtime import spark
+
+            spark_session = spark
+        self.spark = spark_session
+
+    def generate_skeletons(
+        self,
+        fact_df: DataFrame,
+        dim_table_name: str,
+        fact_join_key: str,
+        dim_join_key: str,
+        surrogate_key_col: str,
+        surrogate_key_strategy: str,
+        batch_id: str | None = None,
+    ) -> None:
+        """
+        Identifies missing keys in the dimension table and inserts skeleton rows.
+
+        Args:
+            fact_df: The fact DataFrame containing references to dimension keys.
+            dim_table_name: Full name of the dimension table.
+            fact_join_key: Column name in fact that references the dimension.
+            dim_join_key: Column name in dimension (natural key).
+            surrogate_key_col: Name of the surrogate key column in dimension.
+            surrogate_key_strategy: Strategy for SK generation ('identity', 'hash').
+            batch_id: Optional batch ID for audit trail (links skeleton to originating fact batch).
+        """
+        if not self.spark.catalog.tableExists(dim_table_name):
+            logger.info(
+                f"Dimension table {dim_table_name} does not exist. Skipping skeleton generation."
+            )
+            return
+
+        dim_table = DeltaTable.forName(self.spark, dim_table_name)
+        dim_df = dim_table.toDF()
+
+        # Performance Note: Two distinct() operations below
+        # - fact_keys.distinct(): Necessary to avoid creating duplicate skeleton rows when fact has duplicate refs
+        # - dim_keys.distinct(): Can be skipped if dim_join_key is guaranteed unique (natural key)
+        #   but kept for safety in case of data quality issues or composite keys
+
+        # 1. Identify Distinct Keys in Fact
+        fact_keys = fact_df.select(col(fact_join_key).alias("key")).distinct()
+
+        # 2. Identify Existing Keys in Dimension
+        # Note: Dimension natural keys are unique by Kimball definition (enforced by grain validation)
+        # No distinct() needed - saves a full shuffle operation
+        dim_keys = dim_df.select(col(dim_join_key).alias("key"))
+
+        # 3. Find Missing Keys (Left Anti Join)
+        # JVM OPTIMIZATION (Gosling approved): Broadcast the dimension keys!
+        # Dimensions are typically millions of rows (10-100MB), facts are billions.
+        # Without broadcast: shuffle join - every fact key crosses the network.
+        # With broadcast: dimension replicated to executors, join is local.
+        missing_keys = fact_keys.join(broadcast(dim_keys), "key", "left_anti")
+
+        if missing_keys.isEmpty():
+            logger.info(f"No missing keys found for {dim_table_name}.")
+            return
+
+        logger.info(f"Found missing keys for {dim_table_name}. Generating skeletons...")
+
+        # 4. Prepare Skeleton Rows
+        # We need to match the schema of the dimension table.
+        # We'll set the join key, and fill others with defaults/nulls.
+
+        target_schema = dim_df.schema
+
+        # Start with the keys
+        skeletons = missing_keys.withColumnRenamed("key", dim_join_key)
+
+        # C-07: Use sentinel date for skeleton rows to distinguish from real dimensions
+        # Skeletons represent "unknown" dimension members discovered via early-arriving facts.
+        # Using 1800-01-01 as sentinel makes it clear these are synthetic rows.
+        # When real dimension arrives, __valid_from should be set from source data.
+        from datetime import datetime
+
+        SKELETON_VALID_FROM = datetime(1800, 1, 1, 0, 0, 0)
+
+        skeletons = (
+            skeletons.withColumn("__is_current", lit(True))
+            .withColumn(
+                "__valid_from", lit(SKELETON_VALID_FROM)
+            )  # Sentinel date - clearly artificial
+            .withColumn("__valid_to", lit(None).cast("timestamp"))
+            .withColumn("__etl_processed_at", current_timestamp())
+            .withColumn("__etl_batch_id", lit(batch_id if batch_id else "SKELETON_GEN"))
+            .withColumn("__is_skeleton", lit(True))  # Flag for identification
+            .withColumn(
+                "__skeleton_created_at", current_timestamp()
+            )  # Actual creation time
+            .withColumn("__is_deleted", lit(False))
+        )
+
+        # Add other columns from schema as NULL (except SK and Join Key)
+        # Optimization: Build projection list for missing columns instead of looping withColumn
+        # This prevents Catalyst plan explosion for wide tables
+        # Also cache columns in a set to avoid repeated JNI calls in the loop
+        select_exprs = [col(c) for c in skeletons.columns]
+        existing_cols = set(skeletons.columns)
+
+        for field in target_schema.fields:
+            if field.name not in existing_cols and field.name != surrogate_key_col:
+                select_exprs.append(lit(None).cast(field.dataType).alias(field.name))
+
+        skeletons = skeletons.select(*select_exprs)
+
+        # 5. Generate Surrogate Keys
+        if surrogate_key_strategy == "identity":
+            # Identity columns are auto-generated on insert. We don't need to generate them.
+            # But we must NOT include the column in the DataFrame if it's GENERATED ALWAYS.
+            # If it's GENERATED BY DEFAULT, we can.
+            # Usually safest to omit it and let Delta handle it.
+            pass
+        elif surrogate_key_strategy == "hash":
+            # Use centralized HashKeyGenerator for consistency with main key generation
+            from kimball.processing.key_generator import HashKeyGenerator
+
+            key_gen = HashKeyGenerator([dim_join_key])
+            skeletons = key_gen.generate_keys(skeletons, surrogate_key_col)
+        elif surrogate_key_strategy == "sequence":
+            # Not implemented safely for concurrent runs yet
+            pass
+
+        # 6. Insert Skeletons via atomic MERGE (prevents duplicates on concurrent runs)
+        # Note: If using Identity Columns, we must ensure the SK col is NOT in the DF if it's ALWAYS generated.
+
+        cols_to_write = [f.name for f in target_schema.fields]
+
+        if surrogate_key_strategy == "identity":
+            if surrogate_key_col in skeletons.columns:
+                skeletons = skeletons.drop(surrogate_key_col)
+            cols_to_write = [c for c in cols_to_write if c != surrogate_key_col]
+
+        # Select only columns that exist in target (schema evolution might handle others if enabled, but let's be safe)
+        final_skeletons = skeletons.select(*cols_to_write)
+
+        # Use atomic MERGE instead of APPEND to prevent duplicate skeletons
+        # when multiple fact pipelines run concurrently
+        dim_table.alias("target").merge(
+            final_skeletons.alias("source"),
+            f"target.{dim_join_key} <=> source.{dim_join_key}",
+        ).whenNotMatchedInsertAll().execute()
+        logger.info(f"Inserted skeleton rows into {dim_table_name} (via atomic MERGE).")

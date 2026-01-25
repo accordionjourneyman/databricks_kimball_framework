@@ -1,0 +1,54 @@
+# SCD Type 6: SCD2 with Current Value Columns
+#
+# SCD6 is a hybrid that combines:
+# - SCD2 row versioning (__valid_from, __valid_to, __is_current)
+# - Current value columns (current_*) backfilled to ALL rows
+#
+# This enables efficient reporting without self-joins.
+# Example: "Show me historical transactions with the customer's CURRENT city"
+
+table_name: gold.dim_customer
+table_type: dimension
+scd_type: 6
+
+keys:
+  surrogate_key: customer_sk
+  natural_keys: [customer_id]
+
+# Columns to track for version changes (triggers new row)
+track_history_columns:
+  - first_name
+  - last_name
+  - email
+  - city
+  - state
+  - status
+
+# Columns to backfill as current_* on all historical rows
+# These are the columns you want to see "current values" for in reports
+current_value_columns:
+  - city
+  - state
+  - status
+
+# Business effective date column
+effective_at: updated_at
+
+# Surrogate key strategy
+surrogate_key_strategy: identity
+
+sources:
+  - name: silver.customers
+    cdc_strategy: cdf
+
+transformation_sql: |
+  SELECT 
+    customer_id,
+    first_name,
+    last_name,
+    email,
+    city,
+    state,
+    status,
+    updated_at
+  FROM silver_customers

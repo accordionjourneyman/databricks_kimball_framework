@@ -18,13 +18,12 @@ nosetests.xml
 coverage.xml
 *.cover
 *.log
-.git
-.mypy_cache
-.pytest_cache
-.hypothesize
+.mypy_cache/
+.pytest_cache/
+.hypothesize/
+.ruff_cache/
 
 # Distribution / packaging
-.Python
 build/
 develop-eggs/
 dist/
@@ -41,8 +40,13 @@ wheels/
 .installed.cfg
 *.egg
 
+# IDE
+.vscode/
+.idea/
+
 # Databricks
 .databricks-connect
-.env.temp
-.vscode/
-.databricks
+.databricks/
+
+# Artifacts
+quality_reports/

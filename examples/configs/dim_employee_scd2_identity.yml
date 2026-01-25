@@ -13,8 +13,12 @@ track_history_columns:
   - title
   - manager_id
 
+# Business-time SCD2: Use source timestamp for __valid_from/__valid_to instead of processing time
+# If not set, defaults to processing time (__etl_processed_at)
+effective_at: updated_at
+
 default_rows:
-  -1: "Unknown"
+  "-1": "Unknown"
 
 sources:
   - name: {{ env }}_silver.employees

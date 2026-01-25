@@ -1,12 +1,15 @@
 # Kimball Framework Usage Guide
 
 ## 1. Setup
+
 Install the library in your Databricks cluster or local environment:
+
 ```bash
 pip install .
 ```
 
 ## 2. Configuration
+
 Create a YAML configuration file for your Fact table (e.g., `configs/fact_sales.yml`).
 
 ```yaml
@@ -25,7 +28,7 @@ sources:
     cdc_strategy: full # Dimensions are usually small enough or we just need current state
 
 transformation_sql: |
-  SELECT 
+  SELECT
     t.transaction_id,
     t.amount,
     c.customer_sk,
@@ -38,6 +41,7 @@ audit_columns: true
 ```
 
 ## 3. Execution
+
 Run the pipeline in a Databricks Notebook:
 
 ```python
@@ -53,6 +57,7 @@ orchestrator.run()
 ```
 
 ## 4. Bus Matrix
+
 Generate the Enterprise Bus Matrix documentation:
 
 ```python
@@ -62,7 +67,17 @@ print(generate_bus_matrix("configs/"))
 ```
 
 ## 5. Testing
+
+**Prerequisites:** Ensure `JAVA_HOME` is set for PySpark:
+
+```bash
+# Ubuntu/Debian
+sudo apt install openjdk-11-jdk
+export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+```
+
 Run unit tests:
+
 ```bash
 pytest tests/
 ```
