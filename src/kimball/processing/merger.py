@@ -824,17 +824,58 @@ class SCD4Strategy:
         else:
             track_cols = self.track_columns
 
+        # Identity Strategy Fix: Retrieve SK from Target if source lacks it
+        # Source DF from loader often lacks generated SK (Identity), so we must join on Natural Key
+        if self.surrogate_key_strategy == "identity":
+            # Select essential columns + natural keys
+            cols_to_select = (
+                list(set(track_cols) | set(self.join_keys))
+                + [self.effective_at_column]
+                + (["_change_type"] if "_change_type" in source_df.columns else [])
+            )
+            # Use distinct to avoid cartesian explosions if source has dupes
+            # (though normally source is deduplicated by loader)
+            source_subset = source_df.select(*cols_to_select)
+
+            # Load current dimension (target) for SK lookup
+            current_dim = spark.table(self.target_table_name).select(
+                *self.join_keys, self.surrogate_key_col
+            )
+
+            # Join to get SKs (Inner join - we only care about existing records for history)
+            # New records (without SK yet) don't have history to start with anyway.
+            # Wait, SCD4 Inserts *should* have history started.
+            # But SCD1 (run previously) inserted them into Target.
+            # So they ARE in `current_dim` now.
+            source_with_sk = source_subset.join(
+                current_dim, on=self.join_keys, how="inner"
+            )
+        else:
+            # Hash strategy: SK exists in source
+            source_with_sk = source_df
+
         # Unpivot source: (sk, field, value, effective_at)
         stack_expr = ", ".join([f"'{c}', cast({c} as string)" for c in track_cols])
-        unpivoted = source_df.selectExpr(
+
+        # Include _change_type in selection if available to handle deletes
+        select_cols = [
             self.surrogate_key_col,
             f"stack({len(track_cols)}, {stack_expr}) as (field, value)",
             f"{self.effective_at_column} as effective_at",
-        )
+        ]
+        if "_change_type" in source_with_sk.columns:
+            select_cols.append("_change_type")
+        else:
+            from pyspark.sql.functions import lit
+
+            select_cols.append(lit("insert").alias("_change_type"))
+
+        unpivoted = source_with_sk.selectExpr(*select_cols)
 
         # Join with current history to detect changes (broadcast unpivoted - it's small)
         history = spark.table(self.history_table_name).filter("__is_current = true")
 
+        # SCD4 Delete Fix: Include deletes in comparison even if values match (preimage)
         compared = (
             broadcast(unpivoted)
             .alias("src")
@@ -844,12 +885,19 @@ class SCD4Strategy:
                 & (col("src.field") == col("tgt.field")),
                 "left",
             )
-            .filter(col("tgt.value").isNull() | (col("tgt.value") != col("src.value")))
+            .filter(
+                col("tgt.value").isNull()
+                | (col("tgt.value") != col("src.value"))
+                | (col("src._change_type") == "delete")
+            )
             .select(col("src.*"), col("tgt.value").alias("old_value"))
         )
 
+        from pyspark.sql.functions import expr, lit
+
         # Build staged source: UNION inserts + expires
-        inserts = compared.select(
+        # Filter out deletes from INSERT path
+        inserts = compared.filter(col("_change_type") != "delete").select(
             col(self.surrogate_key_col).alias("surrogate_key"),
             col("field"),
             col("value"),
@@ -859,8 +907,7 @@ class SCD4Strategy:
             lit("INSERT").alias("__action"),
         )
 
-        from pyspark.sql.functions import expr
-
+        # Allow deletes to generate EXPIRE actions
         expires = compared.filter(col("old_value").isNotNull()).select(
             col(self.surrogate_key_col).alias("surrogate_key"),
             col("field"),
@@ -937,23 +984,42 @@ class SCD6Strategy:
         spark = source_df.sparkSession
         current_cols = self.current_columns
 
+        # SCD6 Fix: Split Upserts vs Deletes
+        if "_change_type" in source_df.columns:
+            deletes = source_df.filter("_change_type = 'delete'")
+            upserts = source_df.filter("_change_type != 'delete'")
+        else:
+            deletes = None
+            upserts = source_df
+
+        # --- PART 1: UPSERTS (New Versions + History Updates) ---
+
+        # Add hashdiff for change detection (SCD6 Fix)
+        # We must track changes to history columns to decide whether to create a new version
+        upserts = upserts.withColumn(
+            "hashdiff", compute_hashdiff(self.track_history_columns)
+        )
+
         # Get all existing rows for entities being changed (broadcast small side)
-        changed_keys = broadcast(source_df.select(*self.join_keys).distinct())
+        changed_keys = broadcast(upserts.select(*self.join_keys).distinct())
         all_existing = spark.table(self.target_table_name).join(
             changed_keys, self.join_keys, "inner"
         )
 
         # Build current_values from source (these ARE the new current values)
+        # SCD6 Fix: Add hashdiff calculation to detecting actual changes vs no-ops
         current_values = broadcast(
-            source_df.select(
+            upserts.select(
                 *self.join_keys,
+                "hashdiff",  # Must be present in source_df from Orchestrator
                 *[col(c).alias(f"new_current_{c}") for c in current_cols],
             )
         )
 
         # Historical rows: join with source to get new current_* values
-        from pyspark.sql.functions import when
+        from pyspark.sql.functions import lit, when
 
+        # Join condition: Natural Keys
         staged_updates = (
             all_existing.alias("old")
             .join(current_values, self.join_keys)
@@ -965,41 +1031,113 @@ class SCD6Strategy:
                     if c != self.surrogate_key_col
                 ],
                 *[col(f"new_current_{c}").alias(f"current_{c}") for c in current_cols],
-                when(col("old.__is_current"), lit("EXPIRE"))
+                # SCD6 Fix: Only EXPIRE current row if hashdiff changed!
+                # If hashdiff is same, it's just an UPDATE (of current_ columns), not a new version.
+                when(
+                    col("old.__is_current")
+                    & (col("old.hashdiff") != col("current_values.hashdiff")),
+                    lit("EXPIRE"),
+                )
                 .otherwise(lit("UPDATE"))
                 .alias("__action"),
             )
         )
 
         # New row: INSERT with current_* = its own values
-        source_with_current = source_df.select(
-            *[col(c) for c in source_df.columns],
-            *[col(c).alias(f"current_{c}") for c in current_cols],
-            lit("INSERT").alias("__action"),
+        # SCD6 Fix: Only insert if it's a new key OR a changed version (hashdiff mismatch handled by staged_updates LOGIC?)
+        # Wait, INSERT logic logic is separate.
+        # We need to filter source_df to find rows that need INSERT.
+        # 1. New Keys (Not in Target) -> INSERT
+        # 2. Existing Keys + Changed Hash -> INSERT
+        # 3. Existing Keys + Same Hash -> NO INSERT (handled by UPDATE above)
+
+        # We can implement this by joining source with target-current
+        target_current = (
+            spark.table(self.target_table_name)
+            .filter("__is_current = true")
+            .select(*self.join_keys, "hashdiff")
+            .alias("tgt")
         )
 
-        staged = source_with_current.unionByName(
-            staged_updates.select(*source_with_current.columns),
+        source_with_flag = (
+            upserts.alias("src")
+            .join(target_current, self.join_keys, "left")
+            .select(
+                col("src.*"),
+                when(col("tgt.hashdiff").isNull(), lit("INSERT_NEW"))  # New Key
+                .when(
+                    col("tgt.hashdiff") != col("src.hashdiff"), lit("INSERT_VERSION")
+                )  # Changed
+                .otherwise(lit("NO_OP"))  # Unchanged
+                .alias("__insert_action"),
+            )
+        )
+
+        rows_to_insert = (
+            source_with_flag.filter(col("__insert_action") != "NO_OP")
+            .drop("__insert_action")
+            .select(
+                *[col(c) for c in upserts.columns],
+                *[col(c).alias(f"current_{c}") for c in current_cols],
+                lit("INSERT").alias("__action"),
+            )
+        )
+
+        staged_upserts = rows_to_insert.unionByName(
+            staged_updates.select(*rows_to_insert.columns),
             allowMissingColumns=True,
         )
 
-        # SINGLE MERGE - three actions in one pass
+        # --- PART 2: DELETES (Expire Current Only) ---
+        if deletes and not deletes.isEmpty():
+            # Join deletes with Target Current rows to identify rows to expire
+            # We only expire the current row. History rows stay as History (but get current_ cols updated??)
+            # In SCD6, if current entity is deleted, what happens to history's `current_` columns?
+            # Typically they retain the LAST KNOWN state, or set to null?
+            # Let's assume we leave them alone (snapshot of history).
+            # We just need to Expire the Current row.
+
+            delete_targets = (
+                spark.table(self.target_table_name)
+                .filter("__is_current = true")
+                .join(deletes, self.join_keys)
+                .select(
+                    col(f"{self.target_table_name}.{self.surrogate_key_col}"),
+                    lit("EXPIRE_DELETE").alias("__action"),
+                )
+            )
+
+            # Add to staged
+            staged_final = staged_upserts.unionByName(
+                delete_targets, allowMissingColumns=True
+            )
+        else:
+            staged_final = staged_upserts
+
+        # SINGLE MERGE - Enhanced with 4 actions
         DeltaTable.forName(spark, self.target_table_name).alias("t").merge(
-            staged.alias("s"),
+            staged_final.alias("s"),
             f"t.{self.surrogate_key_col} = s.{self.surrogate_key_col}",
         ).whenMatchedUpdate(
-            condition="s.__action = 'EXPIRE'",
+            condition="s.__action = 'EXPIRE'",  # SCD2 Change
             set={
                 "__is_current": "false",
                 "__valid_to": f"s.{self.effective_at_column}",
                 **{f"current_{c}": f"s.current_{c}" for c in current_cols},
             },
         ).whenMatchedUpdate(
-            condition="s.__action = 'UPDATE'",
+            condition="s.__action = 'EXPIRE_DELETE'",  # Hard Delete
+            set={
+                "__is_current": "false",
+                "__valid_to": f"s.{self.effective_at_column}",  # Or processing time?
+                "__is_deleted": "true",
+            },
+        ).whenMatchedUpdate(
+            condition="s.__action = 'UPDATE'",  # History Backfill
             set={f"current_{c}": f"s.current_{c}" for c in current_cols},
         ).whenNotMatchedInsert(
             condition="s.__action = 'INSERT'",
-            values={c: f"s.{c}" for c in staged.columns if c != "__action"},
+            values={c: f"s.{c}" for c in staged_final.columns if c != "__action"},
         ).execute()
 
 
