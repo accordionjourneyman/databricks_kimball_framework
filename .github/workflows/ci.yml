@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
-    branches: [main]
+    branches: [main, master]
 
 jobs:
   lint-and-unit:
@@ -27,11 +27,15 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install ".[dev]"
 
+      - name: Compile Python sources
+        run: |
+          python -m compileall src tests tools
+
       - name: Run Ruff linter
-        run: ruff check src tests
+        run: ruff check src tests tools
 
       - name: Check Ruff formatting
-        run: ruff format --check src tests
+        run: ruff format --check src tests tools
 
       - name: Run unit tests
         run: pytest tests/unit -v
