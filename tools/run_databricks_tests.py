@@ -28,11 +28,15 @@ Usage:
 
   # Use a classic cluster instead of serverless:
   python tools/run_databricks_tests.py tests/integration --cluster-id 0123-456789-abcdef0
+
+  # Dry-run: validate the upload/sync logic without a Databricks workspace:
+  python tools/run_databricks_tests.py tests/integration --dry-run
 """
 
 from __future__ import annotations
 
 import argparse
+import io
 import os
 import subprocess
 import sys
@@ -129,53 +133,42 @@ def _get_remote_base_dir(ws: Any) -> str:
 
 def _upload_wheel(wheel: Path, ws: Any) -> str:
     """Upload the wheel to a workspace files location and return the workspace path."""
-    from databricks.sdk.service.workspace import ImportFormat
-
     remote_dir = _get_remote_base_dir(ws)
     remote_path = f"{remote_dir}/{wheel.name}"
 
     print(f"Uploading wheel to {remote_path}...")
-    import base64
-
-    content = wheel.read_bytes()
-    ws.workspace.mkdirs(remote_dir)
-    ws.workspace.upload(
+    ws.files.create_directory(remote_dir)
+    ws.files.upload(
         remote_path,
-        base64.b64encode(content).decode("utf-8"),
+        io.BytesIO(wheel.read_bytes()),
         overwrite=True,
-        format=ImportFormat.BASE64,
     )
     return remote_path
 
 
 def _sync_tests(remote_tests_dir: str, ws: Any) -> None:
     """Upload integration/golden tests to workspace files."""
-    import base64
-
-    from databricks.sdk.service.workspace import ImportFormat
-
     print(f"Syncing tests to {remote_tests_dir}...")
     local_tests = REPO_ROOT / "tests"
     for path in local_tests.rglob("*"):
-        if path.is_file():
-            relative = path.relative_to(local_tests)
-            remote_path = f"{remote_tests_dir}/{relative.as_posix()}"
-            ws.workspace.mkdirs(str(Path(remote_path).parent))
-            ws.workspace.upload(
-                remote_path,
-                base64.b64encode(path.read_bytes()).decode("utf-8"),
-                overwrite=True,
-                format=ImportFormat.BASE64,
-            )
+        if not path.is_file():
+            continue
+        if "__pycache__" in path.parts or path.name.endswith(".pyc"):
+            continue
+        relative = path.relative_to(local_tests).as_posix()
+        remote_path = f"{remote_tests_dir}/{relative}"
+        parent_dir = "/".join(remote_path.split("/")[:-1])
+        ws.files.create_directory(parent_dir)
+        ws.files.upload(
+            remote_path,
+            io.BytesIO(path.read_bytes()),
+            overwrite=True,
+        )
     print("Tests synced")
 
 
 def _create_runner_script(ws: Any, remote_tests_dir: str) -> str:
     """Upload a small Python driver that runs pytest on the cluster."""
-    import base64
-
-    from databricks.sdk.service.workspace import ImportFormat
-
     script = f"""import os
 import sys
 
@@ -193,11 +186,11 @@ exit_code = pytest.main([test_path, "-v"])
 sys.exit(exit_code)
 """
     remote_path = f"{_get_remote_base_dir(ws)}/run_tests.py"
-    ws.workspace.upload(
+    ws.files.create_directory(_get_remote_base_dir(ws))
+    ws.files.upload(
         remote_path,
-        base64.b64encode(script.encode("utf-8")).decode("utf-8"),
+        io.BytesIO(script.encode("utf-8")),
         overwrite=True,
-        format=ImportFormat.BASE64,
     )
     print(f"Uploaded runner script to {remote_path}")
     return remote_path
@@ -213,6 +206,7 @@ def _run_job(
 ) -> int:
     """Submit a job that installs the wheel and runs pytest. Return exit code."""
     from databricks.sdk.service import jobs
+    from databricks.sdk.service.compute import Library, PythonPyPiLibrary
 
     print("Submitting integration test job...")
 
@@ -229,8 +223,8 @@ def _run_job(
                         parameters=[test_path, catalog],
                     ),
                     libraries=[
-                        jobs.Library(whl=wheel_path),
-                        jobs.Library(pypi=jobs.PythonPyPiLibraryPackage("pytest")),
+                        Library(whl=wheel_path),
+                        Library(pypi=PythonPyPiLibrary(package="pytest")),
                     ],
                 )
             ],
@@ -247,8 +241,8 @@ def _run_job(
                         parameters=[test_path, catalog],
                     ),
                     libraries=[
-                        jobs.Library(whl=wheel_path),
-                        jobs.Library(pypi=jobs.PythonPyPiLibraryPackage("pytest")),
+                        Library(whl=wheel_path),
+                        Library(pypi=PythonPyPiLibrary(package="pytest")),
                     ],
                 )
             ],
@@ -285,6 +279,92 @@ def _print_run_output(ws: Any, run_id: int) -> None:
         print(f"warning: could not retrieve job output: {e}")
 
 
+class _DryRunClient:
+    """Fake WorkspaceClient that prints upload/sync actions instead of calling Databricks.
+
+    Used for local smoke-testing the runner without credentials.
+    """
+
+    def __init__(self) -> None:
+        self.files = _DryRunFiles()
+
+    @property
+    def current_user(self) -> _DryRunCurrentUser:
+        return _DryRunCurrentUser()
+
+    @property
+    def jobs(self) -> _DryRunJobs:
+        return _DryRunJobs()
+
+
+class _DryRunFiles:
+    """Fake files namespace for dry-run client."""
+
+    def create_directory(self, directory_path: str) -> None:
+        print(f"  [dry-run] create_directory: {directory_path}")
+
+    def upload(
+        self, file_path: str, contents: io.BytesIO, *, overwrite: bool = False
+    ) -> None:
+        size = len(contents.getvalue()) if contents else 0
+        print(f"  [dry-run] upload: {file_path} ({size} bytes, overwrite={overwrite})")
+
+
+class _DryRunCurrentUser:
+    """Fake current_user namespace for dry-run client."""
+
+    def me(self) -> Any:
+        class _User:
+            user_name = "dry-run-user"
+            display_name = "dry-run-user"
+
+        return _User()
+
+
+class _DryRunJobs:
+    """Fake jobs namespace for dry-run client."""
+
+    def submit(self, **kwargs: Any) -> Any:
+        class _Run:
+            run_id = 12345
+
+        return _Run()
+
+    def get_run(self, run_id: int) -> Any:
+        class _Run:
+            class state:
+                class life_cycle_state:
+                    value = "TERMINATED"
+
+                class result_state:
+                    value = "SUCCESS"
+
+        return _Run()
+
+    def get_run_output(self, run_id: int) -> Any:
+        class _Output:
+            logs = "[dry-run] pytest output would appear here."
+
+        return _Output()
+
+
+def _run_dry_run(test_path: str) -> int:
+    """Run the upload/sync/job-submission flow with a fake client."""
+    print("Running in dry-run mode. No Databricks workspace will be contacted.\n")
+    wheel = _build_wheel()
+    ws = _DryRunClient()
+
+    wheel_path = _upload_wheel(wheel, ws)
+    remote_base_dir = _get_remote_base_dir(ws)
+    remote_tests_dir = f"{remote_base_dir}/tests"
+    _sync_tests(remote_tests_dir, ws)
+    runner_path = _create_runner_script(ws, remote_tests_dir)
+
+    catalog = os.environ.get("KIMBALL_TEST_CATALOG", "spark_catalog")
+    remote_test_path = f"{remote_tests_dir}/{Path(test_path).name}"
+    return _run_job(ws, None, wheel_path, runner_path, remote_test_path, catalog)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run Kimball Framework integration/golden tests on Databricks."
@@ -310,7 +390,15 @@ def main() -> int:
         action="store_true",
         help="Build the wheel and exit (useful for CI caching)",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate upload/sync/job logic without contacting Databricks",
+    )
     args = parser.parse_args()
+
+    if args.dry_run:
+        return _run_dry_run(args.test_path)
 
     _load_env_file(args.env_file)
     host, token = _ensure_credentials()
