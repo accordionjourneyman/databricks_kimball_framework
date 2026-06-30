@@ -1,0 +1,3 @@
+product_id,name,category,unit_cost,updated_at
+101,Laptop,Electronics,1000.00,2025-01-01T10:00:00
+102,Mouse,Electronics,20.00,2025-01-01T10:00:00

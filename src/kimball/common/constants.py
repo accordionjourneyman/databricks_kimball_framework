@@ -20,7 +20,9 @@ SPARK_CONF_AQE_COALESCE = "spark.sql.adaptive.coalescePartitions.enabled"
 SPARK_CONF_SHUFFLE_PARTITIONS = "spark.sql.shuffle.partitions"
 SPARK_CONF_DEFAULT_PARALLELISM = "spark.default.parallelism"
 SPARK_CONF_MEMORY_FRACTION = "spark.memory.fraction"
-SPARK_CONF_SKEW_SIZE_THRESHOLD = "spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes"
+SPARK_CONF_SKEW_SIZE_THRESHOLD = (
+    "spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes"
+)
 SPARK_CONF_SKEW_FACTOR = "spark.sql.adaptive.skewJoin.skewedPartitionFactor"
 
 # Recommended defaults (override via RuntimeOptions or env vars)

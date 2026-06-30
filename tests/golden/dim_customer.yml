@@ -1,0 +1,27 @@
+table_name: {{ catalog }}.kimball_golden.dim_customer
+table_type: dimension
+scd_type: 2
+keys:
+  surrogate_key: customer_sk
+  natural_keys: [customer_id]
+surrogate_key_strategy: identity
+effective_at: updated_at
+track_history_columns:
+  - first_name
+  - last_name
+  - email
+  - address
+sources:
+  - name: {{ catalog }}.kimball_golden_raw.customers
+    alias: c
+    cdc_strategy: full
+transformation_sql: |
+  SELECT
+    customer_id,
+    first_name,
+    last_name,
+    email,
+    address,
+    updated_at
+  FROM c
+audit_columns: true

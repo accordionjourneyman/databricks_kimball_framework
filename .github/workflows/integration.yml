@@ -1,0 +1,47 @@
+name: Integration Tests
+
+on:
+  schedule:
+    # Run every night at 02:00 UTC
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      test_path:
+        description: "Path to run (tests/integration or tests/golden)"
+        required: true
+        default: "tests/golden"
+
+jobs:
+  databricks-integration:
+    runs-on: ubuntu-latest
+    environment: databricks-integration
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install remote tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[remote]"
+
+      - name: Run Databricks integration tests
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_CLUSTER_ID: ${{ secrets.DATABRICKS_CLUSTER_ID }}
+          KIMBALL_TEST_CATALOG: ${{ vars.KIMBALL_TEST_CATALOG || 'spark_catalog' }}
+        run: |
+          TEST_PATH="${{ github.event.inputs.test_path || 'tests/golden' }}"
+          python tools/run_databricks_tests.py "$TEST_PATH"
+
+      - name: Upload pytest results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-logs
+          path: dist/*.whl

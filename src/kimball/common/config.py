@@ -57,6 +57,13 @@ class ForeignKeyConfig(BaseModel):
     )
 
 
+class TestDefinition(BaseModel):
+    """Data-quality test definition for a single column."""
+
+    column: str
+    tests: list[str | dict[str, Any]] = Field(default_factory=list)
+
+
 class TableConfig(BaseModel):
     """
     Configuration for a target Dimension or Fact table.
@@ -96,6 +103,10 @@ class TableConfig(BaseModel):
     optimize_after_merge: bool = False
     merge_keys: list[str] | None = None
     foreign_keys: list[ForeignKeyConfig] | None = None
+    tests: list[TestDefinition] | None = Field(
+        default=None,
+        description="Custom data-quality tests (dbt-style) to run on the transformed data.",
+    )
     enable_lineage_truncation: bool = False
     preserve_all_changes: bool = Field(
         default=False,

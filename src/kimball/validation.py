@@ -605,9 +605,7 @@ class DataQualityValidator:
             for fk in config.foreign_keys:
                 if fk.references:
                     # Use explicit dimension_key if provided, otherwise assume same name
-                    ref_column = (
-                        fk.dimension_key if fk.dimension_key else fk.column
-                    )
+                    ref_column = fk.dimension_key if fk.dimension_key else fk.column
                     results.append(
                         self.validate_relationships(
                             df,

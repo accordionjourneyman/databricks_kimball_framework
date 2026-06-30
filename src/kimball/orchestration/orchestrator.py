@@ -260,6 +260,9 @@ class Orchestrator:
         if self.config.preserve_all_changes and self.config.scd_type == 2:
             return self._run_with_version_loop()
 
+        if max_retries > 0:
+            return self.run_with_retry(max_retries=max_retries)
+
         return self._run_pipeline_once()
 
     def _run_with_version_loop(self, max_iterations: int = 100) -> dict[str, Any]:
@@ -672,7 +675,7 @@ class Orchestrator:
                         {
                             "column": fk.column,
                             "dimension_table": fk.references,
-                            "dimension_key": fk.column,  # Assumes FK name matches dim SK name
+                            "dimension_key": fk.dimension_key or fk.column,
                         }
                         for fk in self.config.foreign_keys
                         if hasattr(fk, "references") and fk.references
@@ -725,6 +728,7 @@ class Orchestrator:
                             self.config.scd_type,
                             self.config.surrogate_key,
                             self.config.surrogate_key_strategy,
+                            current_value_columns=self.config.current_value_columns,
                         )
 
                         # Auto-cluster dimensions on natural keys if no explicit cluster_by
@@ -751,6 +755,12 @@ class Orchestrator:
                             surrogate_key_strategy=self.config.surrogate_key_strategy,
                         )
                         table_created = True
+
+                        # SCD4: ensure the EAV history table exists
+                        if self.config.scd_type == 4 and self.config.history_table:
+                            self.table_creator.create_history_table(
+                                self.config.history_table
+                            )
 
                     # Seed default rows (-1, -2, -3) ONLY on table creation (not every run)
                     if table_created and self.config.table_type == "dimension":
@@ -950,43 +960,50 @@ class Orchestrator:
                     )
 
                 # 6. Commit Watermarks with batch completion
-                # CRITICAL: Only advance watermarks for sources that contributed to the pipeline
-                # This prevents silent data loss when transformation filters everything out
-                logger.info("Completing batches and updating watermarks...")
-
-                # Determine which sources actually contributed rows
-                sources_with_data = set(active_dfs.keys())
-
-                for source_name, version in source_versions.items():
-                    if source_name not in sources_with_data:
-                        # Source was skipped (wm >= latest_v), already marked complete earlier
-                        continue
-
-                    # If we have actual per-source counts, use them; otherwise approximate
-                    per_source_rows = source_row_counts.get(source_name, 0)
-
-                    # Only advance watermark if we actually processed something
-                    # OR if total_rows_written > 0 (merge happened successfully)
-                    # Use actual per-source count if available, else distribute written rows
-                    if per_source_rows == 0 and total_rows_written > 0:
-                        # Fallback: distribute written rows among sources that contributed
-                        per_source_written = total_rows_written // max(
-                            len(sources_with_data), 1
-                        )
-                    else:
-                        per_source_written = per_source_rows
-
-                    # Always advance watermark to the processed version
-                    # Empty CDF versions (like OPTIMIZE) are valid - no data to lose
-                    self.etl_control.batch_complete(
-                        target_table=self.config.table_name,
-                        source_table=source_name,
-                        new_version=version,
-                        rows_read=per_source_rows
-                        if per_source_rows > 0
-                        else (total_rows_read // max(len(sources_with_data), 1)),
-                        rows_written=per_source_written,
+                # CRITICAL: Only advance watermarks if we actually merged data.
+                # If the transformation filtered out every row, merge_executed is False
+                # and we must NOT advance watermarks, otherwise filtered data is never reprocessed.
+                if not merge_executed:
+                    logger.info(
+                        "Merge was skipped because no rows remained after transformation. "
+                        "Watermarks will NOT be advanced to prevent data loss."
                     )
+                else:
+                    logger.info("Completing batches and updating watermarks...")
+
+                    # Determine which sources actually contributed rows
+                    sources_with_data = set(active_dfs.keys())
+
+                    for source_name, version in source_versions.items():
+                        if source_name not in sources_with_data:
+                            # Source was skipped (wm >= latest_v), already marked complete earlier
+                            continue
+
+                        # If we have actual per-source counts, use them; otherwise approximate
+                        per_source_rows = source_row_counts.get(source_name, 0)
+
+                        # Only advance watermark if we actually processed something
+                        # OR if total_rows_written > 0 (merge happened successfully)
+                        # Use actual per-source count if available, else distribute written rows
+                        if per_source_rows == 0 and total_rows_written > 0:
+                            # Fallback: distribute written rows among sources that contributed
+                            per_source_written = total_rows_written // max(
+                                len(sources_with_data), 1
+                            )
+                        else:
+                            per_source_written = per_source_rows
+
+                        # Always advance watermark to the processed version
+                        # Empty CDF versions (like OPTIMIZE) are valid - no data to lose
+                        self.etl_control.batch_complete(
+                            target_table=self.config.table_name,
+                            source_table=source_name,
+                            new_version=version,
+                            rows_read=per_source_rows
+                            if per_source_rows > 0
+                            else (total_rows_read // max(len(sources_with_data), 1)),
+                            rows_written=per_source_written,
+                        )
 
                 logger.info(
                     f"Pipeline completed successfully. Read: {total_rows_read}, Written: {total_rows_written}"

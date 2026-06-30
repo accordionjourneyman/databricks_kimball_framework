@@ -488,6 +488,11 @@ class SCD2Strategy:
 
         delta_table = DeltaTable.forName(get_spark(), self.target_table_name)
 
+        # Check if target table has __is_skeleton column (for skeleton hydration support)
+        target_has_skeleton_col = "__is_skeleton" in [
+            f.name for f in delta_table.toDF().schema.fields
+        ]
+
         source_df = source_df.withColumn(
             "hashdiff", compute_hashdiff(self.track_history_columns)
         )
@@ -549,18 +554,38 @@ class SCD2Strategy:
                 "s.*",
                 col("t.hashdiff").alias("target_hashdiff"),
                 col("t." + self.surrogate_key_col).alias("target_sk"),
+                col("t.__is_skeleton").alias("target_is_skeleton")
+                if target_has_skeleton_col
+                else lit(False).alias("target_is_skeleton"),
             )
         )
 
         rows_new = (
             joined_df.filter(col("target_sk").isNull())
-            .drop("target_hashdiff", "target_sk")
+            .drop("target_hashdiff", "target_sk", "target_is_skeleton")
             .withColumn("__merge_action", lit("INSERT_NEW"))
         )
 
         rows_changed = joined_df.filter(
-            col("target_sk").isNotNull() & (col("hashdiff") != col("target_hashdiff"))
-        ).drop("target_hashdiff", "target_sk")
+            col("target_sk").isNotNull()
+            & ~col("target_is_skeleton")
+            & (col("hashdiff") != col("target_hashdiff"))
+        ).drop("target_hashdiff", "target_sk", "target_is_skeleton")
+
+        # SKELETON HYDRATION: rows matching a skeleton should update in place,
+        # not expire + insert a new version, so facts keep referencing the same SK.
+        if target_has_skeleton_col:
+            rows_to_hydrate = (
+                joined_df.filter(
+                    col("target_sk").isNotNull()
+                    & col("target_is_skeleton")
+                    & (col("hashdiff") != col("target_hashdiff"))
+                )
+                .drop("target_hashdiff", "target_sk", "target_is_skeleton")
+                .withColumn("__merge_action", lit("HYDRATE"))
+            )
+        else:
+            rows_to_hydrate = None
 
         rows_to_expire = rows_changed.withColumn("__merge_action", lit("UPDATE_EXPIRE"))
         rows_to_insert_version = rows_changed.withColumn(
@@ -596,6 +621,11 @@ class SCD2Strategy:
             if self.surrogate_key_strategy == "sequence"
             else 0,
         )
+
+        if rows_to_hydrate is not None:
+            rows_with_keys = rows_with_keys.unionByName(
+                rows_to_hydrate, allowMissingColumns=True
+            )
 
         if (
             self.surrogate_key_col in rows_with_keys.columns
@@ -682,11 +712,6 @@ class SCD2Strategy:
         ):
             del insert_values[self.surrogate_key_col]
 
-        # Check if target table has __is_skeleton column (for skeleton hydration support)
-        target_has_skeleton_col = "__is_skeleton" in [
-            f.name for f in delta_table.toDF().schema.fields
-        ]
-
         if target_has_skeleton_col:
             # Build skeleton hydration update set - update all source columns in place
             # This keeps the SK but replaces placeholder NULLs with real data
@@ -727,7 +752,7 @@ class SCD2Strategy:
                 # SKELETON HYDRATION: If target is skeleton and source has real data,
                 # update in-place (keep SK, update attributes). This prevents the
                 # "same customer, two SKs" bug from skeleton getting SCD2 versioned.
-                condition="target.__is_skeleton = true AND source.__merge_action = 'INSERT_NEW'",
+                condition="target.__is_skeleton = true AND source.__merge_action = 'HYDRATE'",
                 set=skeleton_hydration_set,
             ).whenMatchedUpdate(
                 # Normal SCD2 expiration for non-skeleton rows
@@ -1102,7 +1127,7 @@ class SCD6Strategy:
                 .filter("__is_current = true")
                 .join(deletes, self.join_keys)
                 .select(
-                    col(f"{self.target_table_name}.{self.surrogate_key_col}"),
+                    col(self.surrogate_key_col),
                     lit("EXPIRE_DELETE").alias("__action"),
                 )
             )
