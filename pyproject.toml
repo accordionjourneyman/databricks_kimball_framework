@@ -57,6 +57,7 @@ remote = [
     "databricks-sdk>=0.20.0",
     "databricks-connect>=13.3.0",
     "python-dotenv>=1.0.0",
+    "build",
 ]
 
 [tool.setuptools.packages.find]
