@@ -98,9 +98,38 @@ def _build_wheel() -> Path:
     return wheel
 
 
+def _get_remote_base_dir(ws: Any) -> str:
+    """Return a workspace directory owned by the current user.
+
+    The /Workspace/Users root is protected; we must write under the
+    authenticated user's own folder. Override with KIMBALL_WORKSPACE_DIR.
+    """
+    override = os.environ.get("KIMBALL_WORKSPACE_DIR")
+    if override:
+        return override.rstrip("/")
+
+    try:
+        user = ws.current_user.me()
+        user_name = getattr(user, "user_name", None) or getattr(
+            user, "display_name", None
+        )
+    except Exception:
+        user_name = None
+
+    if not user_name:
+        print(
+            "error: could not determine current Databricks user. "
+            "Set KIMBALL_WORKSPACE_DIR to a writable workspace path, e.g. "
+            "/Workspace/Users/your.email@example.com/kimball_framework_ci"
+        )
+        sys.exit(1)
+
+    return f"/Workspace/Users/{user_name}/kimball_framework_ci"
+
+
 def _upload_wheel(wheel: Path, ws: Any) -> str:
     """Upload the wheel to a workspace files location and return the workspace path."""
-    remote_dir = "/Workspace/Users/ci/kimball_framework"
+    remote_dir = _get_remote_base_dir(ws)
     remote_path = f"{remote_dir}/{wheel.name}"
 
     print(f"Uploading wheel to {remote_path}...")
@@ -295,7 +324,8 @@ def main() -> int:
     wheel = _build_wheel()
     wheel_path = _upload_wheel(wheel, ws)
 
-    remote_tests_dir = "/Workspace/Users/ci/kimball_framework/tests"
+    remote_base_dir = _get_remote_base_dir(ws)
+    remote_tests_dir = f"{remote_base_dir}/tests"
     _sync_tests(remote_tests_dir, ws)
     runner_path = _create_runner_script(ws, remote_tests_dir)
 
