@@ -15,10 +15,14 @@ foreign_keys:
 sources:
   - name: {{ catalog }}.kimball_golden_raw.order_items
     alias: oi
-    cdc_strategy: full
+    cdc_strategy: cdf
+    starting_version: 0
+    primary_keys: [order_item_id]
   - name: {{ catalog }}.kimball_golden_raw.orders
     alias: o
-    cdc_strategy: full
+    cdc_strategy: cdf
+    starting_version: 0
+    primary_keys: [order_id]
   - name: {{ catalog }}.kimball_golden.dim_customer
     alias: c
     cdc_strategy: full
@@ -35,7 +39,8 @@ transformation_sql: |
     o.order_date,
     oi.quantity,
     oi.sales_amount,
-    (oi.sales_amount - (p.unit_cost * oi.quantity)) AS net_profit
+    (oi.sales_amount - (p.unit_cost * oi.quantity)) AS net_profit,
+    oi._change_type
   FROM oi
   JOIN o ON oi.order_id = o.order_id
   LEFT JOIN c ON o.customer_id = c.customer_id
@@ -44,3 +49,9 @@ transformation_sql: |
   LEFT JOIN p ON oi.product_id = p.product_id
 
 audit_columns: true
+early_arriving_facts:
+  - dimension_table: {{ catalog }}.kimball_golden.dim_customer
+    fact_join_key: customer_id
+    dimension_join_key: customer_id
+    surrogate_key_col: customer_sk
+    surrogate_key_strategy: identity

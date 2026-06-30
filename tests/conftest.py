@@ -31,10 +31,26 @@ sys.modules["databricks.sdk.runtime"] = mock_db_sdk
 
 
 def _is_remote_spark_requested() -> bool:
-    """Return True if the user configured Databricks Connect credentials."""
+    """Return True if Databricks Connect credentials are configured."""
     return bool(
         os.environ.get("DATABRICKS_HOST") and os.environ.get("DATABRICKS_TOKEN")
     )
+
+
+def _is_databricks_runtime() -> bool:
+    """Return True if this process is already running inside Databricks.
+
+    In serverless/notebook tasks, SPARK_REMOTE is set to a local Spark Connect
+    socket and the environment provides a real SparkSession via dbconnect.
+    """
+    return bool(
+        os.environ.get("SPARK_REMOTE") or os.environ.get("DATABRICKS_RUNTIME_VERSION")
+    )
+
+
+def _create_databricks_runtime_spark_session() -> SparkSession:
+    """Use the SparkSession already provided by the Databricks runtime."""
+    return SparkSession.builder.getOrCreate()
 
 
 def _create_remote_spark_session() -> SparkSession:
@@ -78,11 +94,15 @@ def spark():
     Behavior:
       - If DATABRICKS_HOST and DATABRICKS_TOKEN are set, connect to a real
         Databricks cluster via Databricks Connect v2.
+      - If already running inside Databricks (serverless/notebook task), use the
+        runtime SparkSession directly.
       - Otherwise, fall back to a local SparkSession (requires Java).
 
     For remote runs, set DATABRICKS_CLUSTER_ID to skip interactive cluster selection.
     """
-    if _is_remote_spark_requested():
+    if _is_databricks_runtime():
+        spark = _create_databricks_runtime_spark_session()
+    elif _is_remote_spark_requested():
         spark = _create_remote_spark_session()
     else:
         spark = _create_local_spark_session()
@@ -94,8 +114,8 @@ def spark():
 
     yield spark
 
-    # Do not stop remote sessions; the cluster lifecycle is managed separately.
-    if not _is_remote_spark_requested():
+    # Do not stop remote or runtime sessions; their lifecycle is managed separately.
+    if not _is_remote_spark_requested() and not _is_databricks_runtime():
         spark.stop()
 
 

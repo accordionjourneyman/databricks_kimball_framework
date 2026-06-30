@@ -758,13 +758,20 @@ class DataQualityValidator:
         This is a critical integrity check for fact tables. Each FK column
         is validated separately so you know WHICH dimension has the problem.
 
+        Seeded default values (e.g. -1 Unknown, -2 Not Applicable, -3 Error) are
+        considered valid references because the framework intentionally seeds those
+        rows in dimensions. Use ``default_value`` in the FK definition to override
+        the set of accepted defaults per column.
+
         Args:
             df: Fact DataFrame to validate BEFORE loading.
             foreign_keys: List of FK definitions, each with:
                 - column: FK column name in the fact table
                 - dimension_table: Target dimension table name
                 - dimension_key: SK column in the dimension (default: same as column)
-            exclude_seeds: If True, excludes seed values (-1, -2, -3) from validation.
+                - default_value: Optional value(s) to accept without a dimension lookup
+            exclude_seeds: If True, also excludes the standard seed values (-1, -2, -3)
+                           from dimension-side filtering (legacy behavior).
             severity: Test severity level.
 
         Returns:
@@ -795,10 +802,30 @@ class DataQualityValidator:
                 test_name = f"fk_integrity({fk_column} -> {dim_table}.{dim_key})"
 
                 try:
+                    # Determine default values that are intentionally accepted
+                    # without a dimension lookup.
+                    raw_default = fk.get("default_value")
+                    accepted_defaults: set[Any] = set()
+                    if raw_default is not None:
+                        if isinstance(raw_default, (list, tuple, set)):
+                            accepted_defaults.update(raw_default)
+                        else:
+                            accepted_defaults.add(raw_default)
+                    # Standard Kimball seeded defaults are also valid references.
+                    if exclude_seeds:
+                        accepted_defaults.update({-1, -2, -3})
+
                     # Get distinct FK values from fact (using df directly)
                     fact_fks = df.select(fk_column).distinct()
-                    if exclude_seeds:
-                        fact_fks = fact_fks.filter(F.col(fk_column) > 0)
+                    if accepted_defaults:
+                        # Filter out values that match known defaults before checking dims.
+                        # Works for numeric defaults; coerces safely for other types.
+                        from pyspark.sql.functions import col as _col
+
+                        defaults_literal = list(accepted_defaults)
+                        fact_fks = fact_fks.filter(
+                            ~_col(fk_column).isin(defaults_literal)
+                        )
 
                     # Get valid SKs from dimension (current rows only for SCD2)
                     dim_df = self.spark.table(dim_table)

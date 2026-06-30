@@ -14,7 +14,9 @@ track_history_columns:
 sources:
   - name: {{ catalog }}.kimball_golden_raw.customers
     alias: c
-    cdc_strategy: full
+    cdc_strategy: cdf
+    starting_version: 0
+    primary_keys: [customer_id]
 transformation_sql: |
   SELECT
     customer_id,
@@ -22,6 +24,8 @@ transformation_sql: |
     last_name,
     email,
     address,
-    updated_at
+    updated_at,
+    _change_type
   FROM c
 audit_columns: true
+preserve_all_changes: true

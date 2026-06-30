@@ -188,8 +188,12 @@ os.environ.setdefault("KIMBALL_TEST_CATALOG", catalog)
 os.environ.setdefault("DATABRICKS_HOST", "")
 os.environ.setdefault("DATABRICKS_TOKEN", "")
 
+# Workspace files are read-only; pytest must not write __pycache__.
+os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
+sys.dont_write_bytecode = True
+
 import pytest
-exit_code = pytest.main([test_path, "-v"])
+exit_code = pytest.main([test_path, "-v", "-p", "no:cacheprovider"])
 sys.exit(exit_code)
 """
     remote_path = f"{_get_remote_base_dir(ws)}/run_tests.py"
@@ -212,45 +216,108 @@ def _run_job(
     test_path: str,
     catalog: str,
 ) -> int:
-    """Submit a job that installs the wheel and runs pytest. Return exit code."""
+    """Run pytest on the target path. Return exit code."""
     from databricks.sdk.service import jobs
     from databricks.sdk.service.compute import Environment, Library, PythonPyPiLibrary
 
-    print("Submitting integration test job...")
+    if cluster_id:
+        return _run_job_classic(
+            ws,
+            cluster_id,
+            wheel_path,
+            runner_path,
+            test_path,
+            catalog,
+            jobs=jobs,
+            Library=Library,
+            PythonPyPiLibrary=PythonPyPiLibrary,
+        )
+    return _run_job_serverless(
+        ws,
+        wheel_path,
+        runner_path,
+        test_path,
+        catalog,
+        jobs=jobs,
+        Environment=Environment,
+    )
+
+
+def _run_job_classic(
+    ws: Any,
+    cluster_id: str,
+    wheel_path: str,
+    runner_path: str,
+    test_path: str,
+    catalog: str,
+    *,
+    jobs: Any,
+    Library: Any,
+    PythonPyPiLibrary: Any,
+) -> int:
+    """Submit a one-time job on an existing classic cluster."""
+    print("Submitting integration test job (classic cluster)...")
 
     task = jobs.SubmitTask(
+        task_key="run_tests",
+        existing_cluster_id=cluster_id,
+        spark_python_task=jobs.SparkPythonTask(
+            python_file=runner_path,
+            parameters=[test_path, catalog],
+        ),
+        libraries=[
+            Library(whl=wheel_path),
+            Library(pypi=PythonPyPiLibrary(package="pytest")),
+        ],
+    )
+    run = ws.jobs.submit(
+        run_name="kimball-framework-integration-tests",
+        tasks=[task],
+    )
+    return _poll_run(ws, run.run_id)
+
+
+def _run_job_serverless(
+    ws: Any,
+    wheel_path: str,
+    runner_path: str,
+    test_path: str,
+    catalog: str,
+    *,
+    jobs: Any,
+    Environment: Any,
+) -> int:
+    """Create or update a persistent serverless job and run it.
+
+    Free Edition may reject one-time `runs/submit` in performance-optimized
+    mode, but scheduled/persistent jobs support standard serverless mode.
+    """
+    from databricks.sdk.service.jobs import PerformanceTarget
+
+    job_name = "kimball-framework-integration-tests"
+    env_key = "kimball_test_env"
+
+    task = jobs.Task(
         task_key="run_tests",
         spark_python_task=jobs.SparkPythonTask(
             python_file=runner_path,
             parameters=[test_path, catalog],
         ),
+        environment_key=env_key,
     )
 
-    if cluster_id:
-        # Classic all-purpose cluster path
-        task.existing_cluster_id = cluster_id
-        task.libraries = [
-            Library(whl=wheel_path),
-            Library(pypi=PythonPyPiLibrary(package="pytest")),
-        ]
-        run = ws.jobs.submit(
-            run_name="kimball-framework-integration-tests",
-            tasks=[task],
-        )
-    else:
-        # Serverless / job compute path (preferred for free edition).
-        # Serverless tasks do not accept task-level libraries; they must be
-        # declared in an environment. Workspace files are referenced by path.
-        env_key = "kimball_test_env"
-        task.environment_key = env_key
-        run = ws.jobs.submit(
-            run_name="kimball-framework-integration-tests",
+    # Find an existing job with the same name or create one.
+    job_id = _find_job_by_name(ws, job_name)
+    if job_id is None:
+        print(f"Creating persistent serverless job '{job_name}'...")
+        response = ws.jobs.create(
+            name=job_name,
             tasks=[task],
             environments=[
                 jobs.JobEnvironment(
                     environment_key=env_key,
                     spec=Environment(
-                        client="1",
+                        environment_version="5",
                         dependencies=[
                             f"{wheel_path}",
                             "pytest",
@@ -258,11 +325,42 @@ def _run_job(
                     ),
                 )
             ],
+            performance_target=PerformanceTarget.STANDARD,
+        )
+        job_id = response.job_id
+    else:
+        print(f"Updating existing serverless job {job_id}...")
+        ws.jobs.update(
+            job_id,
+            new_settings=jobs.JobSettings(
+                name=job_name,
+                tasks=[task],
+                environments=[
+                    jobs.JobEnvironment(
+                        environment_key=env_key,
+                        spec=Environment(
+                            environment_version="5",
+                            dependencies=[
+                                f"{wheel_path}",
+                                "pytest",
+                            ],
+                        ),
+                    )
+                ],
+                performance_target=PerformanceTarget.STANDARD,
+            ),
         )
 
-    run_id = run.run_id
+    print(f"Triggering run for serverless job {job_id}...")
+    run = ws.jobs.run_now(job_id, performance_target=PerformanceTarget.STANDARD)
+    return _poll_run(ws, run.run_id)
+
+
+def _poll_run(ws: Any, run_id: int) -> int:
+    """Poll a run to completion and return its exit code."""
     print(f"Job run ID: {run_id}")
 
+    run = None
     # Poll for completion
     while True:
         run = ws.jobs.get_run(run_id)
@@ -275,9 +373,17 @@ def _run_job(
     # Print output and any failure diagnostics
     _print_run_output(ws, run_id)
 
-    if run.state.result_state and run.state.result_state.value == "SUCCESS":
+    if run and run.state.result_state and run.state.result_state.value == "SUCCESS":
         return 0
     return 1
+
+
+def _find_job_by_name(ws: Any, name: str) -> int | None:
+    """Return the first job ID matching the given name, or None."""
+    for job in ws.jobs.list():
+        if job.settings and job.settings.name == name:
+            return job.job_id
+    return None
 
 
 def _print_run_output(ws: Any, run_id: int) -> None:

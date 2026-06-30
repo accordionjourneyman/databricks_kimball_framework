@@ -58,9 +58,42 @@ class FakeJobs:
     def __init__(self, success: bool = True):
         self._success = success
         self.submissions: list[dict] = []
+        self._jobs: dict[int, dict] = {}
+        self._next_job_id = 100
 
     def submit(self, **kwargs):
         self.submissions.append(kwargs)
+
+        class _Run:
+            run_id = 42
+
+        return _Run()
+
+    def create(self, **kwargs):
+        job_id = self._next_job_id
+        self._next_job_id += 1
+        self._jobs[job_id] = kwargs
+        resp = type("CreateResponse", (), {"job_id": job_id})
+        return resp()
+
+    def update(self, job_id: int, *, new_settings=None) -> None:
+        if new_settings:
+            self._jobs[job_id] = (
+                new_settings.as_dict()
+                if hasattr(new_settings, "as_dict")
+                else new_settings
+            )
+
+    def list(self):
+        for job_id, settings in self._jobs.items():
+            yield type(
+                "Job",
+                (),
+                {"job_id": job_id, "settings": type("JobSettings", (), settings)()},
+            )()
+
+    def run_now(self, job_id: int, **kwargs):
+        self.submissions.append({"run_now": job_id})
 
         class _Run:
             run_id = 42
@@ -185,7 +218,8 @@ def test_create_runner_script_uploads_and_returns_path():
     script_bytes = next(up[1] for up in ws.workspace.uploads if up[0] == runner_path)
     script = script_bytes.decode("utf-8")
     assert "import pytest" in script
-    assert 'pytest.main([test_path, "-v"])' in script
+    assert "sys.dont_write_bytecode = True" in script
+    assert "pytest.main([test_path" in script
 
 
 def test_run_job_submits_and_polls_successfully():
@@ -199,9 +233,10 @@ def test_run_job_submits_and_polls_successfully():
         "spark_catalog",
     )
     assert result == 0
-    assert len(ws.jobs.submissions) == 1
-    task = ws.jobs.submissions[0]["tasks"][0]
-    assert task.task_key == "run_tests"
+    # Serverless path creates a persistent job and triggers run_now.
+    assert any("run_now" in s for s in ws.jobs.submissions)
+    job_ids = [job.job_id for job in ws.jobs.list()]
+    assert len(job_ids) == 1
 
 
 def test_run_job_reports_failure():
