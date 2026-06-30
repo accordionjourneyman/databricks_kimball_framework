@@ -36,7 +36,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import io
 import os
 import subprocess
 import sys
@@ -133,14 +132,17 @@ def _get_remote_base_dir(ws: Any) -> str:
 
 def _upload_wheel(wheel: Path, ws: Any) -> str:
     """Upload the wheel to a workspace files location and return the workspace path."""
+    from databricks.sdk.service.workspace import ImportFormat
+
     remote_dir = _get_remote_base_dir(ws)
     remote_path = f"{remote_dir}/{wheel.name}"
 
     print(f"Uploading wheel to {remote_path}...")
-    ws.files.create_directory(remote_dir)
-    ws.files.upload(
+    ws.workspace.mkdirs(remote_dir)
+    ws.workspace.upload(
         remote_path,
-        io.BytesIO(wheel.read_bytes()),
+        wheel.read_bytes(),
+        format=ImportFormat.AUTO,
         overwrite=True,
     )
     return remote_path
@@ -148,6 +150,8 @@ def _upload_wheel(wheel: Path, ws: Any) -> str:
 
 def _sync_tests(remote_tests_dir: str, ws: Any) -> None:
     """Upload integration/golden tests to workspace files."""
+    from databricks.sdk.service.workspace import ImportFormat
+
     print(f"Syncing tests to {remote_tests_dir}...")
     local_tests = REPO_ROOT / "tests"
     for path in local_tests.rglob("*"):
@@ -158,10 +162,11 @@ def _sync_tests(remote_tests_dir: str, ws: Any) -> None:
         relative = path.relative_to(local_tests).as_posix()
         remote_path = f"{remote_tests_dir}/{relative}"
         parent_dir = "/".join(remote_path.split("/")[:-1])
-        ws.files.create_directory(parent_dir)
-        ws.files.upload(
+        ws.workspace.mkdirs(parent_dir)
+        ws.workspace.upload(
             remote_path,
-            io.BytesIO(path.read_bytes()),
+            path.read_bytes(),
+            format=ImportFormat.AUTO,
             overwrite=True,
         )
     print("Tests synced")
@@ -169,6 +174,8 @@ def _sync_tests(remote_tests_dir: str, ws: Any) -> None:
 
 def _create_runner_script(ws: Any, remote_tests_dir: str) -> str:
     """Upload a small Python driver that runs pytest on the cluster."""
+    from databricks.sdk.service.workspace import ImportFormat
+
     script = f"""import os
 import sys
 
@@ -186,10 +193,11 @@ exit_code = pytest.main([test_path, "-v"])
 sys.exit(exit_code)
 """
     remote_path = f"{_get_remote_base_dir(ws)}/run_tests.py"
-    ws.files.create_directory(_get_remote_base_dir(ws))
-    ws.files.upload(
+    ws.workspace.mkdirs(_get_remote_base_dir(ws))
+    ws.workspace.upload(
         remote_path,
-        io.BytesIO(script.encode("utf-8")),
+        script.encode("utf-8"),
+        format=ImportFormat.AUTO,
         overwrite=True,
     )
     print(f"Uploaded runner script to {remote_path}")
@@ -206,44 +214,48 @@ def _run_job(
 ) -> int:
     """Submit a job that installs the wheel and runs pytest. Return exit code."""
     from databricks.sdk.service import jobs
-    from databricks.sdk.service.compute import Library, PythonPyPiLibrary
+    from databricks.sdk.service.compute import Environment, Library, PythonPyPiLibrary
 
     print("Submitting integration test job...")
 
+    task = jobs.SubmitTask(
+        task_key="run_tests",
+        spark_python_task=jobs.SparkPythonTask(
+            python_file=runner_path,
+            parameters=[test_path, catalog],
+        ),
+    )
+
     if cluster_id:
         # Classic all-purpose cluster path
+        task.existing_cluster_id = cluster_id
+        task.libraries = [
+            Library(whl=wheel_path),
+            Library(pypi=PythonPyPiLibrary(package="pytest")),
+        ]
         run = ws.jobs.submit(
             run_name="kimball-framework-integration-tests",
-            tasks=[
-                jobs.SubmitTask(
-                    task_key="run_tests",
-                    existing_cluster_id=cluster_id,
-                    spark_python_task=jobs.SparkPythonTask(
-                        python_file=runner_path,
-                        parameters=[test_path, catalog],
-                    ),
-                    libraries=[
-                        Library(whl=wheel_path),
-                        Library(pypi=PythonPyPiLibrary(package="pytest")),
-                    ],
-                )
-            ],
+            tasks=[task],
         )
     else:
-        # Serverless / job compute path (preferred for free edition)
+        # Serverless / job compute path (preferred for free edition).
+        # Serverless tasks do not accept task-level libraries; they must be
+        # declared in an environment. Workspace files are referenced by path.
+        env_key = "kimball_test_env"
+        task.environment_key = env_key
         run = ws.jobs.submit(
             run_name="kimball-framework-integration-tests",
-            tasks=[
-                jobs.SubmitTask(
-                    task_key="run_tests",
-                    spark_python_task=jobs.SparkPythonTask(
-                        python_file=runner_path,
-                        parameters=[test_path, catalog],
+            tasks=[task],
+            environments=[
+                jobs.JobEnvironment(
+                    environment_key=env_key,
+                    spec=Environment(
+                        client="1",
+                        dependencies=[
+                            f"{wheel_path}",
+                            "pytest",
+                        ],
                     ),
-                    libraries=[
-                        Library(whl=wheel_path),
-                        Library(pypi=PythonPyPiLibrary(package="pytest")),
-                    ],
                 )
             ],
         )
@@ -260,7 +272,7 @@ def _run_job(
             break
         time.sleep(15)
 
-    # Print output
+    # Print output and any failure diagnostics
     _print_run_output(ws, run_id)
 
     if run.state.result_state and run.state.result_state.value == "SUCCESS":
@@ -269,14 +281,27 @@ def _run_job(
 
 
 def _print_run_output(ws: Any, run_id: int) -> None:
-    """Fetch and print job run logs."""
-    try:
-        output = ws.jobs.get_run_output(run_id)
-        if output and output.logs:
-            print("\n--- Job stdout ---")
-            print(output.logs)
-    except Exception as e:
-        print(f"warning: could not retrieve job output: {e}")
+    """Fetch and print job run logs and task-level diagnostics."""
+    run = ws.jobs.get_run(run_id)
+    print("\n--- Job run diagnostics ---")
+    if getattr(run.state, "state_message", None):
+        print(f"Run state message: {run.state.state_message}")
+    for task in getattr(run, "tasks", []) or []:
+        task_state = task.state
+        print(
+            f"Task '{task.task_key}' (attempt {getattr(task, 'attempt_number', 0)}): "
+            f"{task_state.life_cycle_state.value} / "
+            f"{task_state.result_state.value if task_state.result_state else 'N/A'}"
+        )
+        if getattr(task_state, "state_message", None):
+            print(f"  message: {task_state.state_message}")
+        try:
+            output = ws.jobs.get_run_output(task.run_id)
+            if output and output.logs:
+                print("\n--- Task stdout ---")
+                print(output.logs)
+        except Exception as e:
+            print(f"  warning: could not retrieve task output: {e}")
 
 
 class _DryRunClient:
@@ -286,7 +311,7 @@ class _DryRunClient:
     """
 
     def __init__(self) -> None:
-        self.files = _DryRunFiles()
+        self.workspace = _DryRunWorkspace()
 
     @property
     def current_user(self) -> _DryRunCurrentUser:
@@ -297,17 +322,15 @@ class _DryRunClient:
         return _DryRunJobs()
 
 
-class _DryRunFiles:
-    """Fake files namespace for dry-run client."""
+class _DryRunWorkspace:
+    """Fake workspace namespace for dry-run client."""
 
-    def create_directory(self, directory_path: str) -> None:
-        print(f"  [dry-run] create_directory: {directory_path}")
+    def mkdirs(self, path: str) -> None:
+        print(f"  [dry-run] mkdirs: {path}")
 
-    def upload(
-        self, file_path: str, contents: io.BytesIO, *, overwrite: bool = False
-    ) -> None:
-        size = len(contents.getvalue()) if contents else 0
-        print(f"  [dry-run] upload: {file_path} ({size} bytes, overwrite={overwrite})")
+    def upload(self, path: str, content: bytes, *, overwrite: bool = False) -> None:
+        size = len(content) if content else 0
+        print(f"  [dry-run] upload: {path} ({size} bytes, overwrite={overwrite})")
 
 
 class _DryRunCurrentUser:

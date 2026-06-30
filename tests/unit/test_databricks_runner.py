@@ -1,11 +1,11 @@
 """Unit tests for tools/run_databricks_tests.py."""
 
 import importlib.util
-import io
 import os
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -39,19 +39,19 @@ class FakeCurrentUser:
         return self._user
 
 
-class FakeFiles:
+class FakeWorkspace:
     def __init__(self):
-        self.uploads: list[tuple[str, bytes, bool]] = []
+        self.uploads: list[tuple[str, bytes, Any, bool]] = []
         self.dirs: list[str] = []
 
-    def create_directory(self, directory_path: str) -> None:
-        self.dirs.append(directory_path)
+    def mkdirs(self, path: str) -> None:
+        self.dirs.append(path)
 
     def upload(
-        self, file_path: str, contents: io.BytesIO, *, overwrite: bool = False
+        self, path: str, content: bytes, *, format=None, overwrite: bool = False
     ) -> None:
-        data = contents.getvalue() if contents else b""
-        self.uploads.append((file_path, data, overwrite))
+        data = content if content else b""
+        self.uploads.append((path, data, format, overwrite))
 
 
 class FakeJobs:
@@ -91,7 +91,7 @@ class FakeJobs:
 
 class FakeWorkspaceClient:
     def __init__(self, user_name: str = "tester@example.com", success: bool = True):
-        self.files = FakeFiles()
+        self.workspace = FakeWorkspace()
         self.jobs = FakeJobs(success=success)
         self._current_user = FakeCurrentUser(user_name)
 
@@ -144,11 +144,14 @@ def test_upload_wheel_creates_dir_and_uploads(tmp_path: Path):
         remote_path
         == "/Workspace/Users/tester@example.com/kimball_framework_ci/kimball-1.0-py3-none-any.whl"
     )
-    assert "/Workspace/Users/tester@example.com/kimball_framework_ci" in ws.files.dirs
-    assert len(ws.files.uploads) == 1
-    file_path, data, overwrite = ws.files.uploads[0]
+    assert (
+        "/Workspace/Users/tester@example.com/kimball_framework_ci" in ws.workspace.dirs
+    )
+    assert len(ws.workspace.uploads) == 1
+    file_path, data, fmt, overwrite = ws.workspace.uploads[0]
     assert file_path == remote_path
     assert data == b"wheel-data"
+    assert fmt is not None
     assert overwrite is True
 
 
@@ -163,7 +166,7 @@ def test_sync_tests_uploads_source_files_and_skips_pycache(tmp_path: Path, monke
     ws = FakeWorkspaceClient("tester@example.com")
     runner._sync_tests("/Workspace/Users/tester@example.com/tests", ws)
 
-    paths = [up[0] for up in ws.files.uploads]
+    paths = [up[0] for up in ws.workspace.uploads]
     assert any("test_a.py" in p for p in paths)
     assert not any(".pyc" in p for p in paths)
 
@@ -178,8 +181,8 @@ def test_create_runner_script_uploads_and_returns_path():
         runner_path
         == "/Workspace/Users/tester@example.com/kimball_framework_ci/run_tests.py"
     )
-    assert runner_path in [up[0] for up in ws.files.uploads]
-    script_bytes = next(up[1] for up in ws.files.uploads if up[0] == runner_path)
+    assert runner_path in [up[0] for up in ws.workspace.uploads]
+    script_bytes = next(up[1] for up in ws.workspace.uploads if up[0] == runner_path)
     script = script_bytes.decode("utf-8")
     assert "import pytest" in script
     assert 'pytest.main([test_path, "-v"])' in script
