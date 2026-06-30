@@ -14,7 +14,78 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 RUNNER_PATH = REPO_ROOT / "tools" / "run_databricks_tests.py"
 
 
+def _install_databricks_sdk_mock() -> None:
+    """Provide a minimal stub for databricks.sdk so unit tests don't need it installed."""
+    if "databricks" in sys.modules:
+        return
+
+    databricks_pkg = ModuleType("databricks")
+    sdk_pkg = ModuleType("databricks.sdk")
+    service_pkg = ModuleType("databricks.sdk.service")
+    jobs_mod = ModuleType("databricks.sdk.service.jobs")
+    compute_mod = ModuleType("databricks.sdk.service.compute")
+
+    # Classes used by run_databricks_tests.py
+    for name in [
+        "SubmitTask",
+        "SparkPythonTask",
+        "Task",
+        "JobEnvironment",
+        "JobSettings",
+    ]:
+        setattr(
+            jobs_mod,
+            name,
+            type(
+                name,
+                (),
+                {"__init__": lambda self, **kwargs: setattr(self, "_kwargs", kwargs)},
+            ),
+        )
+
+    class _PerformanceTarget:
+        STANDARD = "STANDARD"
+
+    jobs_mod.PerformanceTarget = _PerformanceTarget
+
+    compute_mod.Environment = type(
+        "Environment",
+        (),
+        {"__init__": lambda self, **kwargs: setattr(self, "_kwargs", kwargs)},
+    )
+    for name in ["Library", "PythonPyPiLibrary"]:
+        setattr(
+            compute_mod,
+            name,
+            type(
+                name,
+                (),
+                {"__init__": lambda self, **kwargs: setattr(self, "_kwargs", kwargs)},
+            ),
+        )
+
+    workspace_mod = ModuleType("databricks.sdk.service.workspace")
+
+    class _ImportFormat:
+        AUTO = "AUTO"
+
+    workspace_mod.ImportFormat = _ImportFormat
+
+    service_pkg.jobs = jobs_mod
+    service_pkg.compute = compute_mod
+    service_pkg.workspace = workspace_mod
+    databricks_pkg.sdk = sdk_pkg
+
+    sys.modules["databricks"] = databricks_pkg
+    sys.modules["databricks.sdk"] = sdk_pkg
+    sys.modules["databricks.sdk.service"] = service_pkg
+    sys.modules["databricks.sdk.service.jobs"] = jobs_mod
+    sys.modules["databricks.sdk.service.compute"] = compute_mod
+    sys.modules["databricks.sdk.service.workspace"] = workspace_mod
+
+
 def _load_runner_module() -> ModuleType:
+    _install_databricks_sdk_mock()
     spec = importlib.util.spec_from_file_location("run_databricks_tests", RUNNER_PATH)
     module = importlib.util.module_from_spec(spec)
     sys.modules["run_databricks_tests"] = module
@@ -78,11 +149,7 @@ class FakeJobs:
 
     def update(self, job_id: int, *, new_settings=None) -> None:
         if new_settings:
-            self._jobs[job_id] = (
-                new_settings.as_dict()
-                if hasattr(new_settings, "as_dict")
-                else new_settings
-            )
+            self._jobs[job_id] = getattr(new_settings, "_kwargs", new_settings)
 
     def list(self):
         for job_id, settings in self._jobs.items():
