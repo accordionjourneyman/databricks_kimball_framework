@@ -49,6 +49,7 @@ dev = [
     "ruff",
     "mypy",
     "pyright",
+    "build",
     "pyspark>=3.4.0",
     "delta-spark>=2.4.0",
 ]
