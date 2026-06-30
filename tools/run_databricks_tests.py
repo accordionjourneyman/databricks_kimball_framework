@@ -129,6 +129,8 @@ def _get_remote_base_dir(ws: Any) -> str:
 
 def _upload_wheel(wheel: Path, ws: Any) -> str:
     """Upload the wheel to a workspace files location and return the workspace path."""
+    from databricks.sdk.service.workspace import ImportFormat
+
     remote_dir = _get_remote_base_dir(ws)
     remote_path = f"{remote_dir}/{wheel.name}"
 
@@ -141,7 +143,7 @@ def _upload_wheel(wheel: Path, ws: Any) -> str:
         remote_path,
         base64.b64encode(content).decode("utf-8"),
         overwrite=True,
-        format="BASE64",
+        format=ImportFormat.BASE64,
     )
     return remote_path
 
@@ -149,6 +151,8 @@ def _upload_wheel(wheel: Path, ws: Any) -> str:
 def _sync_tests(remote_tests_dir: str, ws: Any) -> None:
     """Upload integration/golden tests to workspace files."""
     import base64
+
+    from databricks.sdk.service.workspace import ImportFormat
 
     print(f"Syncing tests to {remote_tests_dir}...")
     local_tests = REPO_ROOT / "tests"
@@ -161,7 +165,7 @@ def _sync_tests(remote_tests_dir: str, ws: Any) -> None:
                 remote_path,
                 base64.b64encode(path.read_bytes()).decode("utf-8"),
                 overwrite=True,
-                format="BASE64",
+                format=ImportFormat.BASE64,
             )
     print("Tests synced")
 
@@ -169,6 +173,8 @@ def _sync_tests(remote_tests_dir: str, ws: Any) -> None:
 def _create_runner_script(ws: Any, remote_tests_dir: str) -> str:
     """Upload a small Python driver that runs pytest on the cluster."""
     import base64
+
+    from databricks.sdk.service.workspace import ImportFormat
 
     script = f"""import os
 import sys
@@ -186,12 +192,12 @@ import pytest
 exit_code = pytest.main([test_path, "-v"])
 sys.exit(exit_code)
 """
-    remote_path = "/Workspace/Users/ci/kimball_framework/run_tests.py"
+    remote_path = f"{_get_remote_base_dir(ws)}/run_tests.py"
     ws.workspace.upload(
         remote_path,
         base64.b64encode(script.encode("utf-8")).decode("utf-8"),
         overwrite=True,
-        format="BASE64",
+        format=ImportFormat.BASE64,
     )
     print(f"Uploaded runner script to {remote_path}")
     return remote_path
