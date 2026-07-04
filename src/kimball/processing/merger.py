@@ -74,13 +74,30 @@ def _dedup_cdf(source_df: DataFrame, join_keys: list[str]) -> DataFrame:
     return source_df.withColumn("_rn", row_number().over(window_spec)).filter(col("_rn") == 1).drop("_rn")
 
 
-def _apply_schema_evolution(table_name: str, enabled: bool) -> None:
+def _apply_schema_evolution(table_name: str, enabled: bool, source_df: DataFrame | None = None) -> None:
     if not enabled:
         return
     try:
         get_spark().sql(f"ALTER TABLE {quote_table_name(table_name)} SET TBLPROPERTIES ('delta.schema.autoMerge.enabled' = 'true')")
     except Exception as e:
         logger.warning(f"Could not enable schema auto-merge for {table_name}: {e}")
+    if source_df is not None:
+        try:
+            target_df = DeltaTable.forName(get_spark(), table_name).toDF()
+            target_cols = {f.name: f.dataType for f in target_df.schema.fields}
+            for field in source_df.schema.fields:
+                col_name = field.name
+                if col_name.startswith("__") or col_name == "_change_type" or col_name in target_cols:
+                    continue
+                if col_name in {"hashdiff", "__merge_action"}:
+                    continue
+                try:
+                    get_spark().sql(f"ALTER TABLE {quote_table_name(table_name)} ADD COLUMNS ({col_name} {field.dataType.simpleString()})")
+                    logger.info(f"Schema evolution: added column {col_name} to {table_name}")
+                except Exception as e:
+                    logger.warning(f"Could not add column {col_name} to {table_name}: {e}")
+        except Exception as e:
+            logger.warning(f"Schema evolution check failed for {table_name}: {e}")
 
 
 def _build_merge_condition(join_keys: list[str], current_only: bool = False) -> str:
@@ -136,7 +153,7 @@ def merge_scd1(source_df: DataFrame, *, target_table_name: str, join_keys: list[
     source_df = _dedup_cdf(source_df, join_keys)
     merge_condition = _build_merge_condition(join_keys)
     delta_table = DeltaTable.forName(get_spark(), target_table_name)
-    _apply_schema_evolution(target_table_name, schema_evolution)
+    _apply_schema_evolution(target_table_name, schema_evolution, source_df)
     source_df = _generate_keys(source_df, surrogate_key_strategy, join_keys, surrogate_key_col or "surrogate_key")
     merge_builder = delta_table.alias("target").merge(broadcast(source_df).alias("source"), merge_condition)
     if "_change_type" in source_df.columns:
@@ -169,7 +186,18 @@ def merge_scd2(source_df: DataFrame, *, target_table_name: str, join_keys: list[
         delta_table.alias("target").merge(deletes.alias("source"), _build_merge_condition(join_keys, current_only=True)).whenMatchedUpdate(set={"__is_current": "false", "__valid_to": vcol, "__etl_processed_at": "current_timestamp()", "__is_deleted": "true"}).execute()
         logger.info("SCD2: Deleted keys expired successfully")
         upserts = source_df.filter(col("_change_type") != "delete")
-    _apply_schema_evolution(target_table_name, schema_evolution)
+    else:
+        delta_table = DeltaTable.forName(get_spark(), target_table_name)
+        current_target = delta_table.toDF().filter("__is_current = true")
+        missing_in_source = current_target.join(upserts.select(*join_keys).distinct(), join_keys, "left_anti").dropDuplicates(join_keys)
+        if not missing_in_source.isEmpty():
+            missing_count = missing_in_source.count()
+            logger.info(f"SCD2 full CDC: Detected {missing_count} delete(s) via anti-join - expiring current versions")
+            vcol = "current_timestamp()"
+            keys_expr = " AND ".join([f"target.{k} <=> source.{k}" for k in join_keys]) + " AND target.__is_current = true"
+            delta_table.alias("target").merge(missing_in_source.alias("source"), keys_expr).whenMatchedUpdate(set={"__is_current": "false", "__valid_to": vcol, "__etl_processed_at": "current_timestamp()", "__is_deleted": "true"}).execute()
+            logger.info("SCD2: Full CDC deletes expired successfully")
+    _apply_schema_evolution(target_table_name, schema_evolution, upserts)
     delta_table = DeltaTable.forName(get_spark(), target_table_name)
     target_has_skeleton_col = "__is_skeleton" in [f.name for f in delta_table.toDF().schema.fields]
     upserts = upserts.withColumn("hashdiff", compute_hashdiff(track_history_columns))
@@ -185,7 +213,7 @@ def merge_scd2(source_df: DataFrame, *, target_table_name: str, join_keys: list[
     combined_join_cond = reduce(lambda a, b: a & b, join_conditions) if join_conditions else None
     joined_df = upserts.alias("s").join(target_df.alias("t"), combined_join_cond, "left").select("s.*", col("t.hashdiff").alias("target_hashdiff"), col("t." + surrogate_key_col).alias("target_sk"), col("t.__is_skeleton").alias("target_is_skeleton") if target_has_skeleton_col else lit(False).alias("target_is_skeleton"))
     rows_new = joined_df.filter(col("target_sk").isNull()).drop("target_hashdiff", "target_sk", "target_is_skeleton").withColumn("__merge_action", lit("INSERT_NEW"))
-    rows_changed = joined_df.filter(col("target_sk").isNotNull() & ~col("target_is_skeleton") & (col("hashdiff") != col("target_hashdiff"))).drop("target_hashdiff", "target_sk", "target_is_skeleton")
+    rows_changed = joined_df.filter(col("target_sk").isNotNull() & ~col("target_is_skeleton") & ((col("hashdiff") != col("target_hashdiff")) | col("hashdiff").isNull() | col("target_hashdiff").isNull())).drop("target_hashdiff", "target_sk", "target_is_skeleton")
     rows_to_hydrate = None
     if target_has_skeleton_col:
         rows_to_hydrate = joined_df.filter(col("target_sk").isNotNull() & col("target_is_skeleton") & (col("hashdiff") != col("target_hashdiff"))).drop("target_hashdiff", "target_sk", "target_is_skeleton").withColumn("__merge_action", lit("HYDRATE"))
@@ -195,6 +223,21 @@ def merge_scd2(source_df: DataFrame, *, target_table_name: str, join_keys: list[
     rows_needing_keys = staged_source.filter(col("__merge_action").isin("INSERT_NEW", "INSERT_VERSION"))
     rows_no_keys = staged_source.filter(col("__merge_action") == "UPDATE_EXPIRE")
     rows_with_keys = _generate_keys(rows_needing_keys, surrogate_key_strategy, join_keys, surrogate_key_col)
+    if surrogate_key_strategy == "identity" and get_runtime_policy().should_include_sk_in_insert() and surrogate_key_col not in rows_with_keys.columns:
+        from pyspark.sql.functions import lit as _lit, max as _spark_max, row_number as _row_number
+        from pyspark.sql.window import Window as _Window
+        current_max = 0
+        try:
+            existing_df = get_spark().table(target_table_name)
+            if surrogate_key_col in existing_df.columns:
+                max_val = existing_df.agg(_spark_max(col(surrogate_key_col))).collect()[0][0]
+                if max_val is not None:
+                    current_max = max_val
+        except Exception:
+            pass
+        window = _Window.orderBy(_lit(1))
+        rows_with_keys = rows_with_keys.withColumn("_rn", _row_number().over(window))
+        rows_with_keys = rows_with_keys.withColumn(surrogate_key_col, (_lit(int(current_max)) + rows_with_keys["_rn"]).cast("bigint")).drop("_rn")
     if rows_to_hydrate is not None:
         rows_with_keys = rows_with_keys.unionByName(rows_to_hydrate, allowMissingColumns=True)
     if surrogate_key_col in rows_with_keys.columns and surrogate_key_col not in rows_no_keys.columns:
@@ -203,14 +246,14 @@ def merge_scd2(source_df: DataFrame, *, target_table_name: str, join_keys: list[
     from pyspark.sql.functions import when as _when
     for k in join_keys:
         final_source = final_source.withColumn(f"__orig_{k}", col(k))
-        final_source = final_source.withColumn(k, _when(col("__merge_action") == "UPDATE_EXPIRE", col(k)).otherwise(lit(None)))
+        final_source = final_source.withColumn(k, _when(col("__merge_action") == "INSERT_NEW", lit(None)).when(col("__merge_action") == "INSERT_VERSION", lit(None)).otherwise(col(k)))
     merge_condition = _build_merge_condition(join_keys, current_only=True)
     validity_col, validity_note = _get_validity_col(effective_at_column, upserts, target_table_name)
     logger.info(f"SCD2 time semantics: using {validity_note} for history boundaries")
     insert_values = _build_insert_values(upserts, join_keys, surrogate_key_col, validity_col, include_history=True)
     if surrogate_key_col in final_source.columns:
         insert_values[surrogate_key_col] = f"source.{surrogate_key_col}"
-    if surrogate_key_strategy == "identity" and surrogate_key_col in insert_values:
+    if surrogate_key_strategy == "identity" and surrogate_key_col in insert_values and not get_runtime_policy().should_include_sk_in_insert():
         del insert_values[surrogate_key_col]
     if target_has_skeleton_col:
         skeleton_hydration_set = {c: (f"source.__orig_{c}" if c in join_keys else f"source.{c}") for c in upserts.columns if c not in _CDF_METADATA}
