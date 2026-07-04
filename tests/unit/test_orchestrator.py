@@ -252,24 +252,20 @@ class TestIdentityBridge:
 
         mock_df = MagicMock()
         mock_df.columns = ["business_key", "val"]
-        mock_df.alias.return_value = mock_df
-        mock_df.join.return_value = mock_df
-        mock_df.withColumn.return_value = mock_df
-        mock_df.drop.return_value = mock_df
 
         with patch("kimball.orchestration.orchestrator._get_spark") as mock_get_spark:
             mock_spark = MagicMock()
             mock_bridge_df = MagicMock()
             mock_bridge_df.columns = ["business_key", "resolved_key", "extra_col"]
             mock_spark.table.return_value = mock_bridge_df
+            mock_spark.sql.return_value = MagicMock()
             mock_get_spark.return_value = mock_spark
 
             result = orchestrator._apply_identity_bridge(mock_df)
 
-            mock_df.join.assert_called_once()
-            mock_df.withColumn.assert_called_once()
-            mock_df.drop.assert_called_once()
-            assert result is mock_df
+            mock_df.createOrReplaceTempView.assert_called_once_with("_identity_bridge_src")
+            mock_spark.sql.assert_called_once()
+            assert result is mock_spark.sql.return_value
 
     def test_bridge_preserves_unmapped_keys(self, orchestrator):
         bridge = MagicMock()
@@ -280,27 +276,24 @@ class TestIdentityBridge:
 
         mock_df = MagicMock()
         mock_df.columns = ["business_key", "val"]
-        mock_df.alias.return_value = mock_df
-        mock_df.join.return_value = mock_df
-        mock_df.withColumn.return_value = mock_df
-        mock_df.drop.return_value = mock_df
 
         with patch("kimball.orchestration.orchestrator._get_spark") as mock_get_spark:
             mock_spark = MagicMock()
             mock_bridge_df = MagicMock()
             mock_bridge_df.columns = ["business_key", "resolved_key"]
             mock_spark.table.return_value = mock_bridge_df
+            mock_spark.sql.return_value = MagicMock()
             mock_get_spark.return_value = mock_spark
 
             result = orchestrator._apply_identity_bridge(mock_df)
 
-            mock_df.join.assert_called_once()
-            mock_df.withColumn.assert_called_once()
-            assert result is mock_df
+            mock_df.createOrReplaceTempView.assert_called_once()
+            mock_spark.sql.assert_called_once()
+            assert result is mock_spark.sql.return_value
 
     def test_bridge_skipped_when_not_configured(self, orchestrator):
         orchestrator.config.identity_bridge = None
         mock_df = MagicMock()
         result = orchestrator._apply_identity_bridge(mock_df)
         assert result is mock_df
-        mock_df.join.assert_not_called()
+        mock_df.createOrReplaceTempView.assert_not_called()

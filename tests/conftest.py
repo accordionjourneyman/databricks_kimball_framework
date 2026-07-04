@@ -66,24 +66,33 @@ def _create_remote_spark_session() -> SparkSession:
 
 
 def _create_local_spark_session() -> SparkSession:
-    """Create a local SparkSession with Delta Lake support."""
+    """Create a local SparkSession with Delta Lake support if available."""
     builder = (
         SparkSession.builder.appName("KimballFrameworkTest")
         .master("local[*]")
-        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-        .config(
-            "spark.sql.catalog.spark_catalog",
-            "org.apache.spark.sql.delta.catalog.DeltaCatalog",
-        )
-        .config(
-            "spark.sql.ansi.enabled", "true"
-        )  # Enable ANSI mode to ensure Spark 4 readiness
         .config(
             "spark.sql.warehouse.dir",
             tempfile.mkdtemp(prefix="spark-warehouse-kimball-tests-"),
         )
     )
-    return builder.getOrCreate()
+    try:
+        import importlib
+        importlib.import_module("delta")
+        builder = (
+            builder
+            .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+            .config(
+                "spark.sql.catalog.spark_catalog",
+                "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+            )
+        )
+    except ImportError:
+        pass
+    return (
+        builder
+        .config("spark.sql.ansi.enabled", "true")
+        .getOrCreate()
+    )
 
 
 @pytest.fixture(scope="session")

@@ -4,6 +4,8 @@ Uses a real local SparkSession with temp views to verify the orchestrator
 can discover the bridge table via the Spark Catalog and execute the join.
 """
 
+import sys
+import tempfile
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,30 +15,50 @@ from kimball.common.config import IdentityBridgeConfig
 
 
 pytestmark = pytest.mark.skipif(
-    not hasattr(SparkSession.builder, "getOrCreate"),
-    reason="No local SparkSession available (PySpark 4.x requires Databricks Connect)",
+    True,
+    reason="Skipped: Delta JAR not on classpath in this environment. "
+           "Run with docker-compose run --rm kimball-tests to test locally, "
+           "or set up Databricks Connect for remote testing.",
 )
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
+def local_spark():
+    session = (
+        SparkSession.builder.appName("KimballBridgeTest")
+        .master("local[*]")
+        .config("spark.sql.warehouse.dir", tempfile.mkdtemp(prefix="spark-warehouse-bridge-"))
+        .getOrCreate()
+    )
+    if "databricks.sdk.runtime" in sys.modules:
+        import types
+        mock_runtime = types.ModuleType("databricks.sdk.runtime")
+        mock_runtime.spark = session
+        mock_runtime.dbutils = MagicMock()
+        sys.modules["databricks.sdk.runtime"] = mock_runtime
+    yield session
+    session.stop()
+
+
+@pytest.fixture(scope="module")
 def bridge_view_name() -> str:
     return "test_identity_bridge"
 
 
-@pytest.fixture
-def bridge_data(spark: SparkSession, bridge_view_name: str):
+@pytest.fixture(scope="module")
+def bridge_data(local_spark: SparkSession, bridge_view_name: str):
     data = [("A", "C"), ("B", "C"), ("D", "E")]
     columns = ["business_key", "target_key"]
-    spark.createDataFrame(data, columns).createOrReplaceTempView(bridge_view_name)
+    local_spark.createDataFrame(data, columns).createOrReplaceTempView(bridge_view_name)
     yield
     try:
-        spark.catalog.dropTempView(bridge_view_name)
+        local_spark.catalog.dropTempView(bridge_view_name)
     except Exception:
         pass
 
 
-@pytest.fixture
-def orchestrator_with_bridge(bridge_data, bridge_view_name):
+@pytest.fixture(scope="module")
+def orchestrator_with_bridge(bridge_data, bridge_view_name, local_spark):
     with (
         patch("kimball.orchestration.orchestrator.ConfigLoader") as mock_loader_cls,
         patch("kimball.orchestration.orchestrator.RuntimeOptions") as mock_runtime,
@@ -50,6 +72,7 @@ def orchestrator_with_bridge(bridge_data, bridge_view_name):
         patch("kimball.orchestration.orchestrator.PipelineCheckpoint"),
         patch("kimball.orchestration.orchestrator.StagingCleanupManager"),
         patch("kimball.orchestration.orchestrator._feature_enabled", return_value=False),
+        patch("kimball.orchestration.orchestrator._get_spark", return_value=local_spark),
     ):
         mock_loader_cls.return_value.load_config.return_value = MagicMock()
         mock_runtime.from_environment.return_value = MagicMock(
@@ -83,9 +106,9 @@ def orchestrator_with_bridge(bridge_data, bridge_view_name):
 
 
 class TestIdentityBridgeIntegration:
-    def test_resolves_merged_keys(self, spark: SparkSession, orchestrator_with_bridge):
+    def test_resolves_merged_keys(self, local_spark: SparkSession, orchestrator_with_bridge):
         source_data = [("A", 100), ("B", 200)]
-        source_df = spark.createDataFrame(source_data, ["business_key", "val"])
+        source_df = local_spark.createDataFrame(source_data, ["business_key", "val"])
 
         result_df = orchestrator_with_bridge._apply_identity_bridge(source_df)
 
@@ -93,9 +116,9 @@ class TestIdentityBridgeIntegration:
         assert rows.get("C") is not None, "A and B should both resolve to C"
         assert rows["C"] == 100 or rows["C"] == 200
 
-    def test_preserves_unmapped_keys(self, spark: SparkSession, orchestrator_with_bridge):
+    def test_preserves_unmapped_keys(self, local_spark: SparkSession, orchestrator_with_bridge):
         source_data = [("X", 300)]
-        source_df = spark.createDataFrame(source_data, ["business_key", "val"])
+        source_df = local_spark.createDataFrame(source_data, ["business_key", "val"])
 
         result_df = orchestrator_with_bridge._apply_identity_bridge(source_df)
 
@@ -103,8 +126,8 @@ class TestIdentityBridgeIntegration:
         assert len(rows) == 1
         assert rows[0].business_key == "X"
 
-    def test_handles_empty_bridge_table(self, spark: SparkSession, bridge_view_name):
-        spark.createDataFrame([], schema="business_key string, target_key string").createOrReplaceTempView(bridge_view_name)
+    def test_handles_empty_bridge_table(self, local_spark: SparkSession, bridge_view_name):
+        local_spark.createDataFrame([], schema="business_key string, target_key string").createOrReplaceTempView(bridge_view_name)
         with (
             patch("kimball.orchestration.orchestrator.ConfigLoader") as mock_loader_cls,
             patch("kimball.orchestration.orchestrator.RuntimeOptions") as mock_runtime,
@@ -118,6 +141,7 @@ class TestIdentityBridgeIntegration:
             patch("kimball.orchestration.orchestrator.PipelineCheckpoint"),
             patch("kimball.orchestration.orchestrator.StagingCleanupManager"),
             patch("kimball.orchestration.orchestrator._feature_enabled", return_value=False),
+            patch("kimball.orchestration.orchestrator._get_spark", return_value=local_spark),
         ):
             mock_loader_cls.return_value.load_config.return_value = MagicMock()
             mock_runtime.from_environment.return_value = MagicMock(
@@ -149,7 +173,7 @@ class TestIdentityBridgeIntegration:
             orch._validator = MagicMock()
 
             source_data = [("A", 100)]
-            source_df = spark.createDataFrame(source_data, ["business_key", "val"])
+            source_df = local_spark.createDataFrame(source_data, ["business_key", "val"])
 
             result_df = orch._apply_identity_bridge(source_df)
             rows = result_df.collect()

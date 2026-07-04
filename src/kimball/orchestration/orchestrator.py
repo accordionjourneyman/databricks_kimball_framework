@@ -571,16 +571,14 @@ class Orchestrator:
         logger.info(f"Applying identity bridge: {bridge.table} on {bridge.join_on} -> {bridge.target_column}")
         bridge_df = _get_spark().table(bridge.table)
         bridge_cols_to_drop = [c for c in bridge_df.columns if c != bridge.join_on]
-        df = df.alias("src").join(
-            bridge_df.alias("map"),
-            col(f"src.{bridge.join_on}") == col(f"map.{bridge.join_on}"),
-            "left",
+        df.createOrReplaceTempView("_identity_bridge_src")
+        resolved = _get_spark().sql(
+            f"SELECT COALESCE(map.`{bridge.target_column}`, src.`{bridge.join_on}`) AS `{bridge.join_on}`, "
+            f"{', '.join(f'src.`{c}`' for c in df.columns if c != bridge.join_on)} "
+            f"FROM _identity_bridge_src src "
+            f"LEFT JOIN {bridge.table} map ON src.`{bridge.join_on}` = map.`{bridge.join_on}`"
         )
-        df = df.withColumn(
-            bridge.join_on,
-            coalesce(col(f"map.{bridge.target_column}"), col(f"src.{bridge.join_on}")),
-        )
-        return df.drop(*bridge_cols_to_drop)
+        return resolved
 
     def _transform_and_validate(self, active_dfs):
         spark = _get_spark()
