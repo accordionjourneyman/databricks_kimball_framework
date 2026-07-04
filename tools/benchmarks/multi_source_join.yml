@@ -1,0 +1,23 @@
+table_name: {{ db }}.fact_order_items_multi
+table_type: fact
+merge_keys: [order_id, order_item_id]
+sources:
+  - name: {{ db }}.orders_src
+    alias: o
+    cdc_strategy: full
+  - name: {{ db }}.order_items_src
+    alias: i
+    cdc_strategy: full
+    join_on: order_id
+transformation_sql: |
+  SELECT
+    o.order_id,
+    i.order_item_id,
+    o.customer_id,
+    i.product_id,
+    i.quantity,
+    i.unit_price,
+    i.discount,
+    o.order_timestamp
+  FROM o
+  JOIN i ON o.order_id = i.order_id

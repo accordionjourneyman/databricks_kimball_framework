@@ -1,0 +1,15 @@
+{
+  "scenario": "validation_overhead",
+  "scale": "small",
+  "params": {
+    "products": 100000,
+    "n_changed": 30000,
+    "n_deleted": 10000,
+    "n_new": 10000
+  },
+  "first_run_total_ms": 9309.180974960327,
+  "second_run_total_ms": 10174.004077911377,
+  "first_run_status": "SUCCESS",
+  "second_run_status": "SUCCESS",
+  "timestamp": "2026-07-04T23:52:15"
+}

@@ -1,0 +1,15 @@
+{
+  "scenario": "scd2_change_detection",
+  "scale": "medium",
+  "params": {
+    "products": 1000000,
+    "n_changed": 300000,
+    "n_deleted": 100000,
+    "n_new": 100000
+  },
+  "first_run_total_ms": 18865.603923797607,
+  "second_run_total_ms": 24723.39916229248,
+  "first_run_status": "SUCCESS",
+  "second_run_status": "SUCCESS",
+  "timestamp": "2026-07-04T23:55:41"
+}

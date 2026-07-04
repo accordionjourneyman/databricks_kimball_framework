@@ -1,0 +1,18 @@
+table_name: {{ db }}.dim_customer_bridge
+table_type: dimension
+scd_type: 1
+keys:
+  surrogate_key: customer_sk
+  natural_keys: [customer_id]
+surrogate_key_strategy: identity
+identity_bridge:
+  table: {{ db }}.customer_bridge
+  join_on: customer_id
+  target_column: canonical_customer_id
+sources:
+  - name: {{ db }}.customers_src
+    alias: c
+    cdc_strategy: full
+transformation_sql: |
+  SELECT customer_id, name, email, country, city, age, segment, lifetime_value
+  FROM c

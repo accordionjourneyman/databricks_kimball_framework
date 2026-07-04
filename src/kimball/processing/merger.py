@@ -415,7 +415,10 @@ def _seed_default_rows(target_table_name: str, schema: StructType, surrogate_key
                         row[col_name] = DEFAULT_START_DATE
                     elif isinstance(dtype, (IntegerType, LongType, ShortType)):
                         row[col_name] = -1
-                    elif isinstance(dtype, (DoubleType, FloatType, DecimalType)):
+                    elif isinstance(dtype, DecimalType):
+                        from decimal import Decimal
+                        row[col_name] = Decimal("-1.0")
+                    elif isinstance(dtype, (DoubleType, FloatType)):
                         row[col_name] = -1.0
                     elif isinstance(dtype, BooleanType):
                         row[col_name] = False
@@ -432,7 +435,10 @@ def _seed_default_rows(target_table_name: str, schema: StructType, surrogate_key
                         row[col_name] = label
                     elif "int" in dtype_str or "long" in dtype_str or "short" in dtype_str:
                         row[col_name] = -1
-                    elif "double" in dtype_str or "float" in dtype_str or "decimal" in dtype_str:
+                    elif "decimal" in dtype_str:
+                        from decimal import Decimal
+                        row[col_name] = Decimal("-1.0")
+                    elif "double" in dtype_str or "float" in dtype_str:
                         row[col_name] = -1.0
                     elif "timestamp" in dtype_str:
                         row[col_name] = DEFAULT_VALID_FROM
