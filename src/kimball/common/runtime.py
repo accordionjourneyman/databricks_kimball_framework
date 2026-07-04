@@ -144,19 +144,4 @@ class RuntimeOptions:
             skip_grain_check=os.environ.get("KIMBALL_SKIP_GRAIN_CHECK", "") == "1",
         )
 
-    def feature_enabled(self, feature: str) -> bool:
-        """Check if a feature is enabled.
 
-        Args:
-            feature: Feature name (checkpoints, staging_cleanup, metrics, auto_cluster).
-
-        Returns:
-            True if feature is enabled, False otherwise.
-        """
-        feature_map = {
-            "checkpoints": self.enable_checkpoints,
-            "staging_cleanup": self.enable_staging_cleanup,
-            "metrics": self.enable_metrics,
-            "auto_cluster": self.enable_auto_cluster,
-        }
-        return bool(feature_map.get(feature, False))

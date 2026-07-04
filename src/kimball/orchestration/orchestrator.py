@@ -27,7 +27,13 @@ from kimball.common.constants import (
     SPARK_CONF_SKEW_SIZE_THRESHOLD,
 )
 from kimball.common.errors import DataQualityError, NonRetriableError, RetriableError
-from kimball.common.exceptions import PYSPARK_EXCEPTION_BASE
+try:
+    from pyspark.errors import PySparkException as PYSPARK_EXCEPTION_BASE
+except ImportError:
+    try:
+        from pyspark.sql.utils import AnalysisException as PYSPARK_EXCEPTION_BASE
+    except ImportError:
+        PYSPARK_EXCEPTION_BASE = Exception
 from kimball.common.runtime import RuntimeOptions
 from kimball.observability.resilience import (
     PipelineCheckpoint,

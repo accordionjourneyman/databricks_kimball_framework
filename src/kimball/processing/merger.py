@@ -25,7 +25,13 @@ from kimball.common.constants import (
     SQL_DEFAULT_VALID_FROM,
     SQL_DEFAULT_VALID_TO,
 )
-from kimball.common.exceptions import PYSPARK_EXCEPTION_BASE
+try:
+    from pyspark.errors import PySparkException as PYSPARK_EXCEPTION_BASE
+except ImportError:
+    try:
+        from pyspark.sql.utils import AnalysisException as PYSPARK_EXCEPTION_BASE
+    except ImportError:
+        PYSPARK_EXCEPTION_BASE = Exception
 from kimball.common.runtime_policy import get_runtime_policy
 from kimball.common.spark_session import get_spark
 from kimball.common.utils import quote_table_name

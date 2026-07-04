@@ -120,16 +120,6 @@ class SchemaMismatchError(NonRetriableError):
     pass
 
 
-class MissingDependencyError(NonRetriableError):
-    """Required dimension table doesn't exist.
-
-    For fact tables that reference dimensions which haven't been loaded yet.
-    This indicates a pipeline ordering issue.
-    """
-
-    pass
-
-
 class DataQualityError(NonRetriableError):
     """Data quality check failed.
 
@@ -151,76 +141,4 @@ class ETLControlNotFoundError(NonRetriableError):
     pass
 
 
-# Backward compatibility alias
-WatermarkNotFoundError = ETLControlNotFoundError
 
-
-class SchemaEvolutionError(RetriableError):
-    """Raised when schema evolution fails but might succeed on retry.
-
-    Examples:
-    - Schema mismatch during merge with autoMerge disabled
-    - Column type conflicts that might resolve with relaxed mode
-    """
-
-    pass
-
-
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
-
-
-def is_retriable(error: Exception) -> bool:
-    """Check if an error is retriable."""
-    if isinstance(error, KimballError):
-        return error.retriable
-
-    # Check for known Spark/Delta exceptions that are retriable
-    error_msg = str(error).lower()
-    retriable_patterns = [
-        "concurrent",
-        "transaction conflict",
-        "optimistic concurrency",
-        "executor lost",
-        "shuffle",
-        "timeout",
-        "connection reset",
-    ]
-    return any(pattern in error_msg for pattern in retriable_patterns)
-
-
-def wrap_exception(original: Exception) -> KimballError:
-    """Wrap a standard exception in the appropriate KimballError type."""
-    error_msg = str(original).lower()
-
-    # Try to classify based on error message patterns
-    if "concurrent" in error_msg or "transaction conflict" in error_msg:
-        return DeltaConcurrentModificationError(
-            f"Delta concurrency conflict: {original}", {"original_error": str(original)}
-        )
-
-    if "executor lost" in error_msg or "shuffle" in error_msg:
-        return TransientSparkError(
-            f"Spark transient error: {original}", {"original_error": str(original)}
-        )
-
-    if "schema" in error_msg or "type mismatch" in error_msg:
-        return SchemaMismatchError(
-            f"Schema issue: {original}", {"original_error": str(original)}
-        )
-
-    if "cannot resolve" in error_msg or "syntax" in error_msg:
-        return TransformationSQLError(
-            f"SQL error: {original}", {"original_error": str(original)}
-        )
-
-    if "table or view not found" in error_msg:
-        return MissingDependencyError(
-            f"Missing table: {original}", {"original_error": str(original)}
-        )
-
-    # Default to non-retriable
-    return NonRetriableError(
-        f"Unknown error: {original}", {"original_error": str(original)}
-    )
