@@ -26,6 +26,10 @@ class SkeletonGenerator:
             return
         dim_table = DeltaTable.forName(self.spark, dim_table_name)
         dim_df = dim_table.toDF()
+        has_skeleton_col = "__is_skeleton" in [f.name for f in dim_df.schema.fields]
+        if not has_skeleton_col:
+            logger.info(f"Dimension table {dim_table_name} does not have __is_skeleton column. Skipping skeleton generation.")
+            return
         fact_keys = fact_df.select(col(fact_join_key).alias("key")).distinct()
         dim_keys = dim_df.select(col(dim_join_key).alias("key"))
         missing = fact_keys.join(broadcast(dim_keys), "key", "left_anti")

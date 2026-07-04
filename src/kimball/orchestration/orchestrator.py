@@ -469,13 +469,25 @@ class Orchestrator:
                         f"No watermark for {source.name}. "
                         f"Performing Initial Load via CDF from Version 0 (to preserve _change_type)."
                     )
-                    df = self.loader.load_cdf(
-                        source.name,
-                        starting_version=source.starting_version,
-                        deduplicate_keys=source.primary_keys,
-                        ending_version=latest_v,
-                    )
-                    source_versions[source.name] = latest_v
+                    if self.config.preserve_all_changes and self.config.scd_type == 2:
+                        logger.info(
+                            f"Preserve All Changes: Processing version {source.starting_version} only"
+                        )
+                        df = self.loader.load_cdf(
+                            source.name,
+                            starting_version=source.starting_version,
+                            deduplicate_keys=source.primary_keys,
+                            ending_version=source.starting_version,
+                        )
+                        source_versions[source.name] = source.starting_version
+                    else:
+                        df = self.loader.load_cdf(
+                            source.name,
+                            starting_version=source.starting_version,
+                            deduplicate_keys=source.primary_keys,
+                            ending_version=latest_v,
+                        )
+                        source_versions[source.name] = latest_v
                 else:
                     if wm >= latest_v:
                         logger.info(

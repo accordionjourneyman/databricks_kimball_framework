@@ -44,7 +44,10 @@ def test_skeleton_generator_logic():
         mock_field = MagicMock()
         mock_field.name = "other_col"
         mock_field.dataType = "string"
-        dim_df.schema.fields = [mock_field]
+        mock_skeleton_field = MagicMock()
+        mock_skeleton_field.name = "__is_skeleton"
+        mock_skeleton_field.dataType = "boolean"
+        dim_df.schema.fields = [mock_field, mock_skeleton_field]
 
         # Mock key operations
         fact_keys = MagicMock()

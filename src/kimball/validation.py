@@ -269,7 +269,7 @@ class DataQualityValidator:
             forbidden_patterns = ["select", "insert", "update", "delete", "drop", "create", "alter", "truncate", "grant", "revoke", "exec", "execute"]
             expr_lower = expression.lower()
             for pattern in forbidden_patterns:
-                if re.search(rf"\b{pattern}\b", expr_lower):
+                if re.search(rf"\b{pattern}\s", expr_lower):
                     return TestResult(
                         test_name=test_name,
                         passed=False,

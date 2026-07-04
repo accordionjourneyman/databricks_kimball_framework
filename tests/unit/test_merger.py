@@ -17,10 +17,12 @@ def spark_mock():
 @patch("kimball.processing.merger.current_timestamp")
 @patch("kimball.processing.merger.lit")
 @patch("kimball.processing.merger.col")
+@patch("kimball.processing.merger.row_number")
+@patch("kimball.processing.merger.Window")
 @patch("kimball.processing.merger.DeltaTable")
 @patch("kimball.common.spark_session.get_spark")
 def test_merge_execution(
-    mock_get_spark, mock_delta_table, mock_col, mock_lit, mock_curr_ts
+    mock_get_spark, mock_delta_table, mock_window, mock_row_number, mock_col, mock_lit, mock_curr_ts
 ):
     # Setup mocks
     mock_dt_instance = MagicMock()
@@ -29,11 +31,20 @@ def test_merge_execution(
     mock_dt_instance.merge.return_value = mock_dt_instance
 
     mock_df = MagicMock()
-    mock_df.columns = ["id", "val", "_change_type"]
+    mock_df.columns = ["id", "val", "_change_type", "__etl_processed_at"]
 
     # Mocking withColumn to return self (fluent interface)
     mock_df.withColumn.return_value = mock_df
     mock_df.alias.return_value = mock_df
+
+    # Mock Window and row_number for _dedup_cdf
+    mock_col_obj = MagicMock()
+    mock_col_obj.desc.return_value = mock_col_obj
+    mock_col.return_value = mock_col_obj
+    mock_window_spec = MagicMock()
+    mock_window.partitionBy.return_value = mock_window_spec
+    mock_window_spec.orderBy.return_value = mock_window_spec
+    mock_row_number.return_value.over.return_value = mock_col_obj
 
     _merger.merge(
         target_table_name="target",

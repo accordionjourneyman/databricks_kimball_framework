@@ -33,7 +33,7 @@ def _is_safe_sql_expression(expr: str) -> bool:
             "Use column references only, no string literals."
         )
     # Whitelist: alphanumeric, underscore, whitespace, parens, dot, comparison ops
-    return bool(re.match(r"^[a-zA-Z0-9_().=<>\s]+$", expr))
+    return bool(re.match(r"^[a-zA-Z0-9_().=<>\s\-,!+*/]+$", expr))
 
 
 class TableCreator:

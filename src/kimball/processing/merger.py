@@ -55,9 +55,22 @@ _CDF_METADATA = {"_change_type", "_commit_version", "_commit_timestamp", "__merg
 
 
 def _dedup_cdf(source_df: DataFrame, join_keys: list[str]) -> DataFrame:
-    if "_change_type" not in source_df.columns or "_commit_version" not in source_df.columns:
+    if "_change_type" not in source_df.columns:
         return source_df
-    window_spec = Window.partitionBy(*join_keys).orderBy(col("_commit_version").desc())
+    if "_commit_version" in source_df.columns:
+        order_col = "_commit_version"
+    elif "_commit_timestamp" in source_df.columns:
+        order_col = "_commit_timestamp"
+    elif "__etl_processed_at" in source_df.columns:
+        order_col = "__etl_processed_at"
+    else:
+        raise ValueError(
+            "CDF deduplication requires an ordering column. "
+            "Source has _change_type but none of _commit_version, "
+            "_commit_timestamp, or __etl_processed_at. "
+            "Add one of these columns to the source DataFrame."
+        )
+    window_spec = Window.partitionBy(*join_keys).orderBy(col(order_col).desc())
     return source_df.withColumn("_rn", row_number().over(window_spec)).filter(col("_rn") == 1).drop("_rn")
 
 
@@ -111,7 +124,7 @@ def _build_insert_values(source_df: DataFrame, join_keys: list[str], surrogate_k
         if c in _CDF_METADATA:
             continue
         values[c] = f"source.__orig_{c}" if c in join_keys else f"source.{c}"
-    values.update({"__is_current": "true", "__valid_from": f"COALESCE({validity_col}, {SQL_DEFAULT_VALID_FROM})", "__valid_to": SQL_DEFAULT_VALID_TO, "__etl_processed_at": "current_timestamp()", "__is_deleted": "false"})
+    values.update({"__is_current": "true", "__valid_from": f"COALESCE({validity_col}, current_timestamp())", "__valid_to": SQL_DEFAULT_VALID_TO, "__etl_processed_at": "current_timestamp()", "__is_deleted": "false"})
     if include_history:
         values["__is_skeleton"] = "false"
     return values
@@ -130,7 +143,7 @@ def merge_scd1(source_df: DataFrame, *, target_table_name: str, join_keys: list[
         if delete_strategy == "hard":
             merge_builder = merge_builder.whenMatchedDelete(condition="source._change_type = 'delete'")
         elif delete_strategy == "soft":
-            merge_builder = merge_builder.whenMatchedUpdate(condition="source._change_type = 'delete'", set={"__is_deleted": "true", "__etl_processed_at": "current_timestamp()"})
+            merge_builder = merge_builder.whenMatchedUpdate(condition="source._change_type = 'delete'", set={"__is_deleted": "true", "__etl_processed_at": "current_timestamp()", "__etl_batch_id": "source.__etl_batch_id"})
     update_cond = "source._change_type != 'delete'" if "_change_type" in source_df.columns else None
     update_map = {c: f"source.{c}" for c in source_df.columns if c not in (surrogate_key_col, "_change_type")}
     update_map.update({"__is_deleted": "false", "__etl_processed_at": "current_timestamp()"})
@@ -201,7 +214,7 @@ def merge_scd2(source_df: DataFrame, *, target_table_name: str, join_keys: list[
         del insert_values[surrogate_key_col]
     if target_has_skeleton_col:
         skeleton_hydration_set = {c: (f"source.__orig_{c}" if c in join_keys else f"source.{c}") for c in upserts.columns if c not in _CDF_METADATA}
-        skeleton_hydration_set.update({"__is_skeleton": "false", "__valid_from": f"COALESCE({validity_col}, {SQL_DEFAULT_VALID_FROM})", "__is_current": "true", "__etl_processed_at": "current_timestamp()", "__is_deleted": "false"})
+        skeleton_hydration_set.update({"__is_skeleton": "false", "__valid_from": f"COALESCE({validity_col}, current_timestamp())", "__is_current": "true", "__etl_processed_at": "current_timestamp()", "__is_deleted": "false"})
         skeleton_hydration_set.pop(surrogate_key_col, None)
         delta_table.alias("target").merge(final_source.alias("source"), merge_condition).whenMatchedUpdate(condition="target.__is_skeleton = true AND source.__merge_action = 'HYDRATE'", set=skeleton_hydration_set).whenMatchedUpdate(condition="source.__merge_action = 'UPDATE_EXPIRE'", set={"__is_current": "false", "__valid_to": validity_col, "__etl_processed_at": "current_timestamp()"}).whenNotMatchedInsert(values=insert_values).execute()
     else:
@@ -240,7 +253,7 @@ def _merge_history(source_df: DataFrame, target_table_name: str, history_table_n
     inserts = compared.filter(col("_change_type") != "delete").select(col(surrogate_key_col).alias("surrogate_key"), col("field"), col("value"), col("effective_at").alias("valid_from"), lit("9999-12-31 23:59:59").cast("timestamp").alias("valid_to"), lit(True).alias("__is_current"), lit("INSERT").alias("__action"))
     expires = compared.filter(col("old_value").isNotNull()).select(col(surrogate_key_col).alias("surrogate_key"), col("field"), col("old_value").alias("value"), lit(None).cast("timestamp").alias("valid_from"), (col("effective_at") - expr("INTERVAL 1 MICROSECOND")).alias("valid_to"), lit(False).alias("__is_current"), lit("EXPIRE").alias("__action"))
     staged = inserts.unionByName(expires)
-    DeltaTable.forName(spark, history_table_name).alias("target").merge(staged.alias("source"), "target.surrogate_key = source.surrogate_key AND target.field = source.field AND target.value = source.value AND target.__is_current = true AND source.__action = 'EXPIRE'").whenMatchedUpdate(set={"valid_to": "source.valid_to", "__is_current": "source.__is_current"}).whenNotMatchedInsert(condition="source.__action = 'INSERT'", values={"surrogate_key": "source.surrogate_key", "field": "source.field", "value": "source.value", "valid_from": "source.valid_from", "valid_to": "source.valid_to", "__is_current": "source.__is_current"}).execute()
+    DeltaTable.forName(spark, history_table_name).alias("target").merge(staged.alias("source"), "target.surrogate_key = source.surrogate_key AND target.field = source.field AND target.value <=> source.value AND target.__is_current = true AND source.__action = 'EXPIRE'").whenMatchedUpdate(set={"valid_to": "source.valid_to", "__is_current": "source.__is_current"}).whenNotMatchedInsert(condition="source.__action = 'INSERT'", values={"surrogate_key": "source.surrogate_key", "field": "source.field", "value": "source.value", "valid_from": "source.valid_from", "valid_to": "source.valid_to", "__is_current": "source.__is_current"}).execute()
 
 
 def merge_scd6(source_df: DataFrame, *, target_table_name: str, join_keys: list[str], track_history_columns: list[str], current_value_columns: list[str], surrogate_key_col: str = "surrogate_key", surrogate_key_strategy: str = "identity", schema_evolution: bool = False, effective_at_column: str | None = None) -> None:
@@ -252,17 +265,17 @@ def merge_scd6(source_df: DataFrame, *, target_table_name: str, join_keys: list[
     all_existing = spark.table(target_table_name).join(changed_keys, join_keys, "inner")
     current_values = broadcast(upserts.select(*join_keys, "hashdiff", *[col(c).alias(f"new_current_{c}") for c in current_cols]))
     from pyspark.sql.functions import when
-    staged_updates = all_existing.alias("old").join(current_values, join_keys).select(col(f"old.{surrogate_key_col}"), *[col(f"old.{c}") for c in all_existing.columns if c != surrogate_key_col], *[col(f"new_current_{c}").alias(f"current_{c}") for c in current_cols], when(col("old.__is_current") & (col("old.hashdiff") != col("current_values.hashdiff")), lit("EXPIRE")).otherwise(lit("UPDATE")).alias("__action"))
+    staged_updates = all_existing.alias("old").join(current_values, join_keys).select(col(f"old.{surrogate_key_col}"), *[col(f"old.{c}") for c in all_existing.columns if c != surrogate_key_col and not c.startswith("current_")], *[col(f"new_current_{c}").alias(f"current_{c}") for c in current_cols], when(col("old.__is_current") & (col("old.hashdiff") != col("current_values.hashdiff")), lit("EXPIRE")).otherwise(lit("UPDATE")).alias("__action"))
     target_current = spark.table(target_table_name).filter("__is_current = true").select(*join_keys, "hashdiff").alias("tgt")
     source_with_flag = upserts.alias("src").join(target_current, join_keys, "left").select(col("src.*"), when(col("tgt.hashdiff").isNull(), lit("INSERT_NEW")).when(col("tgt.hashdiff") != col("src.hashdiff"), lit("INSERT_VERSION")).otherwise(lit("NO_OP")).alias("__insert_action"))
     rows_to_insert = source_with_flag.filter(col("__insert_action") != "NO_OP").drop("__insert_action").select(*[col(c) for c in upserts.columns], *[col(c).alias(f"current_{c}") for c in current_cols], lit("INSERT").alias("__action"))
     staged_upserts = rows_to_insert.unionByName(staged_updates.select(*rows_to_insert.columns), allowMissingColumns=True)
+    effective_col = effective_at_column or "__etl_processed_at"
     if deletes is not None and not deletes.isEmpty():
-        delete_targets = spark.table(target_table_name).filter("__is_current = true").join(deletes, join_keys).select(col(surrogate_key_col), lit("EXPIRE_DELETE").alias("__action"))
+        delete_targets = spark.table(target_table_name).filter("__is_current = true").join(deletes, join_keys).select(col(surrogate_key_col), col(effective_col).alias("_effective_at"), lit("EXPIRE_DELETE").alias("__action"))
         staged_final = staged_upserts.unionByName(delete_targets, allowMissingColumns=True)
     else:
         staged_final = staged_upserts
-    effective_col = effective_at_column or "__etl_processed_at"
     DeltaTable.forName(spark, target_table_name).alias("t").merge(staged_final.alias("s"), f"t.{surrogate_key_col} = s.{surrogate_key_col}").whenMatchedUpdate(condition="s.__action = 'EXPIRE'", set={"__is_current": "false", "__valid_to": f"s.{effective_col}", **{f"current_{c}": f"s.current_{c}" for c in current_cols}}).whenMatchedUpdate(condition="s.__action = 'EXPIRE_DELETE'", set={"__is_current": "false", "__valid_to": f"s.{effective_col}", "__is_deleted": "true"}).whenMatchedUpdate(condition="s.__action = 'UPDATE'", set={f"current_{c}": f"s.current_{c}" for c in current_cols}).whenNotMatchedInsert(condition="s.__action = 'INSERT'", values={c: f"s.{c}" for c in staged_final.columns if c != "__action"}).execute()
 
 
