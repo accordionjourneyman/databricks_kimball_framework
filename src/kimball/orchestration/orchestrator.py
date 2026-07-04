@@ -1,7 +1,6 @@
 """Orchestrator module for Kimball ETL pipelines.
 
 This module coordinates the ETL process for dimensional modeling on Databricks.
-NOTE: Requires Databricks Runtime - SparkSession is obtained lazily at runtime.
 """
 
 from __future__ import annotations
@@ -13,6 +12,7 @@ import uuid
 import warnings
 from typing import TYPE_CHECKING, Any
 
+from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.functions import coalesce, col, count as spark_count
 from pyspark.sql.types import StringType
@@ -49,23 +49,7 @@ from kimball.processing.skeleton_generator import SkeletonGenerator
 from kimball.processing.table_creator import TableCreator
 from kimball.validation import DataQualityValidator
 
-if TYPE_CHECKING:
-    from pyspark.sql import SparkSession
-
 logger = logging.getLogger(__name__)
-
-
-def _get_spark() -> SparkSession:
-    """Get SparkSession lazily - works in Databricks or with injected session."""
-    try:
-        from databricks.sdk.runtime import spark
-
-        return spark
-    except ImportError:
-        # Fallback for non-Databricks environments (e.g., local testing with SparkSession.builder)
-        from pyspark.sql import SparkSession
-
-        return SparkSession.builder.getOrCreate()
 
 
 class Orchestrator:
@@ -89,13 +73,12 @@ class Orchestrator:
     def __init__(
         self,
         config_path: str,
+        spark: SparkSession | None = None,
         etl_schema: str | None = None,
-        # Deprecated parameter - for backward compatibility
         watermark_database: str | None = None,
         enable_metrics: bool = True,
         checkpoint_table: str | None = None,
         checkpoint_root: str | None = None,
-        # Dependency Injection
         loader: DataLoader | None = None,
         etl_control: ETLControlManager | None = None,
         table_creator: TableCreator | None = None,
@@ -103,21 +86,9 @@ class Orchestrator:
         cleanup_manager: StagingCleanupManager | None = None,
         transaction_manager: TransactionManager | None = None,
     ):
-        """
-        Args:
-            config_path: Path to the YAML config file for this pipeline.
-            etl_schema: Schema where the ETL control table is stored.
-                        If not provided, uses KIMBALL_ETL_SCHEMA environment variable.
-                        Falls back to target table's database if neither is set.
-            watermark_database: **Deprecated** - Use etl_schema instead.
-            enable_metrics: Whether to collect QueryExecution metrics.
-            checkpoint_table: Delta table for pipeline checkpoints (default: default.kimball_pipeline_checkpoints).
-            checkpoint_root: Root directory for DataFrame checkpoints (e.g., 'dbfs:/kimball/checkpoints/').
-                           If not provided, uses KIMBALL_CHECKPOINT_ROOT environment variable.
-                           Required for reliable checkpointing in production environments.
-        """
         self.config_loader = ConfigLoader()
         self.config = self.config_loader.load_config(config_path)
+        self.spark = spark or _get_spark()
 
         # Load runtime options for JVM tuning (can be overridden via env vars)
         self.runtime_options = RuntimeOptions.from_environment()
@@ -125,7 +96,7 @@ class Orchestrator:
         # Apply Spark configuration for JVM performance
         # These settings have MASSIVE impact on GC pressure and shuffle efficiency
         try:
-            spark = _get_spark()
+            spark = self.spark
 
             # AQE (Adaptive Query Execution) - always enable, it's free optimization
             spark.conf.set(SPARK_CONF_AQE_ENABLED, "true")
@@ -196,7 +167,7 @@ class Orchestrator:
 
         if checkpoint_root:
             logger.info(f"Setting Spark checkpoint directory to: {checkpoint_root}")
-            _get_spark().sparkContext.setCheckpointDir(checkpoint_root)
+            self.spark.sparkContext.setCheckpointDir(checkpoint_root)
         else:
             logger.info(
                 "Warning: No checkpoint_root provided. Using local checkpointing which is unreliable in production."
@@ -208,7 +179,7 @@ class Orchestrator:
         self.skeleton_generator = skeleton_generator or SkeletonGenerator()
         self.table_creator = table_creator or TableCreator()
         self.transaction_manager = transaction_manager or TransactionManager(
-            _get_spark()
+            self.spark
         )
 
         # Initialize observability and resilience features (opt-in via feature flags)
@@ -310,7 +281,7 @@ class Orchestrator:
 
     def _ensure_target_table(self, transformed_df) -> bool:
         """Create the target table and seed defaults when this is the first run."""
-        if _get_spark().catalog.tableExists(self.config.table_name):
+        if self.spark.catalog.tableExists(self.config.table_name):
             return False
 
         logger.info(f"Creating table {self.config.table_name}...")
@@ -352,7 +323,7 @@ class Orchestrator:
 
         if getattr(self.config, "enable_lineage_truncation", False):
             try:
-                checkpoint_dir = _get_spark().sparkContext.getCheckpointDir()
+                checkpoint_dir = self.spark.sparkContext.getCheckpointDir()
                 if checkpoint_dir:
                     logger.info(f"Using reliable checkpoint directory: {checkpoint_dir}")
                     checkpointed_df = transformed_df.checkpoint()
@@ -374,10 +345,10 @@ class Orchestrator:
             )
 
         if (
-            _get_spark().catalog.tableExists(self.config.table_name)
+            self.spark.catalog.tableExists(self.config.table_name)
             and not self.config.schema_evolution
         ):
-            target_schema = _get_spark().table(self.config.table_name).schema
+            target_schema = self.spark.table(self.config.table_name).schema
             target_columns = [f.name for f in target_schema.fields]
             SYSTEM_COLUMNS = {
                 "__is_current",
@@ -407,10 +378,10 @@ class Orchestrator:
             return True
 
         try:
-            _get_spark().conf.set(
+            self.spark.conf.set(
                 "spark.databricks.delta.commitInfo.userMetadata", "test"
             )
-            _get_spark().conf.unset(
+            self.spark.conf.unset(
                 "spark.databricks.delta.commitInfo.userMetadata"
             )
         except Exception:
@@ -569,10 +540,10 @@ class Orchestrator:
         if bridge is None:
             return df
         logger.info(f"Applying identity bridge: {bridge.table} on {bridge.join_on} -> {bridge.target_column}")
-        bridge_df = _get_spark().table(bridge.table)
+        bridge_df = self.spark.table(bridge.table)
         bridge_cols_to_drop = [c for c in bridge_df.columns if c != bridge.join_on]
         df.createOrReplaceTempView("_identity_bridge_src")
-        resolved = _get_spark().sql(
+        resolved = self.spark.sql(
             f"SELECT COALESCE(map.`{bridge.target_column}`, src.`{bridge.join_on}`) AS `{bridge.join_on}`, "
             f"{', '.join(f'src.`{c}`' for c in df.columns if c != bridge.join_on)} "
             f"FROM _identity_bridge_src src "
@@ -581,7 +552,7 @@ class Orchestrator:
         return resolved
 
     def _transform_and_validate(self, active_dfs):
-        spark = _get_spark()
+        spark = self.spark
 
         if self.config.transformation_sql:
             sql_stripped = self.config.transformation_sql.strip().upper()
@@ -713,7 +684,7 @@ class Orchestrator:
                     table_created = self._ensure_target_table(transformed_df)
 
                     if table_created and self.config.table_type == "dimension":
-                        target_schema = _get_spark().table(self.config.table_name).schema
+                        target_schema = self.spark.table(self.config.table_name).schema
                         if self.config.scd_type == 2:
                             _merger.ensure_scd2_defaults(
                                 self.config.table_name,
@@ -876,7 +847,7 @@ class Orchestrator:
 
             for source in self.config.sources:
                 try:
-                    _get_spark().catalog.dropTempView(source.alias)
+                    self.spark.catalog.dropTempView(source.alias)
                 except Exception:
                     pass
 

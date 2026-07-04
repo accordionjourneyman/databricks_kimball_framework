@@ -7,6 +7,8 @@ import warnings
 from dataclasses import dataclass, field
 from typing import Any
 
+from pyspark.sql import SparkSession
+
 from kimball.common.config import ConfigLoader
 from kimball.common.errors import NonRetriableError
 from kimball.orchestration.orchestrator import Orchestrator
@@ -59,6 +61,7 @@ class PipelineExecutor:
     def __init__(
         self,
         config_paths: list[str],
+        spark: SparkSession | None = None,
         etl_schema: str | None = None,
         max_workers: int = 4,
         stop_on_failure: bool = True,
@@ -89,10 +92,11 @@ class PipelineExecutor:
         self.max_workers = max_workers
         self.stop_on_failure = stop_on_failure
         self.config_loader = ConfigLoader()
+        self.spark = spark
         self._categorize_pipelines()
 
     def _create_orchestrator(self, config_path: str) -> Orchestrator:
-        return Orchestrator(config_path, etl_schema=self.etl_schema)
+        return Orchestrator(config_path, spark=self.spark, etl_schema=self.etl_schema)
 
     def _categorize_pipelines(self) -> None:
         self.dimensions: list[dict[str, Any]] = []

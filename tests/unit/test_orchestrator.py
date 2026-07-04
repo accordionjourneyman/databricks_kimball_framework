@@ -58,7 +58,6 @@ def orchestrator(spark_mock, etl_control_mock, transaction_manager_mock, loader_
         patch("kimball.orchestration.orchestrator.PipelineCheckpoint"),
         patch("kimball.orchestration.orchestrator.StagingCleanupManager"),
         patch("kimball.orchestration.orchestrator._feature_enabled", return_value=False),
-        patch("kimball.orchestration.orchestrator._get_spark", return_value=spark_mock),
     ):
         mock_loader_cls.return_value.load_config.return_value = config_mock
         mock_runtime.from_environment.return_value = MagicMock(
@@ -69,6 +68,7 @@ def orchestrator(spark_mock, etl_control_mock, transaction_manager_mock, loader_
         from kimball.orchestration.orchestrator import Orchestrator
         orch = Orchestrator.__new__(Orchestrator)
         orch.config = config_mock
+        orch.spark = spark_mock
         orch.etl_control = etl_control_mock
         orch.loader = loader_mock
         orch.skeleton_generator = MagicMock()
@@ -87,12 +87,11 @@ class TestRecoverZombies:
         assert result is True
         orchestrator.etl_control.get_running_batches.assert_not_called()
 
-    @patch("kimball.orchestration.orchestrator._get_spark")
-    def test_recover_zombies_no_commit_tagging(self, mock_get_spark, orchestrator):
+    def test_recover_zombies_no_commit_tagging(self, orchestrator):
         orchestrator.config.enable_crash_recovery = True
         mock_spark = MagicMock()
         mock_spark.conf.set.side_effect = Exception("blocked")
-        mock_get_spark.return_value = mock_spark
+        orchestrator.spark = mock_spark
 
         result = orchestrator._recover_zombies()
         assert result is False
@@ -253,19 +252,18 @@ class TestIdentityBridge:
         mock_df = MagicMock()
         mock_df.columns = ["business_key", "val"]
 
-        with patch("kimball.orchestration.orchestrator._get_spark") as mock_get_spark:
-            mock_spark = MagicMock()
-            mock_bridge_df = MagicMock()
-            mock_bridge_df.columns = ["business_key", "resolved_key", "extra_col"]
-            mock_spark.table.return_value = mock_bridge_df
-            mock_spark.sql.return_value = MagicMock()
-            mock_get_spark.return_value = mock_spark
+        mock_spark = MagicMock()
+        mock_bridge_df = MagicMock()
+        mock_bridge_df.columns = ["business_key", "resolved_key", "extra_col"]
+        mock_spark.table.return_value = mock_bridge_df
+        mock_spark.sql.return_value = MagicMock()
+        orchestrator.spark = mock_spark
 
-            result = orchestrator._apply_identity_bridge(mock_df)
+        result = orchestrator._apply_identity_bridge(mock_df)
 
-            mock_df.createOrReplaceTempView.assert_called_once_with("_identity_bridge_src")
-            mock_spark.sql.assert_called_once()
-            assert result is mock_spark.sql.return_value
+        mock_df.createOrReplaceTempView.assert_called_once_with("_identity_bridge_src")
+        mock_spark.sql.assert_called_once()
+        assert result is mock_spark.sql.return_value
 
     def test_bridge_preserves_unmapped_keys(self, orchestrator):
         bridge = MagicMock()
@@ -277,19 +275,18 @@ class TestIdentityBridge:
         mock_df = MagicMock()
         mock_df.columns = ["business_key", "val"]
 
-        with patch("kimball.orchestration.orchestrator._get_spark") as mock_get_spark:
-            mock_spark = MagicMock()
-            mock_bridge_df = MagicMock()
-            mock_bridge_df.columns = ["business_key", "resolved_key"]
-            mock_spark.table.return_value = mock_bridge_df
-            mock_spark.sql.return_value = MagicMock()
-            mock_get_spark.return_value = mock_spark
+        mock_spark = MagicMock()
+        mock_bridge_df = MagicMock()
+        mock_bridge_df.columns = ["business_key", "resolved_key"]
+        mock_spark.table.return_value = mock_bridge_df
+        mock_spark.sql.return_value = MagicMock()
+        orchestrator.spark = mock_spark
 
-            result = orchestrator._apply_identity_bridge(mock_df)
+        result = orchestrator._apply_identity_bridge(mock_df)
 
-            mock_df.createOrReplaceTempView.assert_called_once()
-            mock_spark.sql.assert_called_once()
-            assert result is mock_spark.sql.return_value
+        mock_df.createOrReplaceTempView.assert_called_once()
+        mock_spark.sql.assert_called_once()
+        assert result is mock_spark.sql.return_value
 
     def test_bridge_skipped_when_not_configured(self, orchestrator):
         orchestrator.config.identity_bridge = None
