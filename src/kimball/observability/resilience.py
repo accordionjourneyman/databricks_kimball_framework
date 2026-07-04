@@ -52,9 +52,27 @@ def _feature_enabled(feature: str) -> bool:
     return os.environ.get(f"KIMBALL_ENABLE_{feature.upper()}") == "1"
 
 
+def _ensure_delta_table(table_name: str, schema: StructType, partition_by: str | None = None) -> None:
+    if not get_spark().catalog.tableExists(table_name):
+        empty_df = get_spark().createDataFrame([], schema)
+        writer = empty_df.write.format("delta")
+        if partition_by:
+            writer = writer.partitionBy(partition_by)
+        writer.saveAsTable(table_name)
+        logger.info(f"Created Delta table: {table_name}")
+
+
+def _safe_drop_table(spark: SparkSession, table_name: str) -> bool:
+    if not re.match(r"^[a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+)*$", table_name):
+        logger.info(f"Skipping invalid table name: {table_name}")
+        return False
+    quoted = ".".join([f"`{part}`" for part in table_name.split(".")])
+    spark.sql(f"DROP TABLE IF EXISTS {quoted}")
+    return True
+
+
 class QueryMetricsCollector:
-    """
-    Collects basic query execution metrics for observability.
+    """Collects basic query execution metrics for observability.
     Uses DataFrame operations and timing instead of Spark listeners.
     """
 
@@ -155,21 +173,15 @@ class StagingCleanupManager:
         self._ensure_registry_table()
 
     def _ensure_registry_table(self) -> None:
-        """Ensure the registry Delta table exists."""
-        if not get_spark().catalog.tableExists(self.registry_table):
-            schema = StructType(
-                [
-                    StructField("pipeline_id", StringType(), True),
-                    StructField("staging_table", StringType(), True),
-                    StructField("created_at", TimestampType(), True),
-                    StructField("batch_id", StringType(), True),
-                ]
-            )
-            empty_df = get_spark().createDataFrame([], schema)
-            empty_df.write.format("delta").saveAsTable(self.registry_table)
-            logger.info(
-                f"Created staging cleanup registry table: {self.registry_table}"
-            )
+        schema = StructType(
+            [
+                StructField("pipeline_id", StringType(), True),
+                StructField("staging_table", StringType(), True),
+                StructField("created_at", TimestampType(), True),
+                StructField("batch_id", StringType(), True),
+            ]
+        )
+        _ensure_delta_table(self.registry_table, schema)
 
     def register_staging_table(
         self,
@@ -261,32 +273,14 @@ class StagingCleanupManager:
 
             tables_to_cleanup = [row.staging_table for row in rows]
 
-            # Cleanup on driver side (single pass, no double evaluation)
-            # FINDING-021: Validate table names before executing DROP
-            import re
-
             for staging_table_name in tables_to_cleanup:
-                # Validate table name format to prevent SQL injection
-                if not re.match(
-                    r"^[a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+)*$", staging_table_name
-                ):
-                    logger.info(
-                        f"Skipping invalid staging table name: {staging_table_name}"
-                    )
-                    failed += 1
-                    continue
-
                 try:
-                    # Use backticks for safe quoting
-                    quoted_name = ".".join(
-                        [f"`{part}`" for part in staging_table_name.split(".")]
-                    )
-                    spark_session.sql(f"DROP TABLE IF EXISTS {quoted_name}")
+                    if not _safe_drop_table(spark_session, staging_table_name):
+                        failed += 1
+                        continue
                     self.unregister_staging_table(staging_table_name)
                     cleaned += 1
-                    logger.info(
-                        f"Cleaned up orphaned staging table: {staging_table_name}"
-                    )
+                    logger.info(f"Cleaned up orphaned staging table: {staging_table_name}")
                 except Exception as e:
                     logger.info(f"Failed to cleanup {staging_table_name}: {e}")
                     failed += 1
@@ -338,18 +332,10 @@ class StagingTableManager:
         _exc_tb: TracebackType | None,
     ) -> None:
         """Ensure staging tables are cleaned up even if an exception occurs."""
-        import re
-
         for staging_table in self.staging_tables:
             try:
-                # C-03: Validate table name format to prevent SQL injection
-                if not re.match(r"^[a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+)*$", staging_table):
-                    logger.info(f"Skipping invalid staging table name: {staging_table}")
+                if not _safe_drop_table(get_spark(), staging_table):
                     continue
-
-                # Quote each part of the table name for safety
-                quoted = ".".join([f"`{part}`" for part in staging_table.split(".")])
-                get_spark().sql(f"DROP TABLE IF EXISTS {quoted}")
                 self.cleanup_manager.unregister_staging_table(staging_table)
                 logger.info(
                     f"Cleaned up staging table during exception recovery: {staging_table}"
@@ -377,21 +363,15 @@ class PipelineCheckpoint:
         self._ensure_checkpoint_table()
 
     def _ensure_checkpoint_table(self) -> None:
-        """Ensure the checkpoint Delta table exists."""
-        if not get_spark().catalog.tableExists(self.checkpoint_table):
-            schema = StructType(
-                [
-                    StructField("pipeline_id", StringType(), True),
-                    StructField("stage", StringType(), True),
-                    StructField("timestamp", TimestampType(), True),
-                    StructField("state", StringType(), True),
-                ]
-            )
-            empty_df = get_spark().createDataFrame([], schema)
-            empty_df.write.format("delta").partitionBy("pipeline_id").saveAsTable(
-                self.checkpoint_table
-            )
-            logger.info(f"Created pipeline checkpoint table: {self.checkpoint_table}")
+        schema = StructType(
+            [
+                StructField("pipeline_id", StringType(), True),
+                StructField("stage", StringType(), True),
+                StructField("timestamp", TimestampType(), True),
+                StructField("state", StringType(), True),
+            ]
+        )
+        _ensure_delta_table(self.checkpoint_table, schema, partition_by="pipeline_id")
 
     def save_checkpoint(
         self, pipeline_id: str, stage: str, state: dict[str, Any]

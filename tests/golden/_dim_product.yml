@@ -1,0 +1,23 @@
+table_name: spark_catalog.kimball_golden.dim_product
+table_type: dimension
+scd_type: 1
+keys:
+  surrogate_key: product_sk
+  natural_keys: [product_id]
+surrogate_key_strategy: identity
+sources:
+  - name: spark_catalog.kimball_golden_raw.products
+    alias: p
+    cdc_strategy: cdf
+    starting_version: 0
+    primary_keys: [product_id]
+transformation_sql: |
+  SELECT
+    product_id,
+    name,
+    category,
+    unit_cost,
+    updated_at,
+    _change_type
+  FROM p
+audit_columns: true

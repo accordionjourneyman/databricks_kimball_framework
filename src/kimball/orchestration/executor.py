@@ -1,52 +1,4 @@
-"""PipelineExecutor - Wave-based pipeline execution for notebooks.
-
-This module provides an executor for running multiple Kimball pipelines
-with automatic dependency ordering (dimensions before facts).
-
-IMPORTANT LIMITATION (C-06):
-    ThreadPoolExecutor does NOT provide real Spark parallelism:
-    - Python GIL means only one thread runs Python code at a time
-    - All threads share the same SparkSession, so jobs serialize
-    - For actual parallel execution, use Databricks Jobs with for_each tasks
-
-This executor is designed for:
-    - Demo notebooks (sequential execution is fine)
-    - Local development
-    - Quick iteration during development
-    - Single-threaded deterministic testing
-
-For production workloads with parallelism requirements, use:
-    - Databricks Jobs with for_each tasks
-    - Separate job clusters per pipeline
-    - Delta Live Tables (DLT) pipelines
-
-Configuration:
-    Set KIMBALL_ETL_SCHEMA environment variable to configure ETL control table location:
-
-        import os
-        os.environ["KIMBALL_ETL_SCHEMA"] = "my_catalog.etl_config"
-
-Example:
-    from kimball import PipelineExecutor
-
-    # Option 1: Use environment variable (recommended)
-    import os
-    os.environ["KIMBALL_ETL_SCHEMA"] = "gold"
-    executor = PipelineExecutor([
-        "configs/dim_customer.yml",
-        "configs/dim_product.yml",
-        "configs/fact_sales.yml"
-    ])
-
-    # Option 2: Explicit etl_schema
-    executor = PipelineExecutor([
-        "configs/dim_customer.yml",
-        "configs/dim_product.yml",
-        "configs/fact_sales.yml"
-    ], etl_schema="gold")
-
-    results = executor.run()
-"""
+"""Wave-based pipeline executor for Kimball ETL."""
 
 import concurrent.futures
 import logging
@@ -66,7 +18,6 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PipelineResult:
     """Result of a single pipeline execution."""
-
     config_path: str
     table_name: str
     table_type: str
@@ -81,7 +32,6 @@ class PipelineResult:
 @dataclass
 class ExecutionSummary:
     """Summary of the entire execution run."""
-
     total_pipelines: int
     successful: int
     failed: int
@@ -105,71 +55,15 @@ class ExecutionSummary:
 
 
 class PipelineExecutor:
-    """
-    Wave-based parallel pipeline executor for Kimball ETL.
-
-    Automatically orders pipelines into waves:
-    - Wave 1: Dimensions (can run in parallel)
-    - Wave 2: Facts (run after all dimensions complete)
-
-    Within each wave, pipelines run in parallel using ThreadPoolExecutor.
-
-    ⚠️ FINDING-020: PARALLELISM LIMITATION WARNING ⚠️
-    Using ThreadPoolExecutor for Spark jobs within the same driver provides LIMITED
-    actual parallelism. All threads share the same SparkSession and Spark jobs are
-    submitted to the same cluster. Whether they run in parallel depends on:
-    - Cluster resources (cores, memory)
-    - Spark scheduler configuration
-    - Python GIL (though Spark operations release it)
-
-    For TRUE parallelism at scale, use one of:
-    - Databricks Jobs with for_each tasks (RECOMMENDED for production)
-    - Separate job clusters per pipeline
-    - Databricks Workflows with parallel tasks
-
-    Within-session parallelism is best for:
-    - I/O-bound operations (many small dimension loads)
-    - Demo notebooks and local development
-    - Quick iteration during development
-
-    For compute-heavy fact loads, expect serialized execution despite threading.
-
-    Args:
-        config_paths: List of paths to pipeline YAML config files
-        etl_schema: Schema for ETL control table. If not provided, uses
-                    KIMBALL_ETL_SCHEMA environment variable.
-        max_workers: Maximum parallel pipelines per wave (default: 4)
-        stop_on_failure: If True, stop execution when any pipeline fails (default: True)
-        watermark_database: **Deprecated** - Use etl_schema instead.
-
-    Example:
-        # Option 1: Use environment variable (recommended)
-        import os
-        os.environ["KIMBALL_ETL_SCHEMA"] = "gold"
-        executor = PipelineExecutor([
-            "configs/dim_customer.yml",
-            "configs/dim_product.yml",
-            "configs/dim_date.yml",
-            "configs/fact_sales.yml",
-        ])
-
-        # Option 2: Explicit etl_schema
-        executor = PipelineExecutor([...], etl_schema="gold")
-
-        summary = executor.run()
-        logger.info(summary)
-    """
-
+    # Wave-based parallel executor: dimensions first, then facts.
     def __init__(
         self,
         config_paths: list[str],
         etl_schema: str | None = None,
         max_workers: int = 4,
         stop_on_failure: bool = True,
-        # Deprecated parameter
         watermark_database: str | None = None,
     ):
-        # Handle deprecated 'watermark_database' parameter
         if watermark_database is not None:
             warnings.warn(
                 "The 'watermark_database' parameter is deprecated. Use 'etl_schema' instead, "
@@ -180,7 +74,6 @@ class PipelineExecutor:
             if etl_schema is None:
                 etl_schema = watermark_database
 
-        # Resolve ETL schema: explicit param > env var
         if etl_schema is None:
             etl_schema = get_etl_schema()
 
@@ -196,16 +89,12 @@ class PipelineExecutor:
         self.max_workers = max_workers
         self.stop_on_failure = stop_on_failure
         self.config_loader = ConfigLoader()
-
-        # Categorize pipelines into waves
         self._categorize_pipelines()
 
     def _create_orchestrator(self, config_path: str) -> Orchestrator:
-        """Factory method to create Orchestrator instance. Can be overridden for testing."""
         return Orchestrator(config_path, etl_schema=self.etl_schema)
 
     def _categorize_pipelines(self) -> None:
-        """Categorize pipelines into dimension and fact waves."""
         self.dimensions: list[dict[str, Any]] = []
         self.facts: list[dict[str, Any]] = []
 
@@ -226,12 +115,22 @@ class PipelineExecutor:
                 logger.error(f"FATAL: Could not load config {path}: {e}")
                 raise NonRetriableError(f"Invalid config file: {path}") from e
 
+    def _failed_result(
+        self, path: str, table_name: str, table_type: str, duration: float, error_msg: str
+    ) -> PipelineResult:
+        return PipelineResult(
+            config_path=path,
+            table_name=table_name,
+            table_type=table_type,
+            status="FAILED",
+            duration_seconds=duration,
+            error_message=error_msg,
+        )
+
     def _run_single_pipeline(self, pipeline_info: dict[str, Any]) -> PipelineResult:
-        """Execute a single pipeline and return the result."""
         path = pipeline_info["path"]
         table_name = pipeline_info["table_name"]
         table_type = pipeline_info["table_type"]
-
         start_time = time.time()
 
         try:
@@ -239,11 +138,9 @@ class PipelineExecutor:
             orchestrator = self._create_orchestrator(path)
             result = orchestrator.run()
             duration = time.time() - start_time
-
             logger.info(
                 f"  ✓ Completed: {table_name} ({duration:.1f}s, {result.get('rows_written', 0)} rows)"
             )
-
             return PipelineResult(
                 config_path=path,
                 table_name=table_name,
@@ -254,88 +151,49 @@ class PipelineExecutor:
                 duration_seconds=duration,
                 batch_id=result.get("batch_id"),
             )
-
-        except NonRetriableError as e:
-            duration = time.time() - start_time
-            error_msg = f"{type(e).__name__}: {str(e)}"
-            logger.info(f"  ✗ Failed (non-retriable): {table_name} - {error_msg}")
-
-            return PipelineResult(
-                config_path=path,
-                table_name=table_name,
-                table_type=table_type,
-                status="FAILED",
-                duration_seconds=duration,
-                error_message=error_msg,
-            )
-
         except Exception as e:
             duration = time.time() - start_time
             error_msg = f"{type(e).__name__}: {str(e)}"
             logger.info(f"  ✗ Failed: {table_name} - {error_msg}")
-
-            return PipelineResult(
-                config_path=path,
-                table_name=table_name,
-                table_type=table_type,
-                status="FAILED",
-                duration_seconds=duration,
-                error_message=error_msg,
-            )
+            return self._failed_result(path, table_name, table_type, duration, error_msg)
 
     def _run_wave(
         self, wave_name: str, pipelines: list[dict[str, Any]]
     ) -> list[PipelineResult]:
-        """Run a wave of pipelines in parallel."""
         if not pipelines:
             return []
-
         logger.info(f"\n{'=' * 60}")
         logger.info(f"Wave: {wave_name} ({len(pipelines)} pipelines)")
         logger.info(f"{'=' * 60}")
-
-        results = []
-
         if self.max_workers == 1:
-            # Sequential execution
-            for pipeline in pipelines:
-                result = self._run_single_pipeline(pipeline)
+            return self._run_sequential(pipelines)
+        return self._run_parallel(pipelines)
+
+    def _run_sequential(self, pipelines: list[dict[str, Any]]) -> list[PipelineResult]:
+        results = []
+        for pipeline in pipelines:
+            result = self._run_single_pipeline(pipeline)
+            results.append(result)
+            if result.status == "FAILED" and self.stop_on_failure:
+                logger.info(f"\n⚠ Stopping due to failure in {result.table_name}")
+                break
+        return results
+
+    def _run_parallel(self, pipelines: list[dict[str, Any]]) -> list[PipelineResult]:
+        results = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_to_pipeline = {executor.submit(self._run_single_pipeline, p): p for p in pipelines}
+            for future in concurrent.futures.as_completed(future_to_pipeline):
+                result = future.result()
                 results.append(result)
-
                 if result.status == "FAILED" and self.stop_on_failure:
-                    logger.info(f"\n⚠ Stopping due to failure in {result.table_name}")
+                    logger.info(f"\n⚠ Failure detected in {result.table_name}. Cancelling remaining...")
+                    for f in future_to_pipeline:
+                        f.cancel()
                     break
-        else:
-            # Parallel execution
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=self.max_workers
-            ) as executor:
-                future_to_pipeline = {
-                    executor.submit(self._run_single_pipeline, p): p for p in pipelines
-                }
-
-                for future in concurrent.futures.as_completed(future_to_pipeline):
-                    result = future.result()
-                    results.append(result)
-
-                    if result.status == "FAILED" and self.stop_on_failure:
-                        logger.info(
-                            f"\n⚠ Failure detected in {result.table_name}. Cancelling remaining..."
-                        )
-                        # Cancel pending futures
-                        for f in future_to_pipeline:
-                            f.cancel()
-                        break
-
         return results
 
     def run(self) -> ExecutionSummary:
-        """
-        Execute all pipelines in wave order (dimensions first, then facts).
-
-        Returns:
-            ExecutionSummary with results for all pipelines
-        """
         overall_start = time.time()
         all_results: list[PipelineResult] = []
         wave_failed = False
@@ -346,19 +204,14 @@ class PipelineExecutor:
         logger.info(f"# Max Workers: {self.max_workers}")
         logger.info(f"{'#' * 60}")
 
-        # Wave 1: Dimensions
         dim_results = self._run_wave("Dimensions", self.dimensions)
         all_results.extend(dim_results)
 
-        # Check for failures
         dim_failures = [r for r in dim_results if r.status == "FAILED"]
         if dim_failures and self.stop_on_failure:
             wave_failed = True
-            logger.info(
-                f"\n⚠ {len(dim_failures)} dimension(s) failed. Skipping facts wave."
-            )
+            logger.info(f"\n⚠ {len(dim_failures)} dimension(s) failed. Skipping facts wave.")
 
-            # Mark facts as skipped
             for fact in self.facts:
                 all_results.append(
                     PipelineResult(
@@ -370,12 +223,10 @@ class PipelineExecutor:
                     )
                 )
 
-        # Wave 2: Facts (only if dimensions succeeded or stop_on_failure is False)
         if not wave_failed:
             fact_results = self._run_wave("Facts", self.facts)
             all_results.extend(fact_results)
 
-        # Build summary
         overall_duration = time.time() - overall_start
 
         summary = ExecutionSummary(
@@ -389,7 +240,6 @@ class PipelineExecutor:
             results=all_results,
         )
 
-        # Print summary
         logger.info(f"\n{'=' * 60}")
         logger.info(summary)
         logger.info(f"{'=' * 60}\n")
@@ -397,11 +247,6 @@ class PipelineExecutor:
         return summary
 
     def dry_run(self) -> None:
-        """
-        Print the execution plan without running any pipelines.
-
-        Useful for verifying wave ordering before execution.
-        """
         logger.info(f"\n{'#' * 60}")
         logger.info("# Kimball Pipeline Executor - DRY RUN")
         logger.info("# (No pipelines will be executed)")
@@ -416,9 +261,7 @@ class PipelineExecutor:
             logger.info(f"  {i}. {fact['table_name']} ({fact['path']})")
 
         logger.info("\nExecution Order:")
-        logger.info(
-            f"  1. All dimensions run in parallel (max {self.max_workers} workers)"
-        )
+        logger.info(f"  1. All dimensions run in parallel (max {self.max_workers} workers)")
         logger.info("  2. After ALL dimensions complete, facts run in parallel")
         if self.stop_on_failure:
             logger.info("  3. If any dimension fails, facts wave is skipped")
