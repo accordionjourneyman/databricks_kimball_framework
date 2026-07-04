@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
-from functools import reduce, wraps
+from functools import reduce
 from typing import Any
 
 from delta.tables import DeltaTable
@@ -15,7 +15,18 @@ from pyspark.sql.functions import (
     lit,
     row_number,
 )
-from pyspark.sql.types import StructType
+from pyspark.sql.types import (
+    BooleanType,
+    DateType,
+    DecimalType,
+    DoubleType,
+    FloatType,
+    IntegerType,
+    LongType,
+    ShortType,
+    StructType,
+    TimestampType,
+)
 from pyspark.sql.window import Window
 
 from kimball.common.constants import (
@@ -36,107 +47,27 @@ from kimball.common.runtime_policy import get_runtime_policy
 from kimball.common.spark_session import get_spark
 from kimball.common.utils import quote_table_name
 from kimball.processing.hashing import compute_hashdiff
-from kimball.processing.key_generator import (
-    HashKeyGenerator,
-    IdentityKeyGenerator,
-    KeyGenerator,
-)
+from kimball.processing.key_generator import HashKeyGenerator
 
 logger = logging.getLogger(__name__)
 
-
-def retry_on_concurrent_exception(
-    max_retries: int = 3, backoff_base: int = 2
-) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-    """
-    Decorator to retry merge operations on ConcurrentAppendException with exponential backoff.
-    Updated for Databricks Runtime 13+ compatibility.
-    """
-    # FINDING-005: Try to import specific exception types for more reliable detection
-    try:
-        from pyspark.errors.exceptions.base import ConcurrentModificationException
-
-        CONCURRENT_EXCEPTIONS: tuple[type[Exception], ...] = (
-            ConcurrentModificationException,
-        )
-    except ImportError:
-        CONCURRENT_EXCEPTIONS = ()
-
-    def is_concurrent_exception(e: Exception) -> bool:
-        """Check if exception is a concurrent modification error."""
-        # First try type-based detection (more reliable)
-        if CONCURRENT_EXCEPTIONS and isinstance(e, CONCURRENT_EXCEPTIONS):
-            return True
-        # Fallback to string matching (fragile but necessary for older runtimes)
-        error_str = str(e)
-        return any(
-            x in error_str
-            for x in [
-                "ConcurrentAppendException",
-                "WriteConflictException",
-                "ConcurrentDeleteReadException",
-                "ConcurrentModificationException",
-            ]
-        )
-
-    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        @wraps(func)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            for attempt in range(max_retries + 1):
-                try:
-                    return func(*args, **kwargs)
-                except PYSPARK_EXCEPTION_BASE as e:
-                    # Only retry on concurrent exceptions, not all PySpark exceptions
-                    if is_concurrent_exception(e) and attempt < max_retries:
-                        wait_time = backoff_base**attempt
-                        logger.info(
-                            f"Concurrent write detected, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries + 1})"
-                        )
-                        time.sleep(wait_time)
-                        continue
-                    raise
-            return func(*args, **kwargs)
-
-        return wrapper
-
-    return decorator
-
-
-def set_table_auto_merge(table_name: str, enabled: bool) -> None:
-    val = "true" if enabled else "false"
-    quoted_table_name = quote_table_name(table_name)
-    sql = f"ALTER TABLE {quoted_table_name} SET TBLPROPERTIES ('delta.schema.autoMerge.enabled' = '{val}')"
-    get_spark().sql(sql)
-
-
-_CDF_METADATA = {
-    "_change_type",
-    "_commit_version",
-    "_commit_timestamp",
-    "__merge_action",
-}
+_CDF_METADATA = {"_change_type", "_commit_version", "_commit_timestamp", "__merge_action"}
 
 
 def _dedup_cdf(source_df: DataFrame, join_keys: list[str]) -> DataFrame:
     if "_change_type" not in source_df.columns or "_commit_version" not in source_df.columns:
         return source_df
     window_spec = Window.partitionBy(*join_keys).orderBy(col("_commit_version").desc())
-    return (
-        source_df.withColumn("_rn", row_number().over(window_spec))
-        .filter(col("_rn") == 1)
-        .drop("_rn")
-    )
+    return source_df.withColumn("_rn", row_number().over(window_spec)).filter(col("_rn") == 1).drop("_rn")
 
 
 def _apply_schema_evolution(table_name: str, enabled: bool) -> None:
     if not enabled:
         return
     try:
-        set_table_auto_merge(table_name, True)
+        get_spark().sql(f"ALTER TABLE {quote_table_name(table_name)} SET TBLPROPERTIES ('delta.schema.autoMerge.enabled' = 'true')")
     except Exception as e:
-        logging.getLogger(__name__).warning(
-            f"Could not enable schema auto-merge for {table_name}: {e}"
-        )
+        logger.warning(f"Could not enable schema auto-merge for {table_name}: {e}")
 
 
 def _build_merge_condition(join_keys: list[str], current_only: bool = False) -> str:
@@ -146,19 +77,12 @@ def _build_merge_condition(join_keys: list[str], current_only: bool = False) -> 
     return cond
 
 
-def _generate_keys(
-    source_df: DataFrame,
-    strategy: str,
-    join_keys: list[str],
-    col_name: str,
-) -> DataFrame:
+def _generate_keys(source_df: DataFrame, strategy: str, join_keys: list[str], col_name: str) -> DataFrame:
     if strategy == "identity":
         return source_df
     if strategy == "hash":
         return HashKeyGenerator(join_keys).generate_keys(source_df, col_name, existing_max_key=0)
-    raise ValueError(
-        f"Unknown key strategy: {strategy}. Use 'identity' (recommended) or 'hash'."
-    )
+    raise ValueError(f"Unknown key strategy: {strategy}. Use 'identity' (recommended) or 'hash'.")
 
 
 def _filter_cdf_deletes(source_df: DataFrame):
@@ -169,81 +93,31 @@ def _filter_cdf_deletes(source_df: DataFrame):
     return upserts, deletes
 
 
-def _get_validity_col(
-    effective_at_column: str | None,
-    source_df: DataFrame,
-    target_table_name: str,
-) -> tuple[str, str]:
+def _get_validity_col(effective_at_column: str | None, source_df: DataFrame, target_table_name: str) -> tuple[str, str]:
     if effective_at_column and effective_at_column in source_df.columns:
         return f"source.{effective_at_column}", f"business time ({effective_at_column})"
     import warnings
     warnings.warn(
         f"SCD2 table {target_table_name} using processing time for history. "
         "Configure 'effective_at' in YAML for correct business time semantics.",
-        UserWarning,
-        stacklevel=3,
+        UserWarning, stacklevel=3,
     )
     return "source.__etl_processed_at", "processing time (__etl_processed_at)"
 
 
-def _build_insert_values(
-    source_df: DataFrame,
-    join_keys: list[str],
-    surrogate_key_col: str,
-    validity_col: str,
-    include_history: bool = True,
-) -> dict[str, str]:
+def _build_insert_values(source_df: DataFrame, join_keys: list[str], surrogate_key_col: str, validity_col: str, include_history: bool = True) -> dict[str, str]:
     values: dict[str, str] = {}
     for c in source_df.columns:
         if c in _CDF_METADATA:
             continue
-        if c in join_keys:
-            values[c] = f"source.__orig_{c}"
-        else:
-            values[c] = f"source.{c}"
-    values["__is_current"] = "true"
-    values["__valid_from"] = f"COALESCE({validity_col}, {SQL_DEFAULT_VALID_FROM})"
-    values["__valid_to"] = SQL_DEFAULT_VALID_TO
-    values["__etl_processed_at"] = "current_timestamp()"
-    values["__is_deleted"] = "false"
+        values[c] = f"source.__orig_{c}" if c in join_keys else f"source.{c}"
+    values.update({"__is_current": "true", "__valid_from": f"COALESCE({validity_col}, {SQL_DEFAULT_VALID_FROM})", "__valid_to": SQL_DEFAULT_VALID_TO, "__etl_processed_at": "current_timestamp()", "__is_deleted": "false"})
     if include_history:
         values["__is_skeleton"] = "false"
     return values
 
 
-def create_merge_strategy(
-    scd_type: int,
-    target_table_name: str,
-    join_keys: list[str],
-    **kwargs: Any,
-) -> Callable[[DataFrame], None]:
-    if scd_type == 1:
-        return lambda df: merge_scd1(df, target_table_name=target_table_name, join_keys=join_keys, delete_strategy=kwargs.get("delete_strategy", "hard"), schema_evolution=kwargs.get("schema_evolution", False), surrogate_key_col=kwargs.get("surrogate_key_col"), surrogate_key_strategy=kwargs.get("surrogate_key_strategy", "identity"))
-    if scd_type == 2:
-        return lambda df: merge_scd2(df, target_table_name=target_table_name, join_keys=join_keys, track_history_columns=kwargs.get("track_history_columns", []), surrogate_key_col=kwargs.get("surrogate_key_col", "surrogate_key"), surrogate_key_strategy=kwargs.get("surrogate_key_strategy", "identity"), schema_evolution=kwargs.get("schema_evolution", False), effective_at_column=kwargs.get("effective_at_column"))
-    if scd_type == 4:
-        if not kwargs.get("history_table"):
-            raise ValueError("scd_type=4 requires history_table parameter")
-        return lambda df: merge_scd4(df, target_table_name=target_table_name, history_table_name=kwargs["history_table"], join_keys=join_keys, track_history_columns=kwargs.get("track_history_columns", ["*"]), surrogate_key_col=kwargs.get("surrogate_key_col", "surrogate_key"), surrogate_key_strategy=kwargs.get("surrogate_key_strategy", "identity"), schema_evolution=kwargs.get("schema_evolution", False), effective_at_column=kwargs.get("effective_at_column"))
-    if scd_type == 6:
-        if not kwargs.get("current_value_columns"):
-            raise ValueError("scd_type=6 requires current_value_columns parameter")
-        return lambda df: merge_scd6(df, target_table_name=target_table_name, join_keys=join_keys, track_history_columns=kwargs.get("track_history_columns", []), current_value_columns=kwargs["current_value_columns"], surrogate_key_col=kwargs.get("surrogate_key_col", "surrogate_key"), surrogate_key_strategy=kwargs.get("surrogate_key_strategy", "identity"), schema_evolution=kwargs.get("schema_evolution", False), effective_at_column=kwargs.get("effective_at_column"))
-    raise ValueError(
-        f"Unsupported SCD type: {scd_type}. Supported: 1, 2, 4, 6"
-    )
-
-
-def merge_scd1(
-    source_df: DataFrame,
-    *,
-    target_table_name: str,
-    join_keys: list[str],
-    delete_strategy: str = "hard",
-    schema_evolution: bool = False,
-    surrogate_key_col: str | None = None,
-    surrogate_key_strategy: str = "identity",
-) -> None:
+def merge_scd1(source_df: DataFrame, *, target_table_name: str, join_keys: list[str], delete_strategy: str = "hard", schema_evolution: bool = False, surrogate_key_col: str | None = None, surrogate_key_strategy: str = "identity") -> None:
     if not join_keys:
         raise ValueError("join_keys must be provided for SCD1 MERGE.")
     source_df = _dedup_cdf(source_df, join_keys)
@@ -259,11 +133,9 @@ def merge_scd1(
             merge_builder = merge_builder.whenMatchedUpdate(condition="source._change_type = 'delete'", set={"__is_deleted": "true", "__etl_processed_at": "current_timestamp()"})
     update_cond = "source._change_type != 'delete'" if "_change_type" in source_df.columns else None
     update_map = {c: f"source.{c}" for c in source_df.columns if c not in (surrogate_key_col, "_change_type")}
-    update_map["__is_deleted"] = "false"
-    update_map["__etl_processed_at"] = "current_timestamp()"
+    update_map.update({"__is_deleted": "false", "__etl_processed_at": "current_timestamp()"})
     insert_map = {c: f"source.{c}" for c in source_df.columns if c != "_change_type"}
-    insert_map["__is_deleted"] = "false"
-    insert_map["__etl_processed_at"] = "current_timestamp()"
+    insert_map.update({"__is_deleted": "false", "__etl_processed_at": "current_timestamp()"})
     policy = get_runtime_policy()
     if surrogate_key_strategy == "identity" and (surrogate_key_col or "surrogate_key") in insert_map and not policy.should_include_sk_in_insert():
         insert_map.pop(surrogate_key_col or "surrogate_key", None)
@@ -272,17 +144,7 @@ def merge_scd1(
     merge_builder.execute()
 
 
-def merge_scd2(
-    source_df: DataFrame,
-    *,
-    target_table_name: str,
-    join_keys: list[str],
-    track_history_columns: list[str],
-    surrogate_key_col: str,
-    surrogate_key_strategy: str = "identity",
-    schema_evolution: bool = False,
-    effective_at_column: str | None = None,
-) -> None:
+def merge_scd2(source_df: DataFrame, *, target_table_name: str, join_keys: list[str], track_history_columns: list[str], surrogate_key_col: str, surrogate_key_strategy: str = "identity", schema_evolution: bool = False, effective_at_column: str | None = None) -> None:
     if not track_history_columns:
         raise ValueError("track_history_columns must be provided for SCD Type 2")
     upserts, deletes = _filter_cdf_deletes(source_df)
@@ -346,32 +208,12 @@ def merge_scd2(
         delta_table.alias("target").merge(final_source.alias("source"), merge_condition).whenMatchedUpdate(condition="source.__merge_action = 'UPDATE_EXPIRE'", set={"__is_current": "false", "__valid_to": validity_col, "__etl_processed_at": "current_timestamp()"}).whenNotMatchedInsert(values=insert_values).execute()
 
 
-def merge_scd4(
-    source_df: DataFrame,
-    *,
-    target_table_name: str,
-    history_table_name: str,
-    join_keys: list[str],
-    track_history_columns: list[str],
-    surrogate_key_col: str = "surrogate_key",
-    surrogate_key_strategy: str = "identity",
-    schema_evolution: bool = False,
-    effective_at_column: str | None = None,
-) -> None:
+def merge_scd4(source_df: DataFrame, *, target_table_name: str, history_table_name: str, join_keys: list[str], track_history_columns: list[str], surrogate_key_col: str = "surrogate_key", surrogate_key_strategy: str = "identity", schema_evolution: bool = False, effective_at_column: str | None = None) -> None:
     merge_scd1(source_df, target_table_name=target_table_name, join_keys=join_keys, delete_strategy="hard", schema_evolution=schema_evolution, surrogate_key_col=surrogate_key_col, surrogate_key_strategy=surrogate_key_strategy)
     _merge_history(source_df, target_table_name, history_table_name, join_keys, track_history_columns, surrogate_key_col, surrogate_key_strategy, effective_at_column or "__etl_processed_at")
 
 
-def _merge_history(
-    source_df: DataFrame,
-    target_table_name: str,
-    history_table_name: str,
-    join_keys: list[str],
-    track_history_columns: list[str],
-    surrogate_key_col: str,
-    surrogate_key_strategy: str,
-    effective_at_column: str,
-) -> None:
+def _merge_history(source_df: DataFrame, target_table_name: str, history_table_name: str, join_keys: list[str], track_history_columns: list[str], surrogate_key_col: str, surrogate_key_strategy: str, effective_at_column: str) -> None:
     spark = source_df.sparkSession
     if track_history_columns == ["*"]:
         exclude = {surrogate_key_col, effective_at_column, "_change_type", "__etl_processed_at", "__etl_batch_id"}
@@ -390,30 +232,18 @@ def _merge_history(
     if "_change_type" in source_with_sk.columns:
         select_cols.append("_change_type")
     else:
-        from pyspark.sql.functions import lit
         select_cols.append(lit("insert").alias("_change_type"))
     unpivoted = source_with_sk.selectExpr(*select_cols)
     history = spark.table(history_table_name).filter("__is_current = true")
     compared = broadcast(unpivoted).alias("src").join(history.alias("tgt"), (col("src." + surrogate_key_col) == col("tgt.surrogate_key")) & (col("src.field") == col("tgt.field")), "left").filter(col("tgt.value").isNull() | (col("tgt.value") != col("src.value")) | (col("src._change_type") == "delete")).select(col("src.*"), col("tgt.value").alias("old_value"))
-    from pyspark.sql.functions import expr, lit
+    from pyspark.sql.functions import expr
     inserts = compared.filter(col("_change_type") != "delete").select(col(surrogate_key_col).alias("surrogate_key"), col("field"), col("value"), col("effective_at").alias("valid_from"), lit("9999-12-31 23:59:59").cast("timestamp").alias("valid_to"), lit(True).alias("__is_current"), lit("INSERT").alias("__action"))
     expires = compared.filter(col("old_value").isNotNull()).select(col(surrogate_key_col).alias("surrogate_key"), col("field"), col("old_value").alias("value"), lit(None).cast("timestamp").alias("valid_from"), (col("effective_at") - expr("INTERVAL 1 MICROSECOND")).alias("valid_to"), lit(False).alias("__is_current"), lit("EXPIRE").alias("__action"))
     staged = inserts.unionByName(expires)
     DeltaTable.forName(spark, history_table_name).alias("target").merge(staged.alias("source"), "target.surrogate_key = source.surrogate_key AND target.field = source.field AND target.value = source.value AND target.__is_current = true AND source.__action = 'EXPIRE'").whenMatchedUpdate(set={"valid_to": "source.valid_to", "__is_current": "source.__is_current"}).whenNotMatchedInsert(condition="source.__action = 'INSERT'", values={"surrogate_key": "source.surrogate_key", "field": "source.field", "value": "source.value", "valid_from": "source.valid_from", "valid_to": "source.valid_to", "__is_current": "source.__is_current"}).execute()
 
 
-def merge_scd6(
-    source_df: DataFrame,
-    *,
-    target_table_name: str,
-    join_keys: list[str],
-    track_history_columns: list[str],
-    current_value_columns: list[str],
-    surrogate_key_col: str = "surrogate_key",
-    surrogate_key_strategy: str = "identity",
-    schema_evolution: bool = False,
-    effective_at_column: str | None = None,
-) -> None:
+def merge_scd6(source_df: DataFrame, *, target_table_name: str, join_keys: list[str], track_history_columns: list[str], current_value_columns: list[str], surrogate_key_col: str = "surrogate_key", surrogate_key_strategy: str = "identity", schema_evolution: bool = False, effective_at_column: str | None = None) -> None:
     spark = source_df.sparkSession
     current_cols = current_value_columns
     upserts, deletes = _filter_cdf_deletes(source_df)
@@ -421,7 +251,7 @@ def merge_scd6(
     changed_keys = broadcast(upserts.select(*join_keys).distinct())
     all_existing = spark.table(target_table_name).join(changed_keys, join_keys, "inner")
     current_values = broadcast(upserts.select(*join_keys, "hashdiff", *[col(c).alias(f"new_current_{c}") for c in current_cols]))
-    from pyspark.sql.functions import lit, when
+    from pyspark.sql.functions import when
     staged_updates = all_existing.alias("old").join(current_values, join_keys).select(col(f"old.{surrogate_key_col}"), *[col(f"old.{c}") for c in all_existing.columns if c != surrogate_key_col], *[col(f"new_current_{c}").alias(f"current_{c}") for c in current_cols], when(col("old.__is_current") & (col("old.hashdiff") != col("current_values.hashdiff")), lit("EXPIRE")).otherwise(lit("UPDATE")).alias("__action"))
     target_current = spark.table(target_table_name).filter("__is_current = true").select(*join_keys, "hashdiff").alias("tgt")
     source_with_flag = upserts.alias("src").join(target_current, join_keys, "left").select(col("src.*"), when(col("tgt.hashdiff").isNull(), lit("INSERT_NEW")).when(col("tgt.hashdiff") != col("src.hashdiff"), lit("INSERT_VERSION")).otherwise(lit("NO_OP")).alias("__insert_action"))
@@ -436,260 +266,140 @@ def merge_scd6(
     DeltaTable.forName(spark, target_table_name).alias("t").merge(staged_final.alias("s"), f"t.{surrogate_key_col} = s.{surrogate_key_col}").whenMatchedUpdate(condition="s.__action = 'EXPIRE'", set={"__is_current": "false", "__valid_to": f"s.{effective_col}", **{f"current_{c}": f"s.current_{c}" for c in current_cols}}).whenMatchedUpdate(condition="s.__action = 'EXPIRE_DELETE'", set={"__is_current": "false", "__valid_to": f"s.{effective_col}", "__is_deleted": "true"}).whenMatchedUpdate(condition="s.__action = 'UPDATE'", set={f"current_{c}": f"s.current_{c}" for c in current_cols}).whenNotMatchedInsert(condition="s.__action = 'INSERT'", values={c: f"s.{c}" for c in staged_final.columns if c != "__action"}).execute()
 
 
-class DeltaMerger:
-    """
-    Handles the MERGE operation into the target Delta table.
-    Includes Audit Column injection and Delete handling.
-
-    C-01: Supports SparkSession injection for testability.
-    """
-
-    def __init__(self, spark_session: Any | None = None) -> None:
-        """
-        Initialize DeltaMerger with optional SparkSession injection.
-
-        Args:
-            spark_session: Optional SparkSession. If None, uses global Databricks get_spark().
-        """
-        self._spark = spark_session
-
-    @property
-    def spark(self) -> Any:
-        """Lazy SparkSession accessor with fallback to global."""
-        if self._spark is None:
-            from databricks.sdk.runtime import spark
-
-            self._spark = spark
-        return self._spark
-
-    @retry_on_concurrent_exception()
-    def merge(
-        self,
-        target_table_name: str,
-        source_df: DataFrame,
-        join_keys: list[str],
-        delete_strategy: str = "hard",
-        batch_id: str | None = None,
-        scd_type: int = 1,
-        track_history_columns: list[str] | None = None,
-        surrogate_key_col: str = "surrogate_key",
-        surrogate_key_strategy: str = "identity",
-        schema_evolution: bool = False,
-        effective_at_column: str | None = None,
-    ) -> None:
-        enriched_df = source_df.withColumn("__etl_processed_at", current_timestamp())
-        if batch_id:
-            enriched_df = enriched_df.withColumn("__etl_batch_id", lit(batch_id))
-        merge_fn = create_merge_strategy(
-            scd_type=scd_type,
-            target_table_name=target_table_name,
-            join_keys=join_keys,
-            delete_strategy=delete_strategy,
-            track_history_columns=track_history_columns,
-            surrogate_key_col=surrogate_key_col,
-            surrogate_key_strategy=surrogate_key_strategy,
-            schema_evolution=schema_evolution,
-            effective_at_column=effective_at_column,
-        )
-        merge_fn(enriched_df)
-
-    def _is_delta_table(self, table_name: str) -> bool:
-        """
-        Check if a managed/external table is a Delta table by inspecting its provider.
-        DeltaTable.isDeltaTable() requires a path, not a table name.
-        """
-        try:
-            DeltaTable.forName(self.spark, table_name)
+def _is_concurrent_exception(e: Exception) -> bool:
+    try:
+        from pyspark.errors.exceptions.base import ConcurrentModificationException
+        if isinstance(e, ConcurrentModificationException):
             return True
-        except Exception:
-            return False
+    except ImportError:
+        pass
+    error_str = str(e)
+    return any(x in error_str for x in ["ConcurrentAppendException", "WriteConflictException", "ConcurrentDeleteReadException", "ConcurrentModificationException"])
 
-    def get_last_merge_metrics(
-        self, table_name: str, batch_id: str | None = None
-    ) -> dict[str, Any]:
-        """
-        Get metrics from a MERGE operation on a table.
 
-        C-02: Fix race condition by optionally querying by batch_id.
-        Without batch_id, returns history(1) which may be from a concurrent pipeline.
-        With batch_id, searches recent history to find the exact commit.
-
-        Args:
-            table_name: Target table name.
-            batch_id: Optional batch ID to find exact commit metrics.
-
-        Returns:
-            Dict with numSourceRows, numTargetRowsInserted, numTargetRowsUpdated, etc.
-        """
+def merge(source_df: DataFrame, *, target_table_name: str, join_keys: list[str], delete_strategy: str = "hard", batch_id: str | None = None, scd_type: int = 1, track_history_columns: list[str] | None = None, surrogate_key_col: str = "surrogate_key", surrogate_key_strategy: str = "identity", schema_evolution: bool = False, effective_at_column: str | None = None, history_table: str | None = None, current_value_columns: list[str] | None = None, max_retries: int = 3) -> None:
+    enriched_df = source_df.withColumn("__etl_processed_at", current_timestamp())
+    if batch_id:
+        enriched_df = enriched_df.withColumn("__etl_batch_id", lit(batch_id))
+    merge_fn: Callable[[DataFrame], None]
+    if scd_type == 1:
+        merge_fn = lambda df: merge_scd1(df, target_table_name=target_table_name, join_keys=join_keys, delete_strategy=delete_strategy, schema_evolution=schema_evolution, surrogate_key_col=surrogate_key_col, surrogate_key_strategy=surrogate_key_strategy)
+    elif scd_type == 2:
+        merge_fn = lambda df: merge_scd2(df, target_table_name=target_table_name, join_keys=join_keys, track_history_columns=track_history_columns or [], surrogate_key_col=surrogate_key_col, surrogate_key_strategy=surrogate_key_strategy, schema_evolution=schema_evolution, effective_at_column=effective_at_column)
+    elif scd_type == 4:
+        if not history_table:
+            raise ValueError("scd_type=4 requires history_table parameter")
+        merge_fn = lambda df: merge_scd4(df, target_table_name=target_table_name, history_table_name=history_table, join_keys=join_keys, track_history_columns=track_history_columns or ["*"], surrogate_key_col=surrogate_key_col, surrogate_key_strategy=surrogate_key_strategy, schema_evolution=schema_evolution, effective_at_column=effective_at_column)
+    elif scd_type == 6:
+        if not current_value_columns:
+            raise ValueError("scd_type=6 requires current_value_columns parameter")
+        merge_fn = lambda df: merge_scd6(df, target_table_name=target_table_name, join_keys=join_keys, track_history_columns=track_history_columns or [], current_value_columns=current_value_columns, surrogate_key_col=surrogate_key_col, surrogate_key_strategy=surrogate_key_strategy, schema_evolution=schema_evolution, effective_at_column=effective_at_column)
+    else:
+        raise ValueError(f"Unsupported SCD type: {scd_type}. Supported: 1, 2, 4, 6")
+    for attempt in range(max_retries + 1):
         try:
-            delta_table = DeltaTable.forName(self.spark, table_name)
-
-            if batch_id:
-                # Query by batch_id in userMetadata for exact commit
-                from pyspark.sql.functions import col
-
-                history = delta_table.history(10)  # Check last 10 commits
-                matching = history.filter(col("userMetadata") == batch_id).first()
-                if matching and matching.operationMetrics:
-                    return dict(matching.operationMetrics)
-                # Fallback to latest if batch_id not found (Serverless may not tag)
-                logger.info(
-                    f"Warning: Could not find commit with batch_id={batch_id}. "
-                    "Using latest commit metrics (may be inaccurate if concurrent pipelines)."
-                )
-
-            # Default: return latest commit metrics
-            history = delta_table.history(1).select("operationMetrics").first()
-            if history and history.operationMetrics:
-                return dict(history.operationMetrics)
-        except Exception as e:
-            logger.debug(f"Could not fetch merge metrics for {table_name}: {e}")
-        return {}
-
-    def _seed_default_rows(
-        self,
-        target_table_name: str,
-        schema: StructType,
-        surrogate_key: str,
-        default_values: dict[str, Any] | None = None,
-        include_history_fields: bool = False,
-    ) -> None:
-        """Seed the standard default rows for SCD1/SCD2 tables."""
-        if not self.spark.catalog.tableExists(target_table_name):
-            logger.info(
-                f"ensure_defaults: table {target_table_name} does not exist. Skipping."
-            )
+            merge_fn(enriched_df)
             return
+        except PYSPARK_EXCEPTION_BASE as e:
+            if _is_concurrent_exception(e) and attempt < max_retries:
+                wait_time = 2 ** attempt
+                logger.info(f"Concurrent write detected, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries + 1})")
+                time.sleep(wait_time)
+                continue
+            raise
 
-        if not self._is_delta_table(target_table_name):
-            raise ValueError(
-                f"ensure_defaults: {target_table_name} exists but is not a Delta table."
-            )
 
-        delta_table = DeltaTable.forName(self.spark, target_table_name)
-        standard_defaults = {-1: "Unknown", -2: "Not Applicable", -3: "Error"}
-        rows_to_insert = []
+def get_last_merge_metrics(table_name: str, batch_id: str | None = None) -> dict[str, Any]:
+    try:
+        delta_table = DeltaTable.forName(get_spark(), table_name)
+        if batch_id:
+            history = delta_table.history(10)
+            matching = history.filter(col("userMetadata") == batch_id).first()
+            if matching and matching.operationMetrics:
+                return dict(matching.operationMetrics)
+            logger.info(f"Warning: Could not find commit with batch_id={batch_id}. Using latest commit metrics (may be inaccurate if concurrent pipelines).")
+        history = delta_table.history(1).select("operationMetrics").first()
+        if history and history.operationMetrics:
+            return dict(history.operationMetrics)
+    except Exception as e:
+        logger.debug(f"Could not fetch merge metrics for {table_name}: {e}")
+    return {}
 
-        for key, label in standard_defaults.items():
-            row: dict[str, Any] = {surrogate_key: key}
-            for field in schema.fields:
-                col_name = field.name
-                if col_name == surrogate_key:
-                    continue
 
-                if include_history_fields and col_name == "__is_current":
-                    row[col_name] = True
-                elif include_history_fields and col_name == "__valid_from":
-                    row[col_name] = DEFAULT_VALID_FROM
-                elif include_history_fields and col_name == "__valid_to":
-                    row[col_name] = DEFAULT_VALID_TO
-                elif col_name.startswith("__"):
-                    if not field.nullable:
-                        dtype = field.dataType
-                        if isinstance(dtype, TimestampType):
-                            row[col_name] = DEFAULT_VALID_FROM
-                        elif isinstance(dtype, DateType):
-                            row[col_name] = DEFAULT_START_DATE
-                        elif isinstance(
-                            dtype,
-                            (
-                                IntegerType,
-                                LongType,
-                                ShortType,
-                                DoubleType,
-                                FloatType,
-                                DecimalType,
-                            ),
-                        ):
-                            row[col_name] = -1
-                        elif isinstance(dtype, BooleanType):
-                            row[col_name] = False
-                        else:
-                            row[col_name] = ""
+def _seed_default_rows(target_table_name: str, schema: StructType, surrogate_key: str, default_values: dict[str, Any] | None = None, include_history_fields: bool = False) -> None:
+    spark = get_spark()
+    if not spark.catalog.tableExists(target_table_name):
+        logger.info(f"ensure_defaults: table {target_table_name} does not exist. Skipping.")
+        return
+    try:
+        DeltaTable.forName(spark, target_table_name)
+    except Exception:
+        raise ValueError(f"ensure_defaults: {target_table_name} exists but is not a Delta table.")
+    delta_table = DeltaTable.forName(spark, target_table_name)
+    standard_defaults = {-1: "Unknown", -2: "Not Applicable", -3: "Error"}
+    rows_to_insert = []
+    for key, label in standard_defaults.items():
+        row: dict[str, Any] = {surrogate_key: key}
+        for field in schema.fields:
+            col_name = field.name
+            if col_name == surrogate_key:
+                continue
+            if include_history_fields and col_name == "__is_current":
+                row[col_name] = True
+            elif include_history_fields and col_name == "__valid_from":
+                row[col_name] = DEFAULT_VALID_FROM
+            elif include_history_fields and col_name == "__valid_to":
+                row[col_name] = DEFAULT_VALID_TO
+            elif col_name.startswith("__"):
+                if not field.nullable:
+                    dtype = field.dataType
+                    if isinstance(dtype, TimestampType):
+                        row[col_name] = DEFAULT_VALID_FROM
+                    elif isinstance(dtype, DateType):
+                        row[col_name] = DEFAULT_START_DATE
+                    elif isinstance(dtype, (IntegerType, LongType, ShortType, DoubleType, FloatType, DecimalType)):
+                        row[col_name] = -1
+                    elif isinstance(dtype, BooleanType):
+                        row[col_name] = False
+                    else:
+                        row[col_name] = ""
+                else:
+                    row[col_name] = None
+            else:
+                if default_values and col_name in default_values:
+                    row[col_name] = default_values[col_name]
+                else:
+                    dtype_str = field.dataType.simpleString()
+                    if "string" in dtype_str:
+                        row[col_name] = label
+                    elif any(x in dtype_str for x in ["int", "long", "double"]):
+                        row[col_name] = -1
+                    elif "timestamp" in dtype_str:
+                        row[col_name] = DEFAULT_VALID_FROM
+                    elif "date" in dtype_str:
+                        row[col_name] = DEFAULT_START_DATE
                     else:
                         row[col_name] = None
-                else:
-                    if default_values and col_name in default_values:
-                        row[col_name] = default_values[col_name]
-                    else:
-                        dtype_str = field.dataType.simpleString()
-                        if "string" in dtype_str:
-                            row[col_name] = label
-                        elif any(x in dtype_str for x in ["int", "long", "double"]):
-                            row[col_name] = -1
-                        elif "timestamp" in dtype_str:
-                            row[col_name] = DEFAULT_VALID_FROM
-                        elif "date" in dtype_str:
-                            row[col_name] = DEFAULT_START_DATE
-                        else:
-                            row[col_name] = None
+        rows_to_insert.append(row)
+    if rows_to_insert:
+        logger.info(f"Seeding {len(rows_to_insert)} default rows into {target_table_name}...")
+        df = spark.createDataFrame(rows_to_insert, schema)
+        delta_table.alias("target").merge(df.alias("source"), f"target.{surrogate_key} = source.{surrogate_key}").whenNotMatchedInsertAll().execute()
 
-            rows_to_insert.append(row)
 
-        if rows_to_insert:
-            logger.info(f"Seeding {len(rows_to_insert)} default rows into {target_table_name}...")
-            df = self.spark.createDataFrame(rows_to_insert, schema)
-            delta_table.alias("target").merge(
-                df.alias("source"), f"target.{surrogate_key} = source.{surrogate_key}"
-            ).whenNotMatchedInsertAll().execute()
+def ensure_scd2_defaults(target_table_name: str, schema: StructType, surrogate_key: str, default_values: dict[str, Any] | None = None, surrogate_key_strategy: str = "identity") -> None:
+    _seed_default_rows(target_table_name, schema, surrogate_key, default_values, include_history_fields=True)
 
-    def ensure_scd2_defaults(
-        self,
-        target_table_name: str,
-        schema: StructType,
-        surrogate_key: str,
-        default_values: dict[str, Any] | None = None,
-        surrogate_key_strategy: str = "identity",
-    ) -> None:
-        """Ensure the standard SCD2 default rows (-1, -2, -3) exist in the table."""
-        self._seed_default_rows(
-            target_table_name,
-            schema,
-            surrogate_key,
-            default_values,
-            include_history_fields=True,
-        )
 
-    def ensure_scd1_defaults(
-        self,
-        target_table_name: str,
-        schema: StructType,
-        surrogate_key: str,
-        default_values: dict[str, Any] | None = None,
-        surrogate_key_strategy: str = "identity",
-    ) -> None:
-        """Ensure the standard SCD1 default rows (-1, -2, -3) exist in the table."""
-        self._seed_default_rows(
-            target_table_name,
-            schema,
-            surrogate_key,
-            default_values,
-            include_history_fields=False,
-        )
+def ensure_scd1_defaults(target_table_name: str, schema: StructType, surrogate_key: str, default_values: dict[str, Any] | None = None, surrogate_key_strategy: str = "identity") -> None:
+    _seed_default_rows(target_table_name, schema, surrogate_key, default_values, include_history_fields=False)
 
-    def optimize_table(
-        self, table_name: str, cluster_by: list[str] | None = None
-    ) -> None:
-        """
-        Runs OPTIMIZE on the target table.
 
-        Args:
-            table_name: The table to optimize
-            cluster_by: Optional list of columns for clustering (Liquid Clustering)
-        """
-        logger.info(f"Optimizing table {table_name}...")
-
-        if cluster_by:
-            # If cluster_by is specified, ensure the table is configured for Liquid Clustering
-            # Note: This assumes the table was created with CLUSTER BY clause
-            # We just run OPTIMIZE, which will use the existing clustering spec
-            quoted_table_name = quote_table_name(table_name)
-            self.spark.sql(f"OPTIMIZE {quoted_table_name}")
-            logger.info(
-                f"Optimized {table_name} using Liquid Clustering on {cluster_by}"
-            )
-        else:
-            # Standard OPTIMIZE without clustering
-            quoted_table_name = quote_table_name(table_name)
-            self.spark.sql(f"OPTIMIZE {quoted_table_name}")
-            logger.info(f"Optimized {table_name}")
+def optimize_table(table_name: str, cluster_by: list[str] | None = None) -> None:
+    logger.info(f"Optimizing table {table_name}...")
+    quoted_table_name = quote_table_name(table_name)
+    get_spark().sql(f"OPTIMIZE {quoted_table_name}")
+    if cluster_by:
+        logger.info(f"Optimized {table_name} using Liquid Clustering on {cluster_by}")
+    else:
+        logger.info(f"Optimized {table_name}")

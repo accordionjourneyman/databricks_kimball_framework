@@ -50,7 +50,7 @@ def orchestrator(spark_mock, etl_control_mock, transaction_manager_mock, loader_
         patch("kimball.orchestration.orchestrator.RuntimeOptions") as mock_runtime,
         patch("kimball.orchestration.orchestrator.ETLControlManager", return_value=etl_control_mock),
         patch("kimball.orchestration.orchestrator.DataLoader", return_value=loader_mock),
-        patch("kimball.orchestration.orchestrator.DeltaMerger", return_value=merger_mock),
+        patch("kimball.orchestration.orchestrator._merger") as mock_merger_mod,
         patch("kimball.orchestration.orchestrator.SkeletonGenerator"),
         patch("kimball.orchestration.orchestrator.TableCreator"),
         patch("kimball.orchestration.orchestrator.TransactionManager", return_value=transaction_manager_mock),
@@ -71,7 +71,6 @@ def orchestrator(spark_mock, etl_control_mock, transaction_manager_mock, loader_
         orch.config = config_mock
         orch.etl_control = etl_control_mock
         orch.loader = loader_mock
-        orch.merger = merger_mock
         orch.skeleton_generator = MagicMock()
         orch.table_creator = MagicMock()
         orch.transaction_manager = transaction_manager_mock

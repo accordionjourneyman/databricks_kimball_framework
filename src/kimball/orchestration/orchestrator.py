@@ -44,7 +44,7 @@ from kimball.observability.resilience import (
 from kimball.orchestration.transaction import TransactionManager
 from kimball.orchestration.watermark import ETLControlManager, get_etl_schema
 from kimball.processing.loader import DataLoader
-from kimball.processing.merger import DeltaMerger
+from kimball.processing import merger as _merger
 from kimball.processing.skeleton_generator import SkeletonGenerator
 from kimball.processing.table_creator import TableCreator
 from kimball.validation import DataQualityValidator
@@ -97,7 +97,6 @@ class Orchestrator:
         checkpoint_root: str | None = None,
         # Dependency Injection
         loader: DataLoader | None = None,
-        merger: DeltaMerger | None = None,
         etl_control: ETLControlManager | None = None,
         table_creator: TableCreator | None = None,
         skeleton_generator: SkeletonGenerator | None = None,
@@ -205,7 +204,6 @@ class Orchestrator:
 
         self.etl_control = etl_control or ETLControlManager(etl_schema=etl_schema)
         self.loader = loader or DataLoader()
-        self.merger = merger or DeltaMerger()
         self.skeleton_generator = skeleton_generator or SkeletonGenerator()
         self.table_creator = table_creator or TableCreator()
         self.transaction_manager = transaction_manager or TransactionManager(
@@ -694,7 +692,7 @@ class Orchestrator:
                     if table_created and self.config.table_type == "dimension":
                         target_schema = _get_spark().table(self.config.table_name).schema
                         if self.config.scd_type == 2:
-                            self.merger.ensure_scd2_defaults(
+                            _merger.ensure_scd2_defaults(
                                 self.config.table_name,
                                 target_schema,
                                 self.config.surrogate_key or "surrogate_key",
@@ -702,7 +700,7 @@ class Orchestrator:
                                 self.config.surrogate_key_strategy,
                             )
                         elif self.config.scd_type == 1 and self.config.surrogate_key:
-                            self.merger.ensure_scd1_defaults(
+                            _merger.ensure_scd1_defaults(
                                 self.config.table_name,
                                 target_schema,
                                 self.config.surrogate_key,
@@ -736,7 +734,7 @@ class Orchestrator:
                                 "Fix upstream deduplication before loading."
                             )
 
-                    self.merger.merge(
+                    _merger.merge(
                         target_table_name=self.config.table_name,
                         source_df=source_df,
                         join_keys=join_keys,
@@ -748,11 +746,13 @@ class Orchestrator:
                         surrogate_key_strategy=self.config.surrogate_key_strategy,
                         schema_evolution=self.config.schema_evolution,
                         effective_at_column=self.config.effective_at,
+                        history_table=self.config.history_table,
+                        current_value_columns=self.config.current_value_columns,
                     )
 
                     if self.config.optimize_after_merge:
                         if os.environ.get("KIMBALL_ENABLE_INLINE_OPTIMIZE") == "1":
-                            self.merger.optimize_table(
+                            _merger.optimize_table(
                                 self.config.table_name, self.config.cluster_by or []
                             )
                         else:
@@ -763,7 +763,7 @@ class Orchestrator:
                             )
 
                 if merge_executed:
-                    merge_metrics = self.merger.get_last_merge_metrics(
+                    merge_metrics = _merger.get_last_merge_metrics(
                         self.config.table_name, batch_id=batch_id
                     )
                     total_rows_read = int(merge_metrics.get("numSourceRows", 0))

@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pyspark.sql import SparkSession
 
-from kimball.processing.merger import DeltaMerger
+from kimball.processing import merger as _merger
 
 
 @pytest.fixture
@@ -28,8 +28,6 @@ def test_merge_execution(
     mock_dt_instance.alias.return_value = mock_dt_instance
     mock_dt_instance.merge.return_value = mock_dt_instance
 
-    merger = DeltaMerger()
-
     mock_df = MagicMock()
     mock_df.columns = ["id", "val", "_change_type"]
 
@@ -37,7 +35,7 @@ def test_merge_execution(
     mock_df.withColumn.return_value = mock_df
     mock_df.alias.return_value = mock_df
 
-    merger.merge(
+    _merger.merge(
         target_table_name="target",
         source_df=mock_df,
         join_keys=["id"],

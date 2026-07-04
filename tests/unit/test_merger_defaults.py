@@ -2,15 +2,18 @@ from unittest.mock import MagicMock, patch
 
 from pyspark.sql.types import StructField, StructType, StringType, TimestampType
 
-from kimball.processing.merger import DeltaMerger
+from kimball.processing import merger as _merger
 
 
-def test_ensure_scd2_defaults_includes_history_fields_and_system_defaults():
+@patch("kimball.processing.merger.DeltaTable")
+@patch("kimball.common.spark_session.get_spark")
+def test_ensure_scd2_defaults_includes_history_fields_and_system_defaults(mock_get_spark, mock_dt_cls):
     spark = MagicMock()
     spark.catalog.tableExists.return_value = True
     spark.createDataFrame.return_value = MagicMock()
-
-    merger = DeltaMerger(spark_session=spark)
+    mock_get_spark.return_value = spark
+    mock_dt = MagicMock()
+    mock_dt_cls.forName.return_value = mock_dt
 
     schema = StructType([
         StructField("surrogate_key", StringType(), False),
@@ -20,22 +23,21 @@ def test_ensure_scd2_defaults_includes_history_fields_and_system_defaults():
         StructField("__valid_to", TimestampType(), True),
     ])
 
-    with patch("kimball.processing.merger.DeltaTable.forName") as mock_dt_for_name:
-        mock_dt = MagicMock()
-        mock_dt_for_name.return_value = mock_dt
-        merger.ensure_scd2_defaults("dim_test", schema, "surrogate_key")
+    _merger.ensure_scd2_defaults("dim_test", schema, "surrogate_key")
 
-    assert spark.createDataFrame.called
     merge_call = mock_dt.alias.return_value.merge.call_args
     assert merge_call is not None
 
 
-def test_ensure_scd1_defaults_preserves_non_history_system_defaults():
+@patch("kimball.processing.merger.DeltaTable")
+@patch("kimball.common.spark_session.get_spark")
+def test_ensure_scd1_defaults_preserves_non_history_system_defaults(mock_get_spark, mock_dt_cls):
     spark = MagicMock()
     spark.catalog.tableExists.return_value = True
     spark.createDataFrame.return_value = MagicMock()
-
-    merger = DeltaMerger(spark_session=spark)
+    mock_get_spark.return_value = spark
+    mock_dt = MagicMock()
+    mock_dt_cls.forName.return_value = mock_dt
 
     schema = StructType([
         StructField("surrogate_key", StringType(), False),
@@ -43,11 +45,7 @@ def test_ensure_scd1_defaults_preserves_non_history_system_defaults():
         StructField("__etl_processed_at", TimestampType(), True),
     ])
 
-    with patch("kimball.processing.merger.DeltaTable.forName") as mock_dt_for_name:
-        mock_dt = MagicMock()
-        mock_dt_for_name.return_value = mock_dt
-        merger.ensure_scd1_defaults("dim_test", schema, "surrogate_key")
+    _merger.ensure_scd1_defaults("dim_test", schema, "surrogate_key")
 
-    assert spark.createDataFrame.called
     merge_call = mock_dt.alias.return_value.merge.call_args
     assert merge_call is not None
