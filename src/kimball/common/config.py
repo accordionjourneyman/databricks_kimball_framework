@@ -35,6 +35,12 @@ class TestDefinition(BaseModel):
     tests: list[str | dict[str, Any]] = Field(default_factory=list)
 
 
+class IdentityBridgeConfig(BaseModel):
+    table: str
+    join_on: str
+    target_column: str
+
+
 class TableConfig(BaseModel):
     table_name: str
     table_type: Literal["dimension", "fact"]
@@ -60,6 +66,7 @@ class TableConfig(BaseModel):
     tests: list[TestDefinition] | None = Field(default=None)
     enable_lineage_truncation: bool = False
     preserve_all_changes: bool = Field(default=False)
+    identity_bridge: IdentityBridgeConfig | None = None
 
     @model_validator(mode="before")
     @classmethod

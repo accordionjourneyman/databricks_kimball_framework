@@ -240,3 +240,67 @@ class TestGenerateSkeletons:
             surrogate_key_strategy="identity",
             batch_id="batch-1",
         )
+
+
+class TestIdentityBridge:
+    def test_bridge_resolves_keys(self, orchestrator):
+        bridge = MagicMock()
+        bridge.table = "dim_identity_map"
+        bridge.join_on = "business_key"
+        bridge.target_column = "resolved_key"
+        orchestrator.config.identity_bridge = bridge
+
+        mock_df = MagicMock()
+        mock_df.columns = ["business_key", "val"]
+        mock_df.alias.return_value = mock_df
+        mock_df.join.return_value = mock_df
+        mock_df.withColumn.return_value = mock_df
+        mock_df.drop.return_value = mock_df
+
+        with patch("kimball.orchestration.orchestrator._get_spark") as mock_get_spark:
+            mock_spark = MagicMock()
+            mock_bridge_df = MagicMock()
+            mock_bridge_df.columns = ["business_key", "resolved_key", "extra_col"]
+            mock_spark.table.return_value = mock_bridge_df
+            mock_get_spark.return_value = mock_spark
+
+            result = orchestrator._apply_identity_bridge(mock_df)
+
+            mock_df.join.assert_called_once()
+            mock_df.withColumn.assert_called_once()
+            mock_df.drop.assert_called_once()
+            assert result is mock_df
+
+    def test_bridge_preserves_unmapped_keys(self, orchestrator):
+        bridge = MagicMock()
+        bridge.table = "dim_identity_map"
+        bridge.join_on = "business_key"
+        bridge.target_column = "resolved_key"
+        orchestrator.config.identity_bridge = bridge
+
+        mock_df = MagicMock()
+        mock_df.columns = ["business_key", "val"]
+        mock_df.alias.return_value = mock_df
+        mock_df.join.return_value = mock_df
+        mock_df.withColumn.return_value = mock_df
+        mock_df.drop.return_value = mock_df
+
+        with patch("kimball.orchestration.orchestrator._get_spark") as mock_get_spark:
+            mock_spark = MagicMock()
+            mock_bridge_df = MagicMock()
+            mock_bridge_df.columns = ["business_key", "resolved_key"]
+            mock_spark.table.return_value = mock_bridge_df
+            mock_get_spark.return_value = mock_spark
+
+            result = orchestrator._apply_identity_bridge(mock_df)
+
+            mock_df.join.assert_called_once()
+            mock_df.withColumn.assert_called_once()
+            assert result is mock_df
+
+    def test_bridge_skipped_when_not_configured(self, orchestrator):
+        orchestrator.config.identity_bridge = None
+        mock_df = MagicMock()
+        result = orchestrator._apply_identity_bridge(mock_df)
+        assert result is mock_df
+        mock_df.join.assert_not_called()

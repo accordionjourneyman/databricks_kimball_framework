@@ -14,7 +14,7 @@ import warnings
 from typing import TYPE_CHECKING, Any
 
 from pyspark.sql import functions as F
-from pyspark.sql.functions import col, count as spark_count
+from pyspark.sql.functions import coalesce, col, count as spark_count
 from pyspark.sql.types import StringType
 
 from kimball.common.config import ConfigLoader
@@ -564,6 +564,24 @@ class Orchestrator:
                         f"Warning: Could not find source with column {eaf['fact_join_key']} for skeleton generation."
                     )
 
+    def _apply_identity_bridge(self, df: DataFrame) -> DataFrame:
+        bridge = self.config.identity_bridge
+        if bridge is None:
+            return df
+        logger.info(f"Applying identity bridge: {bridge.table} on {bridge.join_on} -> {bridge.target_column}")
+        bridge_df = _get_spark().table(bridge.table)
+        bridge_cols_to_drop = [c for c in bridge_df.columns if c != bridge.join_on]
+        df = df.alias("src").join(
+            bridge_df.alias("map"),
+            col(f"src.{bridge.join_on}") == col(f"map.{bridge.join_on}"),
+            "left",
+        )
+        df = df.withColumn(
+            bridge.join_on,
+            coalesce(col(f"map.{bridge.target_column}"), col(f"src.{bridge.join_on}")),
+        )
+        return df.drop(*bridge_cols_to_drop)
+
     def _transform_and_validate(self, active_dfs):
         spark = _get_spark()
 
@@ -599,6 +617,8 @@ class Orchestrator:
                 raise ValueError(
                     "transformation_sql is required for multi-source pipelines"
                 )
+
+        transformed_df = self._apply_identity_bridge(transformed_df)
 
         if self.config.foreign_keys:
             for fk in self.config.foreign_keys:
