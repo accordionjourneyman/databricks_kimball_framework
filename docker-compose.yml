@@ -1,0 +1,20 @@
+services:
+  kimball-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      # Mount source for live editing without rebuild
+      - ./src:/app/src
+      - ./tests:/app/tests
+      - ./tools:/app/tools
+      # Mount .env for Databricks credentials (remote target)
+      - .env:/app/.env:ro
+    environment:
+      # Default to local target; override with -e KIMBALL_TARGET=databricks
+      - KIMBALL_TARGET=local
+      - KIMBALL_ETL_SCHEMA=etl_control
+      - PYSPARK_PYTHON=python3
+      - PYSPARK_DRIVER_PYTHON=python3
+    # Run tests by default; override command for specific tests
+    command: ["python", "-m", "pytest", "tests/", "-v", "--tb=short"]

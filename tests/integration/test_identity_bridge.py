@@ -14,14 +14,6 @@ from pyspark.sql import SparkSession
 from kimball.common.config import IdentityBridgeConfig
 
 
-pytestmark = pytest.mark.skipif(
-    True,
-    reason="Skipped: Delta JAR not on classpath in this environment. "
-           "Run with docker-compose run --rm kimball-tests to test locally, "
-           "or set up Databricks Connect for remote testing.",
-)
-
-
 @pytest.fixture(scope="module")
 def local_spark():
     session = (
@@ -72,7 +64,6 @@ def orchestrator_with_bridge(bridge_data, bridge_view_name, local_spark):
         patch("kimball.orchestration.orchestrator.PipelineCheckpoint"),
         patch("kimball.orchestration.orchestrator.StagingCleanupManager"),
         patch("kimball.orchestration.orchestrator._feature_enabled", return_value=False),
-        patch("kimball.orchestration.orchestrator._get_spark", return_value=local_spark),
     ):
         mock_loader_cls.return_value.load_config.return_value = MagicMock()
         mock_runtime.from_environment.return_value = MagicMock(
@@ -81,6 +72,7 @@ def orchestrator_with_bridge(bridge_data, bridge_view_name, local_spark):
         from kimball.orchestration.orchestrator import Orchestrator
 
         orch = Orchestrator.__new__(Orchestrator)
+        orch.spark = local_spark
         orch.config = MagicMock()
         orch.config.identity_bridge = IdentityBridgeConfig(
             table=bridge_view_name,
@@ -141,7 +133,6 @@ class TestIdentityBridgeIntegration:
             patch("kimball.orchestration.orchestrator.PipelineCheckpoint"),
             patch("kimball.orchestration.orchestrator.StagingCleanupManager"),
             patch("kimball.orchestration.orchestrator._feature_enabled", return_value=False),
-            patch("kimball.orchestration.orchestrator._get_spark", return_value=local_spark),
         ):
             mock_loader_cls.return_value.load_config.return_value = MagicMock()
             mock_runtime.from_environment.return_value = MagicMock(
@@ -150,6 +141,7 @@ class TestIdentityBridgeIntegration:
             from kimball.orchestration.orchestrator import Orchestrator
 
             orch = Orchestrator.__new__(Orchestrator)
+            orch.spark = local_spark
             orch.config = MagicMock()
             orch.config.identity_bridge = IdentityBridgeConfig(
                 table=bridge_view_name,

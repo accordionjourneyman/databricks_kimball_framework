@@ -78,15 +78,21 @@ def _create_local_spark_session() -> SparkSession:
     try:
         import importlib
         importlib.import_module("delta")
-        builder = (
+        session = (
             builder
             .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
             .config(
                 "spark.sql.catalog.spark_catalog",
                 "org.apache.spark.sql.delta.catalog.DeltaCatalog",
             )
+            .config("spark.sql.ansi.enabled", "true")
+            .getOrCreate()
         )
-    except ImportError:
+        session.range(1).write.format("delta").mode("overwrite").save(
+            tempfile.mkdtemp() + "/_delta_test"
+        )
+        return session
+    except Exception:
         pass
     return (
         builder
