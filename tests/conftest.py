@@ -66,37 +66,20 @@ def _create_remote_spark_session() -> SparkSession:
 
 
 def _create_local_spark_session() -> SparkSession:
-    """Create a local SparkSession with Delta Lake support if available."""
-    builder = (
+    """Create a local SparkSession with Delta Lake support."""
+    return (
         SparkSession.builder.appName("KimballFrameworkTest")
         .master("local[*]")
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config(
+            "spark.sql.catalog.spark_catalog",
+            "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+        )
+        .config("spark.sql.ansi.enabled", "true")
         .config(
             "spark.sql.warehouse.dir",
             tempfile.mkdtemp(prefix="spark-warehouse-kimball-tests-"),
         )
-    )
-    try:
-        import importlib
-        importlib.import_module("delta")
-        session = (
-            builder
-            .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-            .config(
-                "spark.sql.catalog.spark_catalog",
-                "org.apache.spark.sql.delta.catalog.DeltaCatalog",
-            )
-            .config("spark.sql.ansi.enabled", "true")
-            .getOrCreate()
-        )
-        session.range(1).write.format("delta").mode("overwrite").save(
-            tempfile.mkdtemp() + "/_delta_test"
-        )
-        return session
-    except Exception:
-        pass
-    return (
-        builder
-        .config("spark.sql.ansi.enabled", "true")
         .getOrCreate()
     )
 

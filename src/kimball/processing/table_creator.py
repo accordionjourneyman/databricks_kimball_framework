@@ -267,7 +267,7 @@ class TableCreator:
                 logger.info(f"Warning: Delta features failed: {first_line}")
 
         # Apply basic Delta constraints after table creation
-        self.apply_basic_constraints(table_name, surrogate_key_col, schema_df)
+        self.apply_basic_constraints(table_name, surrogate_key_col, schema_df, surrogate_key_strategy)
 
         # Apply additional constraints from config
         if config:
@@ -278,6 +278,7 @@ class TableCreator:
         table_name: str,
         surrogate_key_col: str | None = None,
         schema_df: DataFrame | None = None,
+        surrogate_key_strategy: str = "identity",
     ) -> None:
         """
         Apply basic Delta constraints using ALTER TABLE statements.
@@ -286,10 +287,14 @@ class TableCreator:
             table_name: Full table name
             surrogate_key_col: Name of the surrogate key column
             schema_df: DataFrame with schema information
+            surrogate_key_strategy: Strategy for SK generation
         """
-        # Apply surrogate key NOT NULL constraint
         quoted_table_name = quote_table_name(table_name)
-        if surrogate_key_col:
+        # Only add NOT NULL CHECK for non-identity strategies.
+        # Identity columns auto-generate values; the CHECK would reject
+        # rows where the SK is omitted from the insert (which is correct
+        # for identity columns).
+        if surrogate_key_col and surrogate_key_strategy != "identity":
             alter_sql = f"ALTER TABLE {quoted_table_name} ADD CONSTRAINT sk_not_null CHECK (`{surrogate_key_col}` IS NOT NULL)"
             try:
                 get_spark().sql(alter_sql)

@@ -370,8 +370,10 @@ def _seed_default_rows(target_table_name: str, schema: StructType, surrogate_key
                         row[col_name] = DEFAULT_VALID_FROM
                     elif isinstance(dtype, DateType):
                         row[col_name] = DEFAULT_START_DATE
-                    elif isinstance(dtype, (IntegerType, LongType, ShortType, DoubleType, FloatType, DecimalType)):
+                    elif isinstance(dtype, (IntegerType, LongType, ShortType)):
                         row[col_name] = -1
+                    elif isinstance(dtype, (DoubleType, FloatType, DecimalType)):
+                        row[col_name] = -1.0
                     elif isinstance(dtype, BooleanType):
                         row[col_name] = False
                     else:
@@ -385,8 +387,10 @@ def _seed_default_rows(target_table_name: str, schema: StructType, surrogate_key
                     dtype_str = field.dataType.simpleString()
                     if "string" in dtype_str:
                         row[col_name] = label
-                    elif any(x in dtype_str for x in ["int", "long", "double"]):
+                    elif "int" in dtype_str or "long" in dtype_str or "short" in dtype_str:
                         row[col_name] = -1
+                    elif "double" in dtype_str or "float" in dtype_str or "decimal" in dtype_str:
+                        row[col_name] = -1.0
                     elif "timestamp" in dtype_str:
                         row[col_name] = DEFAULT_VALID_FROM
                     elif "date" in dtype_str:

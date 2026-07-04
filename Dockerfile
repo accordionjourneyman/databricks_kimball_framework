@@ -40,9 +40,6 @@ COPY tests/ tests/
 COPY tools/ tools/
 
 # Install Python dependencies.
-# We install pyspark and delta-spark directly (not via pyproject.toml [dev])
-# because the dev extras also pull in databricks-connect which hijacks
-# the local SparkSession builder.
 RUN pip install --no-cache-dir \
     pyspark==3.5.5 \
     delta-spark==3.2.0 \
@@ -51,6 +48,12 @@ RUN pip install --no-cache-dir \
     pydantic \
     pytest \
     ruff
+
+# Download Delta Lake JARs at build time so they're available offline at runtime.
+RUN curl -fsSL -o /usr/local/lib/python3.11/site-packages/pyspark/jars/delta-spark_2.12-3.2.0.jar \
+    "https://repo1.maven.org/maven2/io/delta/delta-spark_2.12/3.2.0/delta-spark_2.12-3.2.0.jar" && \
+    curl -fsSL -o /usr/local/lib/python3.11/site-packages/pyspark/jars/delta-storage-3.2.0.jar \
+    "https://repo1.maven.org/maven2/io/delta/delta-storage/3.2.0/delta-storage-3.2.0.jar"
 
 # Install the framework package itself (without remote/databricks extras)
 RUN pip install --no-cache-dir --no-deps -e .
