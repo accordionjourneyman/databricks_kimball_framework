@@ -129,14 +129,13 @@ class TestLoadActiveSources:
         mock_df = MagicMock()
         orchestrator.loader.load_cdf.return_value = mock_df
 
-        source_versions, active_dfs, source_row_counts = orchestrator._load_active_sources("batch-1")
+        source_versions, active_dfs = orchestrator._load_active_sources("batch-1")
 
         orchestrator.loader.load_cdf.assert_called_once_with(
             "src1", starting_version=0, deduplicate_keys=["id"], ending_version=10
         )
         assert source_versions == {"src1": 10}
         assert active_dfs == {"src1": mock_df}
-        assert source_row_counts == {"src1": 0}
 
     def test_skip_source_already_current(self, orchestrator):
         source = MagicMock()
@@ -151,7 +150,7 @@ class TestLoadActiveSources:
         orchestrator.etl_control.get_watermark.return_value = 10
         orchestrator.loader.get_latest_version.return_value = 10
 
-        source_versions, active_dfs, source_row_counts = orchestrator._load_active_sources("batch-1")
+        source_versions, active_dfs = orchestrator._load_active_sources("batch-1")
 
         orchestrator.loader.load_cdf.assert_not_called()
         assert active_dfs == {}
@@ -171,7 +170,7 @@ class TestLoadActiveSources:
         mock_df = MagicMock()
         orchestrator.loader.load_full_snapshot.return_value = mock_df
 
-        source_versions, active_dfs, source_row_counts = orchestrator._load_active_sources("batch-1")
+        source_versions, active_dfs = orchestrator._load_active_sources("batch-1")
 
         orchestrator.loader.load_full_snapshot.assert_called_once_with(
             "src1", format="delta", options={}

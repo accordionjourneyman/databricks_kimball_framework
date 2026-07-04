@@ -204,6 +204,7 @@ class Orchestrator:
 
         self.etl_control = etl_control or ETLControlManager(etl_schema=etl_schema)
         self.loader = loader or DataLoader()
+        self._validator = DataQualityValidator()
         self.skeleton_generator = skeleton_generator or SkeletonGenerator()
         self.table_creator = table_creator or TableCreator()
         self.transaction_manager = transaction_manager or TransactionManager(
@@ -443,11 +444,9 @@ class Orchestrator:
                     )
         return True
 
-    def _load_active_sources(self, batch_id: str) -> tuple[dict[str, Any], dict[str, DataFrame], dict[str, int]]:
-        """Load sources for the current pipeline run."""
+    def _load_active_sources(self, batch_id: str) -> tuple[dict[str, Any], dict[str, DataFrame]]:
         source_versions: dict[str, Any] = {}
         active_dfs: dict[str, DataFrame] = {}
-        source_row_counts: dict[str, int] = {}
 
         stage_start = time.time()
         for source in self.config.sources:
@@ -522,7 +521,6 @@ class Orchestrator:
 
             df.createOrReplaceTempView(source.alias)
             active_dfs[source.name] = df
-            source_row_counts[source.name] = 0
 
         if self.metrics_collector:
             self.metrics_collector.add_operation_metric(
@@ -530,19 +528,16 @@ class Orchestrator:
                 duration_ms=(time.time() - stage_start) * 1000,
                 sources_count=len(active_dfs),
             )
-        return source_versions, active_dfs, source_row_counts
+        return source_versions, active_dfs
 
     def _generate_skeletons(self, active_dfs, batch_id):
         if self.config.early_arriving_facts:
             logger.info("Checking for Early Arriving Facts...")
+            col_to_df = {col: df for df in active_dfs.values() for col in df.columns}
             for eaf in self.config.early_arriving_facts:
-                fact_source_df = None
-                for df in active_dfs.values():
-                    if eaf["fact_join_key"] in df.columns:
-                        fact_source_df = df
-                        break
+                fact_source_df = col_to_df.get(eaf["fact_join_key"])
 
-                if fact_source_df:
+                if fact_source_df is not None:
                     self.skeleton_generator.generate_skeletons(
                         fact_df=fact_source_df,
                         dim_table_name=eaf["dimension_table"],
@@ -621,14 +616,12 @@ class Orchestrator:
 
         if getattr(self.config, "tests", None):
             logger.info("Running data quality validation on transformed data...")
-            validator = DataQualityValidator()
-            report = validator.run_config_tests(self.config, df=transformed_df)
+            report = self._validator.run_config_tests(self.config, df=transformed_df)
             report.raise_on_failure()
 
         if self.config.table_type == "dimension" and self.config.natural_keys:
             logger.info("Validating natural key uniqueness (pre-merge gate)...")
-            validator = DataQualityValidator()
-            nk_result = validator.validate_natural_key_uniqueness(
+            nk_result = self._validator.validate_natural_key_uniqueness(
                 transformed_df,
                 self.config.natural_keys,
                 table_name=self.config.table_name,
@@ -643,7 +636,6 @@ class Orchestrator:
 
         if self.config.table_type == "fact" and self.config.foreign_keys:
             logger.info("Validating FK integrity against dimensions (pre-merge gate)...")
-            validator = DataQualityValidator()
             fk_defs = [
                 {
                     "column": fk.column,
@@ -654,7 +646,7 @@ class Orchestrator:
                 if hasattr(fk, "references") and fk.references
             ]
             if fk_defs:
-                fk_report = validator.validate_fact_fk_integrity(transformed_df, fk_defs)
+                fk_report = self._validator.validate_fact_fk_integrity(transformed_df, fk_defs)
                 for result in fk_report.results:
                     logger.info(str(result))
                 fk_report.raise_on_failure()
@@ -675,8 +667,9 @@ class Orchestrator:
             self.etl_control.batch_start_all(self.config.table_name, source_names)
 
         try:
+            active_dfs: dict[str, DataFrame] = {}
             with self.transaction_manager.table_transaction(self.config.table_name, batch_id):
-                source_versions, active_dfs, source_row_counts = self._load_active_sources(batch_id)
+                source_versions, active_dfs = self._load_active_sources(batch_id)
                 if not active_dfs:
                     return {"rows_read": 0, "rows_written": 0}
 
@@ -782,31 +775,21 @@ class Orchestrator:
                         rows_written=total_rows_written,
                     )
 
-            if not merge_executed:
-                logger.info(
-                    "Merge was skipped because no rows remained after transformation. "
-                    "Watermarks will NOT be advanced to prevent data loss."
-                )
-            else:
-                sources_with_data = set(active_dfs.keys())
-                for source_name, version in source_versions.items():
-                    if source_name not in sources_with_data:
-                        continue
-                    per_source_rows = source_row_counts.get(source_name, 0)
-                    if per_source_rows == 0 and total_rows_written > 0:
-                        per_source_written = total_rows_written // max(
-                            len(sources_with_data), 1
+                if merge_executed:
+                    for source_name, version in source_versions.items():
+                        if source_name not in active_dfs:
+                            continue
+                        self.etl_control.batch_complete(
+                            target_table=self.config.table_name,
+                            source_table=source_name,
+                            new_version=version,
+                            rows_read=total_rows_read // max(len(active_dfs), 1),
+                            rows_written=total_rows_written // max(len(active_dfs), 1),
                         )
-                    else:
-                        per_source_written = per_source_rows
-                    self.etl_control.batch_complete(
-                        target_table=self.config.table_name,
-                        source_table=source_name,
-                        new_version=version,
-                        rows_read=per_source_rows
-                        if per_source_rows > 0
-                        else (total_rows_read // max(len(sources_with_data), 1)),
-                        rows_written=per_source_written,
+                else:
+                    logger.info(
+                        "Merge was skipped because no rows remained after transformation. "
+                        "Watermarks will NOT be advanced to prevent data loss."
                     )
 
             logger.info(
