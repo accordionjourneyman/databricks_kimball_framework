@@ -48,6 +48,7 @@ jobs:
             --ignore=tests/benchmarks \
             --ignore=tests/unit/test_performance.py \
             --junitxml=junit.xml \
+            -o junit_family=legacy \
             --cov=src/kimball \
             --cov-branch \
             --cov-report=xml
@@ -65,6 +66,13 @@ jobs:
           files: coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
+
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/test-results-action@v1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: junit.xml
 
       - name: Run performance benchmarks
         run: |
