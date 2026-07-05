@@ -10,11 +10,11 @@ import os
 import time
 import uuid
 import warnings
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.functions import coalesce, col, count as spark_count
+from pyspark.sql.functions import count as spark_count
 from pyspark.sql.types import StringType
 
 from kimball.common.config import ConfigLoader
@@ -27,6 +27,7 @@ from kimball.common.constants import (
     SPARK_CONF_SKEW_SIZE_THRESHOLD,
 )
 from kimball.common.errors import DataQualityError, NonRetriableError, RetriableError
+
 try:
     from pyspark.errors import PySparkException as PYSPARK_EXCEPTION_BASE
 except ImportError:
@@ -35,6 +36,7 @@ except ImportError:
     except ImportError:
         PYSPARK_EXCEPTION_BASE = Exception
 from kimball.common.runtime import RuntimeOptions
+from kimball.common.utils import quote_table_name
 from kimball.observability.resilience import (
     PipelineCheckpoint,
     QueryMetricsCollector,
@@ -47,9 +49,8 @@ from kimball.orchestration.watermark import (
     compute_source_schema_fingerprint,
     get_etl_schema,
 )
-from kimball.common.utils import quote_table_name
-from kimball.processing.loader import DataLoader
 from kimball.processing import merger as _merger
+from kimball.processing.loader import DataLoader
 from kimball.processing.skeleton_generator import SkeletonGenerator
 from kimball.processing.table_creator import TableCreator
 from kimball.validation import DataQualityValidator
@@ -183,9 +184,7 @@ class Orchestrator:
         self._validator = DataQualityValidator()
         self.skeleton_generator = skeleton_generator or SkeletonGenerator()
         self.table_creator = table_creator or TableCreator()
-        self.transaction_manager = transaction_manager or TransactionManager(
-            self.spark
-        )
+        self.transaction_manager = transaction_manager or TransactionManager(self.spark)
 
         # Initialize observability and resilience features (opt-in via feature flags)
         self.metrics_collector = (
@@ -330,13 +329,19 @@ class Orchestrator:
             try:
                 checkpoint_dir = self.spark.sparkContext.getCheckpointDir()
                 if checkpoint_dir:
-                    logger.info(f"Using reliable checkpoint directory: {checkpoint_dir}")
+                    logger.info(
+                        f"Using reliable checkpoint directory: {checkpoint_dir}"
+                    )
                     checkpointed_df = transformed_df.checkpoint()
                 else:
-                    logger.info("No checkpoint directory configured, using local checkpoint")
+                    logger.info(
+                        "No checkpoint directory configured, using local checkpoint"
+                    )
                     checkpointed_df = transformed_df.localCheckpoint()
             except PYSPARK_EXCEPTION_BASE as e:
-                logger.info(f"Checkpoint directory access failed with PySpark error: {e}")
+                logger.info(
+                    f"Checkpoint directory access failed with PySpark error: {e}"
+                )
                 logger.info("Using local checkpoint (less reliable)")
                 checkpointed_df = transformed_df.localCheckpoint()
             except Exception as e:
@@ -411,7 +416,6 @@ class Orchestrator:
         protection_set |= SYSTEM_COLUMNS
         protection_set |= CDF_COLUMNS
 
-        source_cols = set(df.columns)
         cols_to_keep: list[str] = []
         cols_dropped: list[str] = []
         cols_added_to_target: list[str] = []
@@ -419,7 +423,11 @@ class Orchestrator:
         for c in df.columns:
             if c in target_columns or c in protection_set:
                 cols_to_keep.append(c)
-                if c not in target_columns and c not in SYSTEM_COLUMNS and c not in CDF_COLUMNS:
+                if (
+                    c not in target_columns
+                    and c not in SYSTEM_COLUMNS
+                    and c not in CDF_COLUMNS
+                ):
                     cols_added_to_target.append(c)
             else:
                 cols_dropped.append(c)
@@ -453,14 +461,18 @@ class Orchestrator:
                 if col_name in target_fields:
                     continue
                 try:
-                    src_type = self.spark.table(
-                        f"{self.config.sources[0].name}"
-                    ).schema[col_name].dataType
+                    src_type = (
+                        self.spark.table(f"{self.config.sources[0].name}")
+                        .schema[col_name]
+                        .dataType
+                    )
                     self.spark.sql(
                         f"ALTER TABLE {quote_table_name(self.config.table_name)} "
                         f"ADD COLUMNS ({col_name} {src_type.simpleString()})"
                     )
-                    logger.info(f"Added column {col_name} ({src_type.simpleString()}) to target")
+                    logger.info(
+                        f"Added column {col_name} ({src_type.simpleString()}) to target"
+                    )
                 except Exception as e:
                     logger.warning(f"Could not add column {col_name}: {e}")
         except Exception as e:
@@ -475,9 +487,7 @@ class Orchestrator:
             self.spark.conf.set(
                 "spark.databricks.delta.commitInfo.userMetadata", "test"
             )
-            self.spark.conf.unset(
-                "spark.databricks.delta.commitInfo.userMetadata"
-            )
+            self.spark.conf.unset("spark.databricks.delta.commitInfo.userMetadata")
         except Exception:
             logger.info(
                 "WARNING: Commit tagging unavailable (likely Serverless Compute). "
@@ -524,12 +534,18 @@ class Orchestrator:
         source_names = [s.name for s in self.config.sources]
         all_unchanged = True
         for source_name in source_names:
-            prev_config_fp = self.etl_control.get_config_fingerprint(table_name, source_name)
-            prev_source_fp = self.etl_control.get_source_schema_fingerprint(table_name, source_name)
+            prev_config_fp = self.etl_control.get_config_fingerprint(
+                table_name, source_name
+            )
+            prev_source_fp = self.etl_control.get_source_schema_fingerprint(
+                table_name, source_name
+            )
             if prev_config_fp != current_config_fp:
                 all_unchanged = False
                 break
-            current_source_fp = compute_source_schema_fingerprint(self.spark, source_name)
+            current_source_fp = compute_source_schema_fingerprint(
+                self.spark, source_name
+            )
             if prev_source_fp != current_source_fp:
                 all_unchanged = False
                 break
@@ -545,6 +561,7 @@ class Orchestrator:
         if not self.config.transformation_sql:
             return
         from kimball.common.config import ConfigLoader
+
         loader = ConfigLoader()
         issues = loader.validate_transformation_sql(self.config, spark=self.spark)
         if issues:
@@ -559,12 +576,15 @@ class Orchestrator:
         for source in self.config.sources:
             source_fp = compute_source_schema_fingerprint(self.spark, source.name)
             self.etl_control.update_fingerprints(
-                table_name, source.name,
+                table_name,
+                source.name,
                 config_fingerprint=config_fp,
                 source_schema_fingerprint=source_fp,
             )
 
-    def _load_active_sources(self, batch_id: str) -> tuple[dict[str, Any], dict[str, DataFrame]]:
+    def _load_active_sources(
+        self, batch_id: str
+    ) -> tuple[dict[str, Any], dict[str, DataFrame]]:
         source_versions: dict[str, Any] = {}
         active_dfs: dict[str, DataFrame] = {}
 
@@ -581,9 +601,7 @@ class Orchestrator:
                     source.name, format=source.format, options=source.options
                 )
             elif source.cdc_strategy == "cdf":
-                wm = self.etl_control.get_watermark(
-                    self.config.table_name, source.name
-                )
+                wm = self.etl_control.get_watermark(self.config.table_name, source.name)
                 if wm is None:
                     logger.info(
                         f"No watermark for {source.name}. "
@@ -622,10 +640,7 @@ class Orchestrator:
                         )
                         continue
 
-                    if (
-                        self.config.preserve_all_changes
-                        and self.config.scd_type == 2
-                    ):
+                    if self.config.preserve_all_changes and self.config.scd_type == 2:
                         logger.info(
                             f"Preserve All Changes: Processing version {wm + 1} only"
                         )
@@ -676,7 +691,9 @@ class Orchestrator:
                         fact_join_key=eaf["fact_join_key"],
                         dim_join_key=eaf["dimension_join_key"],
                         surrogate_key_col=eaf.get("surrogate_key_col", "surrogate_key"),
-                        surrogate_key_strategy=eaf.get("surrogate_key_strategy", "identity"),
+                        surrogate_key_strategy=eaf.get(
+                            "surrogate_key_strategy", "identity"
+                        ),
                         batch_id=batch_id,
                     )
                 else:
@@ -688,7 +705,9 @@ class Orchestrator:
         bridge = self.config.identity_bridge
         if bridge is None:
             return df
-        logger.info(f"Applying identity bridge: {bridge.table} on {bridge.join_on} -> {bridge.target_column}")
+        logger.info(
+            f"Applying identity bridge: {bridge.table} on {bridge.join_on} -> {bridge.target_column}"
+        )
         bridge_df = self.spark.table(bridge.table)
         bridge_cols_to_drop = [c for c in bridge_df.columns if c != bridge.join_on]
         df.createOrReplaceTempView("_identity_bridge_src")
@@ -705,7 +724,9 @@ class Orchestrator:
 
         if self.config.transformation_sql:
             sql_stripped = self.config.transformation_sql.strip().upper()
-            if not sql_stripped.startswith("SELECT") and not sql_stripped.startswith("WITH"):
+            if not sql_stripped.startswith("SELECT") and not sql_stripped.startswith(
+                "WITH"
+            ):
                 raise ValueError(
                     f"transformation_sql must be a SELECT or WITH statement for safety. "
                     f"Got: {self.config.transformation_sql[:50]}..."
@@ -757,7 +778,9 @@ class Orchestrator:
                     )
                     transformed_df = transformed_df.withColumn(
                         col_name,
-                        F.when(F.col(col_name).isNull(), F.lit(fill_val)).otherwise(F.col(col_name)),
+                        F.when(F.col(col_name).isNull(), F.lit(fill_val)).otherwise(
+                            F.col(col_name)
+                        ),
                     )
                 else:
                     logger.info(
@@ -799,7 +822,9 @@ class Orchestrator:
 
         if self.config.table_type == "fact" and self.config.foreign_keys:
             if not self._should_skip_validation(self.config.table_name):
-                logger.info("Validating FK integrity against dimensions (pre-merge gate)...")
+                logger.info(
+                    "Validating FK integrity against dimensions (pre-merge gate)..."
+                )
                 fk_defs = [
                     {
                         "column": fk.column,
@@ -810,7 +835,9 @@ class Orchestrator:
                     if hasattr(fk, "references") and fk.references
                 ]
                 if fk_defs:
-                    fk_report = self._validator.validate_fact_fk_integrity(transformed_df, fk_defs)
+                    fk_report = self._validator.validate_fact_fk_integrity(
+                        transformed_df, fk_defs
+                    )
                     for result in fk_report.results:
                         logger.info(str(result))
                     fk_report.raise_on_failure()
@@ -836,7 +863,9 @@ class Orchestrator:
 
         try:
             active_dfs: dict[str, DataFrame] = {}
-            with self.transaction_manager.table_transaction(self.config.table_name, batch_id):
+            with self.transaction_manager.table_transaction(
+                self.config.table_name, batch_id
+            ):
                 source_versions, active_dfs = self._load_active_sources(batch_id)
                 if not active_dfs:
                     return {"rows_read": 0, "rows_written": 0}

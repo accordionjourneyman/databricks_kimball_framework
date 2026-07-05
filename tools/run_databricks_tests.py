@@ -181,6 +181,7 @@ import sys
 
 test_path = sys.argv[1] if len(sys.argv) > 1 else "{remote_tests_dir}"
 catalog = sys.argv[2] if len(sys.argv) > 2 else "spark_catalog"
+extra_args = sys.argv[3:] if len(sys.argv) > 3 else []
 os.environ.setdefault("KIMBALL_TEST_CATALOG", catalog)
 
 # On a Databricks cluster the local spark session is the real DBR session,
@@ -193,7 +194,7 @@ os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 sys.dont_write_bytecode = True
 
 import pytest
-exit_code = pytest.main([test_path, "-v", "-p", "no:cacheprovider"])
+exit_code = pytest.main([test_path, "-v", "-p", "no:cacheprovider"] + extra_args)
 sys.exit(exit_code)
 """
     remote_path = f"{_get_remote_base_dir(ws)}/run_tests.py"
@@ -215,11 +216,13 @@ def _run_job(
     runner_path: str,
     test_path: str,
     catalog: str,
+    extra_pytest_args: list[str] | None = None,
 ) -> int:
     """Run pytest on the target path. Return exit code."""
     from databricks.sdk.service import jobs
     from databricks.sdk.service.compute import Environment, Library, PythonPyPiLibrary
 
+    extra_args = extra_pytest_args or []
     if cluster_id:
         return _run_job_classic(
             ws,
@@ -228,6 +231,7 @@ def _run_job(
             runner_path,
             test_path,
             catalog,
+            extra_args,
             jobs=jobs,
             Library=Library,
             PythonPyPiLibrary=PythonPyPiLibrary,
@@ -238,6 +242,7 @@ def _run_job(
         runner_path,
         test_path,
         catalog,
+        extra_args,
         jobs=jobs,
         Environment=Environment,
     )
@@ -250,6 +255,7 @@ def _run_job_classic(
     runner_path: str,
     test_path: str,
     catalog: str,
+    extra_args: list[str],
     *,
     jobs: Any,
     Library: Any,
@@ -263,7 +269,7 @@ def _run_job_classic(
         existing_cluster_id=cluster_id,
         spark_python_task=jobs.SparkPythonTask(
             python_file=runner_path,
-            parameters=[test_path, catalog],
+            parameters=[test_path, catalog] + extra_args,
         ),
         libraries=[
             Library(whl=wheel_path),
@@ -283,6 +289,7 @@ def _run_job_serverless(
     runner_path: str,
     test_path: str,
     catalog: str,
+    extra_args: list[str],
     *,
     jobs: Any,
     Environment: Any,
@@ -301,7 +308,7 @@ def _run_job_serverless(
         task_key="run_tests",
         spark_python_task=jobs.SparkPythonTask(
             python_file=runner_path,
-            parameters=[test_path, catalog],
+            parameters=[test_path, catalog] + extra_args,
         ),
         environment_key=env_key,
     )
@@ -524,6 +531,11 @@ def main() -> int:
         action="store_true",
         help="Validate upload/sync/job logic without contacting Databricks",
     )
+    parser.add_argument(
+        "pytest_args",
+        nargs=argparse.REMAINDER,
+        help="Additional pytest arguments forwarded to the cluster (e.g. --scale small)",
+    )
     args = parser.parse_args()
 
     if args.dry_run:
@@ -562,6 +574,7 @@ def main() -> int:
         runner_path,
         remote_test_path,
         catalog,
+        extra_pytest_args=args.pytest_args,
     )
 
 
