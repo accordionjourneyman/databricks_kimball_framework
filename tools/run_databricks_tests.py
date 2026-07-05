@@ -195,7 +195,10 @@ sys.dont_write_bytecode = True
 
 import pytest
 exit_code = pytest.main([test_path, "-v", "-p", "no:cacheprovider"] + extra_args)
-sys.exit(exit_code)
+# Avoid sys.exit() on success: Databricks serverless treats SystemExit as a
+# workload failure even when the exit code is 0. Returning is enough.
+if exit_code != 0:
+    sys.exit(exit_code)
 """
     remote_path = f"{_get_remote_base_dir(ws)}/run_tests.py"
     ws.workspace.mkdirs(_get_remote_base_dir(ws))
@@ -531,12 +534,14 @@ def main() -> int:
         action="store_true",
         help="Validate upload/sync/job logic without contacting Databricks",
     )
-    parser.add_argument(
-        "pytest_args",
-        nargs=argparse.REMAINDER,
-        help="Additional pytest arguments forwarded to the cluster (e.g. --scale small)",
-    )
-    args = parser.parse_args()
+
+    if "--" in sys.argv:
+        sep_idx = sys.argv.index("--")
+        pytest_args = sys.argv[sep_idx + 1:]
+        args = parser.parse_args(sys.argv[1:sep_idx])
+    else:
+        args = parser.parse_args()
+        pytest_args = []
 
     if args.dry_run:
         return _run_dry_run(args.test_path)
@@ -574,7 +579,7 @@ def main() -> int:
         runner_path,
         remote_test_path,
         catalog,
-        extra_pytest_args=args.pytest_args,
+        extra_pytest_args=pytest_args,
     )
 
 

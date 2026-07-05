@@ -1,0 +1,66 @@
+bundle:
+  name: kimball-framework
+
+variables:
+  catalog:
+    description: "Unity Catalog name for test schemas"
+    default: "workspace"
+  schema:
+    description: "Default schema for ETL control tables"
+    default: "kimball"
+
+artifacts:
+  python_wheel:
+    type: whl
+    path: dist
+
+resources:
+  jobs:
+    kimball_integration_tests:
+      name: "[${bundle.target}] kimball-integration-tests"
+      description: "Run integration and benchmark tests for the Kimball Framework"
+      max_concurrent_runs: 1
+      tasks:
+        - task_key: run_tests
+          spark_python_task:
+            python_file: run_tests.py
+            parameters:
+              - "{{job.parameters.test_path || 'tests/integration'}}"
+              - "{{job.parameters.catalog || 'spark_catalog'}}"
+          new_cluster:
+            spark_version: "14.3.x-scala2.12"
+            node_type_id: "i3.xlarge"
+            num_workers: 2
+            data_security_mode: "SINGLE_USER"
+            runtime_engine: "STANDARD"
+          libraries:
+            - whl: dist/*.whl
+            - pypi:
+                package: pytest
+          timeout_seconds: 3600
+      parameters:
+        - name: test_path
+          default: "tests/integration"
+        - name: catalog
+          default: "spark_catalog"
+      schedule:
+        quartz_cron_expression: "0 0 2 * * ?"
+        timezone_id: "UTC"
+
+targets:
+  dev:
+    workspace:
+      host: https://dbc-7bded16a-1785.cloud.databricks.com/
+    default: true
+    mode: development
+
+  test:
+    workspace:
+      host: https://dbc-7bded16a-1785.cloud.databricks.com/
+    mode: development
+
+  prod:
+    workspace:
+      host: https://dbc-7bded16a-1785.cloud.databricks.com/
+      root_path: /Workspace/Users/t.diogo.marques@gmail.com/.bundle/${bundle.name}/${bundle.target}
+    mode: production
