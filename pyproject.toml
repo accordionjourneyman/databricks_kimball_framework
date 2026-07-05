@@ -47,6 +47,7 @@ spark = [
 dev = [
     "pytest",
     "pytest-benchmark",
+    "pytest-cov",
     "ruff",
     "mypy",
     "pyright",

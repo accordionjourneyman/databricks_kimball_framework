@@ -1,5 +1,13 @@
 # Databricks Kimball Framework
 
+[![CI](https://github.com/accordionjourneyman/databricks_kimball_framework/actions/workflows/ci.yml/badge.svg)](https://github.com/accordionjourneyman/databricks_kimball_framework/actions/workflows/ci.yml)
+[![Integration Tests](https://github.com/accordionjourneyman/databricks_kimball_framework/actions/workflows/integration.yml/badge.svg)](https://github.com/accordionjourneyman/databricks_kimball_framework/actions/workflows/integration.yml)
+[![Benchmarks](https://github.com/accordionjourneyman/databricks_kimball_framework/actions/workflows/benchmarks.yml/badge.svg)](https://github.com/accordionjourneyman/databricks_kimball_framework/actions/workflows/benchmarks.yml)
+[![codecov](https://codecov.io/gh/accordionjourneyman/databricks_kimball_framework/branch/main/graph/badge.svg)](https://codecov.io/gh/accordionjourneyman/databricks_kimball_framework)
+[![PyPI version](https://img.shields.io/pypi/v/kimball-framework.svg)](https://pypi.org/project/kimball-framework/)
+[![Python Versions](https://img.shields.io/pypi/pyversions/kimball-framework.svg)](https://pypi.org/project/kimball-framework/)
+[![License](https://img.shields.io/pypi/l/kimball-framework.svg)](https://github.com/accordionjourneyman/databricks_kimball_framework/blob/main/LICENSE)
+
 A declarative, CDF-based ETL framework implementing Kimball dimensional modeling patterns on Databricks with Delta Lake.
 
 ## Requirements

@@ -38,11 +38,29 @@ jobs:
         run: ruff format --check src tests tools
 
       - name: Run unit tests
-        run: pytest tests/unit -v --ignore=tests/benchmarks --ignore=tests/unit/test_performance.py
+        run: |
+          pytest tests/unit -v \
+            --ignore=tests/benchmarks \
+            --ignore=tests/unit/test_performance.py \
+            --junitxml=junit.xml \
+            --cov=src/kimball \
+            --cov-report=xml
+
+      - name: Publish test results
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        if: always()
+        with:
+          files: junit.xml
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
 
       - name: Run performance benchmarks
         run: |
-          if [ -d "tests/unit/test_performance.py" ]; then
+          if [ -f "tests/unit/test_performance.py" ]; then
             python -m pip install pytest-benchmark
             pytest tests/unit/test_performance.py -v --benchmark-only --benchmark-sort=mean --benchmark-columns=min,median,mean,max --benchmark-group-by=groupfunc
           else
