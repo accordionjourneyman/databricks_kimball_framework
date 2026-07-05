@@ -689,8 +689,15 @@ class TestValidateExpressionFalsePositive:
     flagged, while ``SELECT * FROM`` (SQL statement) IS flagged.
     """
 
-    def test_qualified_column_ref_not_flagged(self):
-        """``select.flag = 1`` should NOT be flagged as forbidden."""
+    @patch("kimball.validation.F")
+    def test_qualified_column_ref_not_flagged(self, mock_F):
+        """``select.flag = 1`` should NOT be flagged as forbidden.
+
+        ``F`` is patched so the ``F.expr()`` call inside ``validate_expression``
+        does not require a live SparkContext (which is unavailable in unit
+        tests). The forbidden-keyword regex check runs before ``F.expr`` is
+        ever reached, so patching ``F`` does not mask the behaviour under test.
+        """
         from kimball.validation import DataQualityValidator
 
         validator = DataQualityValidator()
@@ -704,8 +711,14 @@ class TestValidateExpressionFalsePositive:
             "a table/alias name, not a SQL statement."
         )
 
-    def test_sql_statement_still_flagged(self):
-        """``select * from table`` SHOULD still be flagged."""
+    @patch("kimball.validation.F")
+    def test_sql_statement_still_flagged(self, mock_F):
+        """``select * from table`` SHOULD still be flagged.
+
+        The forbidden-keyword regex matches ``select `` (whitespace after the
+        keyword) and short-circuits before ``F.expr`` is invoked, so patching
+        ``F`` does not affect this assertion.
+        """
         from kimball.validation import DataQualityValidator
 
         validator = DataQualityValidator()
@@ -770,14 +783,19 @@ class TestOrchestratorColumnPruningBug:
     """
 
     def test_column_pruning_warns_about_dropped_columns(self):
-        """The column pruning logic should log about dropped columns."""
+        """The column pruning logic should log about dropped columns.
+
+        The pruning logic was refactored out of ``_prepare_source_df_for_merge``
+        into the dedicated ``_apply_adaptive_pruning`` method, so the source
+        inspection is performed against that method.
+        """
         from kimball.orchestration.orchestrator import Orchestrator
 
-        source_code = inspect.getsource(Orchestrator._prepare_source_df_for_merge)
+        source_code = inspect.getsource(Orchestrator._apply_adaptive_pruning)
 
         assert (
             "column pruning" in source_code.lower()
-            or "columns_to_select" in source_code
+            or "cols_dropped" in source_code
         ), (
             "BUG-DP-005 regression: Column pruning should track and log "
             "about dropped columns to prevent silent data loss."

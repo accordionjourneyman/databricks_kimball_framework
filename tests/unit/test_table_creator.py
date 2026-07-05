@@ -57,7 +57,9 @@ class TestIsSafeSqlExpression:
 
 
 class TestAddSystemColumns:
-    def test_scd1_adds_audit_columns(self, table_creator):
+    @patch("pyspark.sql.functions.current_timestamp")
+    @patch("pyspark.sql.functions.lit")
+    def test_scd1_adds_audit_columns(self, _mock_lit, _mock_ts, table_creator):
         df = MagicMock()
         df.columns = ["id", "val"]
         df.schema = MagicMock()
@@ -74,7 +76,9 @@ class TestAddSystemColumns:
         assert result is df
         assert df.withColumn.call_count == 4
 
-    def test_scd2_adds_history_columns(self, table_creator):
+    @patch("pyspark.sql.functions.current_timestamp")
+    @patch("pyspark.sql.functions.lit")
+    def test_scd2_adds_history_columns(self, _mock_lit, _mock_ts, table_creator):
         df = MagicMock()
         df.columns = ["id"]
         df.schema = MagicMock()

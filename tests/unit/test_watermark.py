@@ -120,7 +120,8 @@ def test_batch_start_all_records_every_source(manager):
     assert all(record["batch_status"] == "RUNNING" for record in records)
 
 
-def test_get_batch_status_returns_current_state(manager, spark_mock):
+@patch("kimball.orchestration.watermark.col")
+def test_get_batch_status_returns_current_state(mock_col, manager, spark_mock):
     spark_mock.table.return_value.filter.return_value.first.return_value = Row(
         batch_id="batch-1",
         batch_status="RUNNING",
@@ -142,7 +143,8 @@ def test_get_batch_status_returns_current_state(manager, spark_mock):
     assert status["rows_written"] == 50
 
 
-def test_get_running_batches_filters_only_running_records(manager, spark_mock):
+@patch("kimball.orchestration.watermark.col")
+def test_get_running_batches_filters_only_running_records(mock_col, manager, spark_mock):
     spark_mock.table.return_value.filter.return_value.select.return_value.collect.return_value = [
         Row(batch_id="batch-1", source_table="source_a"),
         Row(batch_id=None, source_table="source_b"),
@@ -213,8 +215,9 @@ def test_control_table_supports_independent_concurrent_updates(
     assert store[("dim_product", "orders")]["last_processed_version"] == 20
 
 
+@patch("kimball.orchestration.watermark.col")
 def test_control_table_keeps_separate_status_for_each_concurrent_job(
-    manager, spark_mock
+    mock_col, manager, spark_mock
 ):
     spark_mock.table.return_value.filter.return_value.first.side_effect = [
         Row(

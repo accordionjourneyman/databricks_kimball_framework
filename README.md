@@ -7,6 +7,8 @@
 [![PyPI version](https://img.shields.io/pypi/v/kimball-framework.svg)](https://pypi.org/project/kimball-framework/)
 [![Python Versions](https://img.shields.io/pypi/pyversions/kimball-framework.svg)](https://pypi.org/project/kimball-framework/)
 [![License](https://img.shields.io/pypi/l/kimball-framework.svg)](https://github.com/accordionjourneyman/databricks_kimball_framework/blob/main/LICENSE)
+[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-261230.svg)](https://github.com/astral-sh/ruff)
+[![Tests](https://img.shields.io/badge/tests-97%20unit%20%2B%2022%20integration%20%2B%2010%20benchmark-brightgreen.svg)](https://github.com/accordionjourneyman/databricks_kimball_framework/actions)
 
 A declarative, CDF-based ETL framework implementing Kimball dimensional modeling patterns on Databricks with Delta Lake.
 

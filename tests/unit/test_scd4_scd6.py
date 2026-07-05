@@ -12,7 +12,8 @@ from kimball.processing import merger as _merger
 class TestCreateMergeStrategy:
     """Test the factory function with new SCD types."""
 
-    def test_create_scd4_requires_history_table(self):
+    @patch("kimball.processing.merger.current_timestamp")
+    def test_create_scd4_requires_history_table(self, _mock_ts):
         with pytest.raises(ValueError, match="requires history_table"):
             _merger.merge(
                 MagicMock(),
@@ -21,7 +22,8 @@ class TestCreateMergeStrategy:
                 join_keys=["product_id"],
             )
 
-    def test_create_scd6_requires_current_value_columns(self):
+    @patch("kimball.processing.merger.current_timestamp")
+    def test_create_scd6_requires_current_value_columns(self, _mock_ts):
         with pytest.raises(ValueError, match="requires current_value_columns"):
             _merger.merge(
                 MagicMock(),
@@ -30,7 +32,8 @@ class TestCreateMergeStrategy:
                 join_keys=["customer_id"],
             )
 
-    def test_create_scd4_returns_callable(self):
+    @patch("kimball.processing.merger.current_timestamp")
+    def test_create_scd4_returns_callable(self, _mock_ts):
         with patch("kimball.processing.merger.merge_scd4") as mock_scd4:
             _merger.merge(
                 MagicMock(),
@@ -41,7 +44,8 @@ class TestCreateMergeStrategy:
             )
             mock_scd4.assert_called_once()
 
-    def test_create_scd6_returns_callable(self):
+    @patch("kimball.processing.merger.current_timestamp")
+    def test_create_scd6_returns_callable(self, _mock_ts):
         with patch("kimball.processing.merger.merge_scd6") as mock_scd6:
             _merger.merge(
                 MagicMock(),
@@ -82,6 +86,9 @@ class TestSCD6Function:
             patch("kimball.processing.merger.DeltaTable") as mock_dt,
             patch("kimball.processing.merger.broadcast", lambda x: x),
             patch("kimball.processing.merger.compute_hashdiff", return_value="hash"),
+            patch("kimball.processing.merger.col", return_value=MagicMock()),
+            patch("kimball.processing.merger.lit", return_value=MagicMock()),
+            patch("pyspark.sql.functions.when", return_value=MagicMock()),
         ):
             mock_dt.forName.return_value = MagicMock()
             _merger.merge_scd6(

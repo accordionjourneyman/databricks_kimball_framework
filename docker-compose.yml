@@ -8,6 +8,8 @@ services:
       - ./src:/app/src
       - ./tests:/app/tests
       - ./tools:/app/tools
+      - ./run_tests.py:/app/run_tests.py
+      - ./pyproject.toml:/app/pyproject.toml
       # Mount .env for Databricks credentials (remote target)
       - .env:/app/.env:ro
     environment:
