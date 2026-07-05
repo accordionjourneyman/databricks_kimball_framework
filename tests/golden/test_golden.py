@@ -111,9 +111,7 @@ def _render_config(raw_config_path: Path, catalog: str, run_id: str) -> str:
     raw_content = raw_config_path.read_text(encoding="utf-8")
     catalog_prefix = f"{catalog}." if catalog else ""
     rendered = raw_content.replace("{{ catalog }}.", catalog_prefix)
-    rendered = rendered.replace(
-        "{{ raw_schema }}", f"kimball_golden_raw_{run_id}"
-    )
+    rendered = rendered.replace("{{ raw_schema }}", f"kimball_golden_raw_{run_id}")
     rendered = rendered.replace("{{ out_schema }}", f"kimball_golden_{run_id}")
     rendered_path = raw_config_path.parent / f"_{raw_config_path.name}"
     rendered_path.write_text(rendered, encoding="utf-8")
@@ -198,15 +196,9 @@ def rendered_configs(spark: SparkSession, run_id: str) -> list[str]:
     """Return paths to rendered config files (catalog + unique schemas baked in)."""
     catalog = _catalog(spark)
     return [
-        _render_config(
-            GOLDEN_DIR / "dim_customer.yml", catalog, run_id
-        ),
-        _render_config(
-            GOLDEN_DIR / "dim_product.yml", catalog, run_id
-        ),
-        _render_config(
-            GOLDEN_DIR / "fact_sales.yml", catalog, run_id
-        ),
+        _render_config(GOLDEN_DIR / "dim_customer.yml", catalog, run_id),
+        _render_config(GOLDEN_DIR / "dim_product.yml", catalog, run_id),
+        _render_config(GOLDEN_DIR / "fact_sales.yml", catalog, run_id),
     ]
 
 
@@ -252,7 +244,9 @@ def day1_data(spark: SparkSession, golden_schemas: tuple[str, str]) -> str:
 
 
 @pytest.fixture(scope="module")
-def day2_data(spark: SparkSession, day1_data: str, golden_schemas: tuple[str, str]) -> str:
+def day2_data(
+    spark: SparkSession, day1_data: str, golden_schemas: tuple[str, str]
+) -> str:
     """Merge day 2 CSV data into silver tables to generate CDF updates."""
     raw_schema, _ = golden_schemas
     day2 = GOLDEN_DIR / "data" / "day2"
@@ -291,9 +285,7 @@ def day2_data(spark: SparkSession, day1_data: str, golden_schemas: tuple[str, st
     return day1_data
 
 
-def _run_pipelines(
-    rendered_configs: list[str], catalog: str, out_schema: str
-) -> None:
+def _run_pipelines(rendered_configs: list[str], catalog: str, out_schema: str) -> None:
     """Execute the pipeline executor and raise on any failure."""
     etl_target = f"{catalog}.{out_schema}" if catalog else out_schema
     os.environ["KIMBALL_ETL_SCHEMA"] = etl_target

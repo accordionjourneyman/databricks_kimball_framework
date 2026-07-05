@@ -7,7 +7,7 @@ This guide gets the Kimball Framework running with a **local Spark + Delta Lake*
 - **Docker Desktop** (with Compose) — used to run the containerized Spark+Delta+Java environment
 - **Git** — to clone the repo
 
-> **Note:** You do **not** need Java or PySpark installed on your host machine. The Docker container provides OpenJDK 17, PySpark 3.5, and Delta Spark 3.2.
+> **Note:** You do **not** need Java or PySpark installed on your host machine. The Docker container provides OpenJDK 17, PySpark 4.0, and Delta Spark 4.2.
 
 ## Quick Start (Docker — recommended)
 
@@ -24,7 +24,7 @@ cd databricks_kimball_framework
 docker-compose build
 ```
 
-This builds a Python 3.11 image with OpenJDK 17, PySpark 3.5.5, and Delta Spark 3.2.0. The first build takes ~2-3 minutes; subsequent builds are cached.
+This builds a Python 3.11 image with OpenJDK 17, PySpark 4.0.1, and Delta Spark 4.2.0. The first build takes ~2-3 minutes; subsequent builds are cached.
 
 > **Important:** The Docker image deliberately does **not** install `databricks-connect`. When `databricks-connect` is installed alongside `pyspark`, it hijacks `SparkSession.builder.getOrCreate()` and refuses to create local sessions. By keeping them separate, the Docker environment gets a clean PySpark + Delta setup.
 
@@ -130,7 +130,7 @@ source .venv/bin/activate
 # 3. Install with dev dependencies
 # IMPORTANT: Do NOT install databricks-connect alongside pyspark
 # for local testing — it hijacks SparkSession.builder.
-pip install pyspark==3.5.5 delta-spark==3.2.0 pyyaml jinja2 pydantic pytest ruff
+pip install pyspark==4.0.1 delta-spark==4.2.0 pyyaml jinja2 pydantic pytest ruff
 pip install --no-deps -e .
 
 # 4. Run unit tests

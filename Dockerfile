@@ -41,8 +41,8 @@ COPY tools/ tools/
 
 # Install Python dependencies.
 RUN pip install --no-cache-dir \
-    pyspark==3.5.5 \
-    delta-spark==3.2.0 \
+    pyspark==4.0.1 \
+    delta-spark==4.2.0 \
     pyyaml \
     jinja2 \
     pydantic \
@@ -50,10 +50,12 @@ RUN pip install --no-cache-dir \
     ruff
 
 # Download Delta Lake JARs at build time so they're available offline at runtime.
-RUN curl -fsSL -o /usr/local/lib/python3.11/site-packages/pyspark/jars/delta-spark_2.12-3.2.0.jar \
-    "https://repo1.maven.org/maven2/io/delta/delta-spark_2.12/3.2.0/delta-spark_2.12-3.2.0.jar" && \
-    curl -fsSL -o /usr/local/lib/python3.11/site-packages/pyspark/jars/delta-storage-3.2.0.jar \
-    "https://repo1.maven.org/maven2/io/delta/delta-storage/3.2.0/delta-storage-3.2.0.jar"
+# Delta 4.x is built against Spark 4.0 / 4.1 and Scala 2.13.
+RUN SPARK_JARS_DIR=/usr/local/lib/python3.11/site-packages/pyspark/jars && \
+    curl -fsSL -o "$SPARK_JARS_DIR/delta-spark_4.0_2.13-4.2.0.jar" \
+    "https://repo1.maven.org/maven2/io/delta/delta-spark_4.0_2.13/4.2.0/delta-spark_4.0_2.13-4.2.0.jar" && \
+    curl -fsSL -o "$SPARK_JARS_DIR/delta-storage-4.2.0.jar" \
+    "https://repo1.maven.org/maven2/io/delta/delta-storage/4.2.0/delta-storage-4.2.0.jar"
 
 # Install the framework package itself (without remote/databricks extras)
 RUN pip install --no-cache-dir --no-deps -e .
