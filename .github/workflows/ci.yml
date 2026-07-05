@@ -49,6 +49,7 @@ jobs:
             --ignore=tests/unit/test_performance.py \
             --junitxml=junit.xml \
             --cov=src/kimball \
+            --cov-branch \
             --cov-report=xml
 
       - name: Publish test results
