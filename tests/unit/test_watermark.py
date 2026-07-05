@@ -144,7 +144,9 @@ def test_get_batch_status_returns_current_state(mock_col, manager, spark_mock):
 
 
 @patch("kimball.orchestration.watermark.col")
-def test_get_running_batches_filters_only_running_records(mock_col, manager, spark_mock):
+def test_get_running_batches_filters_only_running_records(
+    mock_col, manager, spark_mock
+):
     spark_mock.table.return_value.filter.return_value.select.return_value.collect.return_value = [
         Row(batch_id="batch-1", source_table="source_a"),
         Row(batch_id=None, source_table="source_b"),

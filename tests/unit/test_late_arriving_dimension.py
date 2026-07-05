@@ -24,10 +24,13 @@ def test_update_skeletons_reports_merge_metrics():
     source_df.columns = ["customer_id", "name"]
 
     with (
-        patch("kimball.processing.late_arriving_dimension.DeltaTable.forName",
-              return_value=delta_table),
-        patch("kimball.processing.late_arriving_dimension.col",
-              return_value=MagicMock()),
+        patch(
+            "kimball.processing.late_arriving_dimension.DeltaTable.forName",
+            return_value=delta_table,
+        ),
+        patch(
+            "kimball.processing.late_arriving_dimension.col", return_value=MagicMock()
+        ),
     ):
         processor = LateArrivingDimensionProcessor(spark)
         result = processor.update_skeletons_with_real_data(

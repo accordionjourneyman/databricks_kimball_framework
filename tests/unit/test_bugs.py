@@ -794,8 +794,7 @@ class TestOrchestratorColumnPruningBug:
         source_code = inspect.getsource(Orchestrator._apply_adaptive_pruning)
 
         assert (
-            "column pruning" in source_code.lower()
-            or "cols_dropped" in source_code
+            "column pruning" in source_code.lower() or "cols_dropped" in source_code
         ), (
             "BUG-DP-005 regression: Column pruning should track and log "
             "about dropped columns to prevent silent data loss."
