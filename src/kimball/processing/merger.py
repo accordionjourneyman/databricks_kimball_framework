@@ -33,9 +33,9 @@ from kimball.common.constants import (
     DEFAULT_START_DATE,
     DEFAULT_VALID_FROM,
     DEFAULT_VALID_TO,
-    SQL_DEFAULT_VALID_FROM,
     SQL_DEFAULT_VALID_TO,
 )
+
 try:
     from pyspark.errors import PySparkException as PYSPARK_EXCEPTION_BASE
 except ImportError:
@@ -224,7 +224,9 @@ def merge_scd2(source_df: DataFrame, *, target_table_name: str, join_keys: list[
     rows_no_keys = staged_source.filter(col("__merge_action") == "UPDATE_EXPIRE")
     rows_with_keys = _generate_keys(rows_needing_keys, surrogate_key_strategy, join_keys, surrogate_key_col)
     if surrogate_key_strategy == "identity" and get_runtime_policy().should_include_sk_in_insert() and surrogate_key_col not in rows_with_keys.columns:
-        from pyspark.sql.functions import lit as _lit, max as _spark_max, row_number as _row_number
+        from pyspark.sql.functions import lit as _lit
+        from pyspark.sql.functions import max as _spark_max
+        from pyspark.sql.functions import row_number as _row_number
         from pyspark.sql.window import Window as _Window
         current_max = 0
         try:
@@ -339,17 +341,25 @@ def merge(source_df: DataFrame, *, target_table_name: str, join_keys: list[str],
         enriched_df = enriched_df.withColumn("__etl_batch_id", lit(batch_id))
     merge_fn: Callable[[DataFrame], None]
     if scd_type == 1:
-        merge_fn = lambda df: merge_scd1(df, target_table_name=target_table_name, join_keys=join_keys, delete_strategy=delete_strategy, schema_evolution=schema_evolution, surrogate_key_col=surrogate_key_col, surrogate_key_strategy=surrogate_key_strategy)
+        def _merge_fn(df: DataFrame) -> None:
+            merge_scd1(df, target_table_name=target_table_name, join_keys=join_keys, delete_strategy=delete_strategy, schema_evolution=schema_evolution, surrogate_key_col=surrogate_key_col, surrogate_key_strategy=surrogate_key_strategy)
+        merge_fn = _merge_fn
     elif scd_type == 2:
-        merge_fn = lambda df: merge_scd2(df, target_table_name=target_table_name, join_keys=join_keys, track_history_columns=track_history_columns or [], surrogate_key_col=surrogate_key_col, surrogate_key_strategy=surrogate_key_strategy, schema_evolution=schema_evolution, effective_at_column=effective_at_column)
+        def _merge_fn(df: DataFrame) -> None:
+            merge_scd2(df, target_table_name=target_table_name, join_keys=join_keys, track_history_columns=track_history_columns or [], surrogate_key_col=surrogate_key_col, surrogate_key_strategy=surrogate_key_strategy, schema_evolution=schema_evolution, effective_at_column=effective_at_column)
+        merge_fn = _merge_fn
     elif scd_type == 4:
         if not history_table:
             raise ValueError("scd_type=4 requires history_table parameter")
-        merge_fn = lambda df: merge_scd4(df, target_table_name=target_table_name, history_table_name=history_table, join_keys=join_keys, track_history_columns=track_history_columns or ["*"], surrogate_key_col=surrogate_key_col, surrogate_key_strategy=surrogate_key_strategy, schema_evolution=schema_evolution, effective_at_column=effective_at_column)
+        def _merge_fn(df: DataFrame) -> None:
+            merge_scd4(df, target_table_name=target_table_name, history_table_name=history_table, join_keys=join_keys, track_history_columns=track_history_columns or ["*"], surrogate_key_col=surrogate_key_col, surrogate_key_strategy=surrogate_key_strategy, schema_evolution=schema_evolution, effective_at_column=effective_at_column)
+        merge_fn = _merge_fn
     elif scd_type == 6:
         if not current_value_columns:
             raise ValueError("scd_type=6 requires current_value_columns parameter")
-        merge_fn = lambda df: merge_scd6(df, target_table_name=target_table_name, join_keys=join_keys, track_history_columns=track_history_columns or [], current_value_columns=current_value_columns, surrogate_key_col=surrogate_key_col, surrogate_key_strategy=surrogate_key_strategy, schema_evolution=schema_evolution, effective_at_column=effective_at_column)
+        def _merge_fn(df: DataFrame) -> None:
+            merge_scd6(df, target_table_name=target_table_name, join_keys=join_keys, track_history_columns=track_history_columns or [], current_value_columns=current_value_columns, surrogate_key_col=surrogate_key_col, surrogate_key_strategy=surrogate_key_strategy, schema_evolution=schema_evolution, effective_at_column=effective_at_column)
+        merge_fn = _merge_fn
     else:
         raise ValueError(f"Unsupported SCD type: {scd_type}. Supported: 1, 2, 4, 6")
     for attempt in range(max_retries + 1):
@@ -390,7 +400,7 @@ def _seed_default_rows(target_table_name: str, schema: StructType, surrogate_key
     try:
         DeltaTable.forName(spark, target_table_name)
     except Exception:
-        raise ValueError(f"ensure_defaults: {target_table_name} exists but is not a Delta table.")
+        raise ValueError(f"ensure_defaults: {target_table_name} exists but is not a Delta table.") from None
     delta_table = DeltaTable.forName(spark, target_table_name)
     standard_defaults = {-1: "Unknown", -2: "Not Applicable", -3: "Error"}
     rows_to_insert = []

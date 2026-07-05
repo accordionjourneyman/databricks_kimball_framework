@@ -36,6 +36,7 @@ except ImportError:
     except ImportError:
         PYSPARK_EXCEPTION_BASE = Exception
 from kimball.common.runtime import RuntimeOptions
+from kimball.common.spark_session import get_spark
 from kimball.common.utils import quote_table_name
 from kimball.observability.resilience import (
     PipelineCheckpoint,
@@ -94,7 +95,7 @@ class Orchestrator:
     ):
         self.config_loader = ConfigLoader()
         self.config = self.config_loader.load_config(config_path)
-        self.spark = spark or _get_spark()
+        self.spark = spark or get_spark()
 
         # Load runtime options for JVM tuning (can be overridden via env vars)
         self.runtime_options = RuntimeOptions.from_environment()
@@ -708,8 +709,6 @@ class Orchestrator:
         logger.info(
             f"Applying identity bridge: {bridge.table} on {bridge.join_on} -> {bridge.target_column}"
         )
-        bridge_df = self.spark.table(bridge.table)
-        bridge_cols_to_drop = [c for c in bridge_df.columns if c != bridge.join_on]
         df.createOrReplaceTempView("_identity_bridge_src")
         resolved = self.spark.sql(
             f"SELECT COALESCE(map.`{bridge.target_column}`, src.`{bridge.join_on}`) AS `{bridge.join_on}`, "
@@ -853,6 +852,7 @@ class Orchestrator:
         self._run_compile_time_sql_check()
 
         batch_id = str(uuid.uuid4())
+        pipeline_start = time.time()
         if self.metrics_collector:
             self.metrics_collector.start_collection()
 
@@ -967,7 +967,7 @@ class Orchestrator:
                 if self.metrics_collector:
                     self.metrics_collector.add_operation_metric(
                         "merge",
-                        duration_ms=(time.time() - stage_start) * 1000,
+                        duration_ms=(time.time() - pipeline_start) * 1000,
                         rows_read=total_rows_read,
                         rows_written=total_rows_written,
                     )
@@ -1035,7 +1035,7 @@ class Orchestrator:
             raise e
 
         finally:
-            for source_name, df in active_dfs.items():
+            for _source_name, df in active_dfs.items():
                 try:
                     df.unpersist(blocking=False)
                 except Exception:

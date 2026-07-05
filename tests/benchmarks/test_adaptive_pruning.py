@@ -4,12 +4,10 @@ schema_evolution=True but the target already has the needed columns.
 """
 
 import json
-import os
 import time
 import uuid
 from pathlib import Path
 
-import pytest
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, concat, date_add, lit, rand, when
 
@@ -53,7 +51,7 @@ def _generate_products_wide(
     ]
     for i in range(extra_cols):
         select_cols.append(
-            concat(lit(f"val_"), (rand() * 1000).cast("int").cast("string")).alias(f"extra_{i}")
+            concat(lit("val_"), (rand() * 1000).cast("int").cast("string")).alias(f"extra_{i}")
         )
     df = spark.range(n).select(*select_cols)
     df.write.format("delta").mode("overwrite").saveAsTable(f"{db}.products_src")

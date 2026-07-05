@@ -32,7 +32,8 @@ def spark():
     On Databricks: use the active Spark Connect session (do NOT create local).
     Locally: create a new local[2] session with 4GB driver memory.
     """
-    import sys, types
+    import sys
+    import types
     from unittest.mock import MagicMock
 
     if "databricks.sdk.runtime" not in sys.modules:
@@ -46,6 +47,7 @@ def spark():
         session = SparkSession.builder.getOrCreate()
     else:
         import tempfile
+
         from pyspark.sql import SparkSession
         session = (
             SparkSession.builder.appName("KimballBenchmark")

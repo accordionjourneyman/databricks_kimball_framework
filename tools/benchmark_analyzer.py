@@ -14,7 +14,6 @@ import json
 import os
 import sys
 from collections import defaultdict
-from pathlib import Path
 from typing import Any
 
 
@@ -114,7 +113,7 @@ def identify_bottlenecks(results: list[dict[str, Any]]) -> list[str]:
     high_exch = [r for r in results if r["second_run_exchanges"] > 10]
     if high_exch:
         findings.append(
-            f"High shuffle boundary count (>10) in: "
+            "High shuffle boundary count (>10) in: "
             + ", ".join(f"{r['scenario']}@{r['scale']}({r['second_run_exchanges']})" for r in high_exch)
         )
 
@@ -134,7 +133,7 @@ def identify_bottlenecks(results: list[dict[str, Any]]) -> list[str]:
     window_runs = [r for r in results if r["second_run_windows"] > 0]
     if window_runs:
         findings.append(
-            f"Window operations (single-partition) in: "
+            "Window operations (single-partition) in: "
             + ", ".join(f"{r['scenario']}@{r['scale']}({r['second_run_windows']})" for r in window_runs)
         )
 
@@ -146,7 +145,6 @@ def identify_bottlenecks(results: list[dict[str, Any]]) -> list[str]:
         findings.append(f"Join strategies observed: {sorted(join_types_seen)}")
 
     # 7. Scaling behavior (linear vs super-linear)
-    scales = ["tiny", "small", "medium", "large"]
     by_scenario = defaultdict(dict)
     for r in results:
         by_scenario[r["scenario"]][r["scale"]] = r["second_run_total_ms"]

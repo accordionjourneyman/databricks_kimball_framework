@@ -7,8 +7,6 @@ Uses range partitioning via spark.range for fast generation.
 
 from __future__ import annotations
 
-import os
-import tempfile
 import uuid
 from dataclasses import dataclass
 
@@ -21,7 +19,6 @@ from pyspark.sql.functions import (
     lit,
     rand,
     randn,
-    to_date,
     when,
 )
 
@@ -39,7 +36,7 @@ class ScaleTier:
     n_new: int
 
     @classmethod
-    def tiny(cls) -> "ScaleTier":
+    def tiny(cls) -> ScaleTier:
         return cls(
             name="tiny_1k",
             products=100,
@@ -52,7 +49,7 @@ class ScaleTier:
         )
 
     @classmethod
-    def small(cls) -> "ScaleTier":
+    def small(cls) -> ScaleTier:
         return cls(
             name="small_100k",
             products=10_000,
@@ -65,7 +62,7 @@ class ScaleTier:
         )
 
     @classmethod
-    def medium(cls) -> "ScaleTier":
+    def medium(cls) -> ScaleTier:
         return cls(
             name="medium_1m",
             products=100_000,
@@ -78,7 +75,7 @@ class ScaleTier:
         )
 
     @classmethod
-    def large(cls) -> "ScaleTier":
+    def large(cls) -> ScaleTier:
         return cls(
             name="large_10m",
             products=1_000_000,

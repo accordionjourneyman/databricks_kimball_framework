@@ -1,7 +1,6 @@
 """Quick comparison of validation optimization results."""
-import json
 import glob
-import sys
+import json
 
 results = []
 for pattern in [

@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from pyspark.sql.types import StructField, StructType, StringType, TimestampType
+from pyspark.sql.types import StringType, StructField, StructType, TimestampType
 
 from kimball.processing import merger as _merger
 

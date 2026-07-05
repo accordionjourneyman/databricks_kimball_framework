@@ -87,7 +87,7 @@ class RuntimeOptions:
 
     # dbt-inspired validation options
     skip_validation_if_unchanged: bool = False
-    """Skip all validation if config_fingerprint + source_schema_fingerprint 
+    """Skip all validation if config_fingerprint + source_schema_fingerprint
     are unchanged since the last successful run (dbt state:modified+ equivalent)."""
     use_approximate_unique: bool = False
     """Use HLL-based approx_count_distinct instead of exact groupBy for uniqueness checks.

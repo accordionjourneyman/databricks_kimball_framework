@@ -26,9 +26,10 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from kimball.common.errors import DataQualityError
 
@@ -186,8 +187,10 @@ class DataQualityValidator:
         try:
             bad_df = df.groupBy(*columns).agg(F.count("*").alias("_dq_count")).filter(F.col("_dq_count") > 1)
             def details(count):
-                if count > 0: return f"Found {count} duplicate key combinations"
-                if count == -1: return "Found duplicate key combinations (count skipped for speed)"
+                if count > 0:
+                    return f"Found {count} duplicate key combinations"
+                if count == -1:
+                    return "Found duplicate key combinations (count skipped for speed)"
                 return None
             return self._build_test_result(df, bad_df, test_name, severity, sample_size, details)
         except Exception as e:
@@ -207,8 +210,10 @@ class DataQualityValidator:
                 null_condition = null_condition | F.col(c).isNull()
             bad_df = df.filter(null_condition)
             def details(count):
-                if count > 0: return f"Found {count} rows with NULL values"
-                if count == -1: return "Found rows with NULL values (count skipped for speed)"
+                if count > 0:
+                    return f"Found {count} rows with NULL values"
+                if count == -1:
+                    return "Found rows with NULL values (count skipped for speed)"
                 return None
             return self._build_test_result(df, bad_df, test_name, severity, sample_size, details)
         except Exception as e:
@@ -226,10 +231,13 @@ class DataQualityValidator:
         try:
             bad_df = df.filter(~F.col(column).isin(values))
             def details(count):
-                if count > 0: return f"Found {count} rows with values not in {values}"
-                if count == -1: return f"Found rows with values not in {values} (count skipped)"
+                if count > 0:
+                    return f"Found {count} rows with values not in {values}"
+                if count == -1:
+                    return f"Found rows with values not in {values} (count skipped)"
                 return None
-            sample_fn = lambda d, n: [row.asDict() for row in d.select(column).distinct().limit(n).collect()]
+            def sample_fn(d, n):
+                return [row.asDict() for row in d.select(column).distinct().limit(n).collect()]
             return self._build_test_result(df, bad_df, test_name, severity, sample_size, details, sample_fn)
         except Exception as e:
             return self._test_error(test_name, severity, e)
@@ -248,10 +256,13 @@ class DataQualityValidator:
             dim_df = self.spark.table(reference_table)
             orphans = df.join(dim_df.select(F.col(reference_column).alias("_ref_col")), df[fk_column] == F.col("_ref_col"), "left_anti").filter(F.col(fk_column).isNotNull())
             def details(count):
-                if count > 0: return f"Found {count} orphan FK values not in {reference_table}"
-                if count == -1: return f"Found orphan FK values not in {reference_table} (count skipped)"
+                if count > 0:
+                    return f"Found {count} orphan FK values not in {reference_table}"
+                if count == -1:
+                    return f"Found orphan FK values not in {reference_table} (count skipped)"
                 return None
-            sample_fn = lambda d, n: [row.asDict() for row in d.select(fk_column).distinct().limit(n).collect()]
+            def sample_fn(d, n):
+                return [row.asDict() for row in d.select(fk_column).distinct().limit(n).collect()]
             return self._build_test_result(df, orphans, test_name, severity, sample_size, details, sample_fn)
         except Exception as e:
             return self._test_error(test_name, severity, e)
@@ -279,8 +290,10 @@ class DataQualityValidator:
 
             bad_df = df.filter(~F.expr(f"({expression})"))
             def details(count):
-                if count > 0: return f"Found {count} rows failing: {expression}"
-                if count == -1: return f"Found rows failing: {expression} (count skipped)"
+                if count > 0:
+                    return f"Found {count} rows failing: {expression}"
+                if count == -1:
+                    return f"Found rows failing: {expression} (count skipped)"
                 return None
             return self._build_test_result(df, bad_df, test_name, severity, sample_size, details)
         except Exception as e:
@@ -454,16 +467,16 @@ class DataQualityValidator:
             orphans = fact_fks.join(valid_sks, fact_fks[fk_column] == valid_sks[dim_key], "left_anti")
             is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
             if is_dev_mode:
-                orphan_count = orphans.count()
-                fk_total = fact_fks.count()
-            else:
-                orphan_count = 0 if orphans.limit(1).isEmpty() else -1
-                fk_total = -1
+                orphans.count()
+                fact_fks.count()
             def details(count):
-                if count > 0: return f"Found {count} FK values with no matching dimension SK"
-                if count == -1: return "Found FK values with no matching dimension SK (count skipped)"
+                if count > 0:
+                    return f"Found {count} FK values with no matching dimension SK"
+                if count == -1:
+                    return "Found FK values with no matching dimension SK (count skipped)"
                 return None
-            sample_fn = lambda d, n: [row.asDict() for row in d.limit(n).collect()]
+            def sample_fn(d, n):
+                return [row.asDict() for row in d.limit(n).collect()]
             return self._build_test_result(df, orphans, test_name, severity, 5, details, sample_fn)
         except Exception as e:
             return self._test_error(test_name, severity, e)

@@ -10,35 +10,29 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
-import os
 import sys
 import tempfile
 import time
+import types
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 # Ensure src/ is importable
 _HERE = Path(__file__).parent.parent
 sys.path.insert(0, str(_HERE / "src"))
 sys.path.insert(0, str(_HERE / "tools"))
 
-# Mock databricks.sdk.runtime (same as conftest.py)
-import types
-from unittest.mock import MagicMock
 if "databricks.sdk.runtime" not in sys.modules:
     mock_db_sdk = types.ModuleType("databricks.sdk.runtime")
     mock_db_sdk.spark = MagicMock()
     mock_db_sdk.dbutils = MagicMock()
     sys.modules["databricks.sdk.runtime"] = mock_db_sdk
 
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, concat, lit, rand
-
-from benchmark_data import (
+from benchmark_data import (  # noqa: E402
     ScaleTier,
     create_benchmark_database,
     drop_benchmark_database,
@@ -47,9 +41,8 @@ from benchmark_data import (
     generate_products,
     make_changes,
 )
-from benchmark_metrics import (
+from benchmark_metrics import (  # noqa: E402
     MetricsListener,
-    StageProfile,
     capture_execution_plan,
     extract_exchanges,
     extract_join_types,
@@ -57,14 +50,15 @@ from benchmark_metrics import (
     profile_stage,
     save_metrics_report,
 )
+from pyspark.sql import SparkSession  # noqa: E402
+from pyspark.sql.functions import col  # noqa: E402
 
-from kimball.common.config import ConfigLoader
-from kimball.orchestration.orchestrator import Orchestrator
-from kimball.processing.loader import DataLoader
-from kimball.orchestration.watermark import ETLControlManager
-from kimball.orchestration.transaction import TransactionManager
-from kimball.processing.table_creator import TableCreator
-from kimball.processing.skeleton_generator import SkeletonGenerator
+from kimball.orchestration.orchestrator import Orchestrator  # noqa: E402
+from kimball.orchestration.transaction import TransactionManager  # noqa: E402
+from kimball.orchestration.watermark import ETLControlManager  # noqa: E402
+from kimball.processing.loader import DataLoader  # noqa: E402
+from kimball.processing.skeleton_generator import SkeletonGenerator  # noqa: E402
+from kimball.processing.table_creator import TableCreator  # noqa: E402
 
 BENCHMARK_CONFIGS = {
     "scd1_baseline": "scd1_baseline.yml",
@@ -160,8 +154,8 @@ def build_spark() -> SparkSession:
 
 def render_config(template_path: Path, db: str) -> str:
     """Render a Jinja2 config template with the given database name."""
-    from jinja2.sandbox import SandboxedEnvironment
     from jinja2 import StrictUndefined
+    from jinja2.sandbox import SandboxedEnvironment
 
     with open(template_path) as f:
         content = f.read()
@@ -326,7 +320,7 @@ def run_scenario(
         )
 
         if result.first_run_status != "SUCCESS" or not target_exists:
-            print(f"  Skipping second run due to first run failure")
+            print("  Skipping second run due to first run failure")
             return result
 
         # --- Mutate source (except for SCD1 baseline / multi_source_join) ---
@@ -467,7 +461,7 @@ def main() -> None:
     save_metrics_report(str(summary_path), summary_rows)
 
     print(f"\n{'='*60}")
-    print(f"  Results written to:")
+    print("  Results written to:")
     print(f"    Full report: {report_path}")
     print(f"    Summary:     {summary_path}")
     print(f"{'='*60}")

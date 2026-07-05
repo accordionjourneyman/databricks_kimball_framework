@@ -13,20 +13,11 @@ Run with:
 
 import hashlib
 import os
-import time
 
-import pandas as pd
 import pytest
 from pyspark.sql import SparkSession
-from pyspark.sql.types import (
-    IntegerType,
-    LongType,
-    StringType,
-    StructField,
-    StructType,
-)
 
-from kimball.common.config import ConfigLoader, TestDefinition, TableConfig
+from kimball.common.config import ConfigLoader, TableConfig, TestDefinition
 from kimball.processing.hashing import compute_hashdiff
 from kimball.validation import DataQualityValidator, TestSeverity
 
@@ -50,9 +41,9 @@ class TestHashdiffBench:
     """Hashdiff is called on every SCD2 row — this is the most performance-critical path."""
 
     def test_hashdiff_10_columns_1k(self, benchmark, small_spark):
-        from pyspark.sql.functions import col, lit, struct, when
+        from pyspark.sql.functions import col
         df = small_spark.range(1000).select(
-            *(col(f"id").cast("int").alias(f"col_{i}") for i in range(10))
+            *(col("id").cast("int").alias(f"col_{i}") for i in range(10))
         )
         hashdiff = compute_hashdiff([f"col_{i}" for i in range(10)])
         result = benchmark(lambda: df.select(hashdiff.alias("h")).count())
@@ -103,7 +94,7 @@ class TestValidationBench:
         assert result is not None
 
     def test_validate_not_null_1k(self, benchmark, small_spark):
-        from pyspark.sql.functions import col, lit
+        from pyspark.sql.functions import col
         df = small_spark.range(1000).select(col("id").cast("int").alias("v"))
         validator = DataQualityValidator(spark_session=small_spark)
         result = benchmark(

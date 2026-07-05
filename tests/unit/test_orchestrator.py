@@ -50,7 +50,7 @@ def orchestrator(spark_mock, etl_control_mock, transaction_manager_mock, loader_
         patch("kimball.orchestration.orchestrator.RuntimeOptions") as mock_runtime,
         patch("kimball.orchestration.orchestrator.ETLControlManager", return_value=etl_control_mock),
         patch("kimball.orchestration.orchestrator.DataLoader", return_value=loader_mock),
-        patch("kimball.orchestration.orchestrator._merger") as mock_merger_mod,
+        patch("kimball.orchestration.orchestrator._merger"),
         patch("kimball.orchestration.orchestrator.SkeletonGenerator"),
         patch("kimball.orchestration.orchestrator.TableCreator"),
         patch("kimball.orchestration.orchestrator.TransactionManager", return_value=transaction_manager_mock),

@@ -2,8 +2,9 @@
 Unit tests for SCD4 and SCD6 functional merge strategies.
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from kimball.processing import merger as _merger
 

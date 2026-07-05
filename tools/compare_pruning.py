@@ -1,6 +1,6 @@
 """Compare pruning benchmark results."""
-import json
 import glob
+import json
 
 results = []
 for pattern in ["pruning_baseline_*.json", "pruning_adaptive_*.json"]:

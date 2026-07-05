@@ -29,7 +29,8 @@ class HashKeyGenerator(KeyGenerator):
 
 class SequenceKeyGenerator(KeyGenerator):
     def generate_keys(self, df: DataFrame, key_col_name: str, existing_max_key: int = 0) -> DataFrame:
-        import os, warnings
+        import os
+        import warnings
         if os.environ.get("KIMBALL_ALLOW_UNSAFE_SEQUENCE_KEY", "0") != "1":
             raise RuntimeError("BLOCKED: unsafe sequence key generation")
         warnings.warn("SequenceKeyGenerator is deprecated", DeprecationWarning, stacklevel=2)

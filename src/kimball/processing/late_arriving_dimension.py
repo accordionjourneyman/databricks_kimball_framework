@@ -22,7 +22,7 @@ class LateArrivingDimensionProcessor:
         if "__is_skeleton" not in dim_df.columns:
             logger.info(f"Table {dimension_table} has no __is_skeleton column. Skipping late-arriving dimension processing.")
             return 0
-        skeleton_rows = dim_df.filter(col("__is_skeleton") == True)
+        skeleton_rows = dim_df.filter(col("__is_skeleton"))
         if skeleton_rows.isEmpty():
             logger.info(f"No skeleton rows found in {dimension_table}.")
             return 0

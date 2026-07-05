@@ -12,9 +12,10 @@ Provides:
 from __future__ import annotations
 
 import json
+import os
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from pyspark.sql import DataFrame, SparkSession
@@ -193,8 +194,7 @@ def extract_window_ops(plan: str) -> int:
 
 def save_metrics_report(filepath: str, data: dict[str, Any]) -> None:
     """Write a metrics report to a JSON file."""
-    os.makedirs = __import__("os").makedirs
-    os.makedirs(__import__("os").path.dirname(filepath), exist_ok=True)
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
     with open(filepath, "w") as f:
         json.dump(data, f, indent=2, default=str)
 
