@@ -173,38 +173,18 @@ def _sync_tests(remote_tests_dir: str, ws: Any) -> None:
 
 
 def _create_runner_script(ws: Any, remote_tests_dir: str) -> str:
-    """Upload a small Python driver that runs pytest on the cluster."""
+    """Upload the runner script to the workspace."""
     from databricks.sdk.service.workspace import ImportFormat
 
-    script = f"""import os
-import sys
+    local_path = REPO_ROOT / "run_tests.py"
+    if not local_path.exists():
+        raise FileNotFoundError(f"Runner script not found: {local_path}")
 
-test_path = sys.argv[1] if len(sys.argv) > 1 else "{remote_tests_dir}"
-catalog = sys.argv[2] if len(sys.argv) > 2 else "spark_catalog"
-extra_args = sys.argv[3:] if len(sys.argv) > 3 else []
-os.environ.setdefault("KIMBALL_TEST_CATALOG", catalog)
-
-# On a Databricks cluster the local spark session is the real DBR session,
-# so clear any stale remote-connect env vars.
-os.environ.setdefault("DATABRICKS_HOST", "")
-os.environ.setdefault("DATABRICKS_TOKEN", "")
-
-# Workspace files are read-only; pytest must not write __pycache__.
-os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
-sys.dont_write_bytecode = True
-
-import pytest
-exit_code = pytest.main([test_path, "-v", "-p", "no:cacheprovider"] + extra_args)
-# Avoid sys.exit() on success: Databricks serverless treats SystemExit as a
-# workload failure even when the exit code is 0. Returning is enough.
-if exit_code != 0:
-    sys.exit(exit_code)
-"""
     remote_path = f"{_get_remote_base_dir(ws)}/run_tests.py"
     ws.workspace.mkdirs(_get_remote_base_dir(ws))
     ws.workspace.upload(
         remote_path,
-        script.encode("utf-8"),
+        local_path.read_bytes(),
         format=ImportFormat.AUTO,
         overwrite=True,
     )
