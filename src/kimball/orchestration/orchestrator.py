@@ -47,6 +47,7 @@ from kimball.orchestration.watermark import (
     compute_source_schema_fingerprint,
     get_etl_schema,
 )
+from kimball.common.utils import quote_table_name
 from kimball.processing.loader import DataLoader
 from kimball.processing import merger as _merger
 from kimball.processing.skeleton_generator import SkeletonGenerator
@@ -348,33 +349,122 @@ class Orchestrator:
                 "Using local checkpoint (materializes to executor heap - not free)"
             )
 
-        if (
-            self.spark.catalog.tableExists(self.config.table_name)
-            and not self.config.schema_evolution
-        ):
+        if self.spark.catalog.tableExists(self.config.table_name):
             target_schema = self.spark.table(self.config.table_name).schema
-            target_columns = [f.name for f in target_schema.fields]
-            SYSTEM_COLUMNS = {
-                "__is_current",
-                "__valid_from",
-                "__valid_to",
-                "__etl_processed_at",
-                "__is_deleted",
-                "_change_type",
-            }
-            columns_to_select = []
-            for c in checkpointed_df.columns:
-                if c in target_columns or c in SYSTEM_COLUMNS:
-                    columns_to_select.append(c)
-
-            source_df = checkpointed_df.select(*[col(c) for c in columns_to_select])
-            logger.info(
-                f"Applied column pruning: kept {len(columns_to_select)}/{len(checkpointed_df.columns)} columns (including system columns)"
-            )
+            target_columns = {f.name for f in target_schema.fields}
+            source_df = self._apply_adaptive_pruning(checkpointed_df, target_columns)
         else:
             source_df = checkpointed_df
 
         return source_df
+
+    def _apply_adaptive_pruning(
+        self, df: DataFrame, target_columns: set[str]
+    ) -> DataFrame:
+        """
+        Adaptive column pruning: keep only columns needed for the merge,
+        drop the rest, and add any new columns to the target.
+
+        Protection sets (always kept):
+        1. Merge join keys: natural_keys (dimension) or merge_keys (fact)
+        2. Surrogate key (needed for UPDATE/SCD2 row matching)
+        3. track_history_columns (SCD2 hashdiff)
+        4. current_value_columns (SCD6)
+        5. System columns (__is_current, __valid_from, etc.)
+        6. CDF columns (_change_type, _commit_version, etc.)
+        7. Foreign key columns (needed for FK validation)
+
+        What gets dropped:
+        - Source columns NOT in the target AND NOT in any protection set
+
+        What gets added to the target:
+        - Source columns in any protection set but missing from the target
+          (only when schema_evolution=True)
+        """
+        SYSTEM_COLUMNS = {
+            "__is_current",
+            "__valid_from",
+            "__valid_to",
+            "__etl_processed_at",
+            "__is_deleted",
+            "__etl_batch_id",
+            "__is_skeleton",
+            "hashdiff",
+            "__merge_action",
+        }
+        CDF_COLUMNS = {"_change_type", "_commit_version", "_commit_timestamp"}
+
+        protection_set: set[str] = set()
+        if self.config.natural_keys:
+            protection_set.update(self.config.natural_keys)
+        if self.config.merge_keys:
+            protection_set.update(self.config.merge_keys)
+        if self.config.surrogate_key:
+            protection_set.add(self.config.surrogate_key)
+        if self.config.track_history_columns:
+            protection_set.update(self.config.track_history_columns)
+        if self.config.current_value_columns:
+            protection_set.update(self.config.current_value_columns)
+        if self.config.foreign_keys:
+            for fk in self.config.foreign_keys:
+                protection_set.add(fk.column)
+        protection_set |= SYSTEM_COLUMNS
+        protection_set |= CDF_COLUMNS
+
+        source_cols = set(df.columns)
+        cols_to_keep: list[str] = []
+        cols_dropped: list[str] = []
+        cols_added_to_target: list[str] = []
+
+        for c in df.columns:
+            if c in target_columns or c in protection_set:
+                cols_to_keep.append(c)
+                if c not in target_columns and c not in SYSTEM_COLUMNS and c not in CDF_COLUMNS:
+                    cols_added_to_target.append(c)
+            else:
+                cols_dropped.append(c)
+
+        if self.config.schema_evolution and cols_added_to_target:
+            self._evolve_target_schema(cols_added_to_target)
+
+        if cols_dropped:
+            logger.info(
+                f"Adaptive pruning: keeping {len(cols_to_keep)}/{len(df.columns)} columns, "
+                f"dropping {len(cols_dropped)} unused columns"
+            )
+            if cols_added_to_target:
+                logger.info(
+                    f"Schema evolution: adding {len(cols_added_to_target)} new columns "
+                    f"to {self.config.table_name}: {cols_added_to_target}"
+                )
+            return df.select(*cols_to_keep)
+        else:
+            logger.info(
+                f"Adaptive pruning: all {len(df.columns)} columns needed, no pruning applied"
+            )
+            return df
+
+    def _evolve_target_schema(self, new_columns: list[str]) -> None:
+        """Add new columns to the target table to support schema evolution."""
+        try:
+            target_df = self.spark.table(self.config.table_name)
+            target_fields = {f.name: f.dataType for f in target_df.schema.fields}
+            for col_name in new_columns:
+                if col_name in target_fields:
+                    continue
+                try:
+                    src_type = self.spark.table(
+                        f"{self.config.sources[0].name}"
+                    ).schema[col_name].dataType
+                    self.spark.sql(
+                        f"ALTER TABLE {quote_table_name(self.config.table_name)} "
+                        f"ADD COLUMNS ({col_name} {src_type.simpleString()})"
+                    )
+                    logger.info(f"Added column {col_name} ({src_type.simpleString()}) to target")
+                except Exception as e:
+                    logger.warning(f"Could not add column {col_name}: {e}")
+        except Exception as e:
+            logger.warning(f"Schema evolution failed: {e}")
 
     def _recover_zombies(self) -> bool:
         """Recover from crashed pipeline runs. Returns True if commit tagging is available."""

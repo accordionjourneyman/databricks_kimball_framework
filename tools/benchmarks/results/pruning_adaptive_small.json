@@ -1,0 +1,14 @@
+{
+  "scenario": "pruning_adaptive",
+  "scale": "small",
+  "first_ms": 15575.878620147705,
+  "second_ms": 13423.06900024414,
+  "params": {
+    "products": 100000,
+    "n_changed": 30000,
+    "extra_cols": 20
+  },
+  "tracked_columns_in_target": true,
+  "extra_columns_in_target": false,
+  "timestamp": "2026-07-05T10:05:24"
+}
