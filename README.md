@@ -4,9 +4,7 @@
 [![Integration Tests](https://github.com/accordionjourneyman/databricks_kimball_framework/actions/workflows/integration.yml/badge.svg)](https://github.com/accordionjourneyman/databricks_kimball_framework/actions/workflows/integration.yml)
 [![Benchmarks](https://github.com/accordionjourneyman/databricks_kimball_framework/actions/workflows/benchmarks.yml/badge.svg)](https://github.com/accordionjourneyman/databricks_kimball_framework/actions/workflows/benchmarks.yml)
 [![codecov](https://codecov.io/gh/accordionjourneyman/databricks_kimball_framework/branch/main/graph/badge.svg)](https://codecov.io/gh/accordionjourneyman/databricks_kimball_framework)
-[![PyPI version](https://img.shields.io/pypi/v/kimball-framework.svg)](https://pypi.org/project/kimball-framework/)
-[![Python Versions](https://img.shields.io/pypi/pyversions/kimball-framework.svg)](https://pypi.org/project/kimball-framework/)
-[![License](https://img.shields.io/pypi/l/kimball-framework.svg)](https://github.com/accordionjourneyman/databricks_kimball_framework/blob/main/LICENSE)
+[![License](https://img.shields.io/github/license/accordionjourneyman/databricks_kimball_framework.svg)](https://github.com/accordionjourneyman/databricks_kimball_framework/blob/master/LICENSE)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-261230.svg)](https://github.com/astral-sh/ruff)
 [![Tests](https://img.shields.io/badge/tests-97%20unit%20%2B%2022%20integration%20%2B%2010%20benchmark-brightgreen.svg)](https://github.com/accordionjourneyman/databricks_kimball_framework/actions)
 
