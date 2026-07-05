@@ -1,0 +1,13 @@
+{
+  "scenario": "validation_combined",
+  "scale": "small",
+  "first_ms": 29790.08173942566,
+  "second_ms": 20718.660593032837,
+  "params": {
+    "products": 100000,
+    "n_changed": 30000,
+    "n_deleted": 10000,
+    "n_new": 10000
+  },
+  "timestamp": "2026-07-05T09:27:56"
+}

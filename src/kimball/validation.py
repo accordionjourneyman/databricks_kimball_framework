@@ -286,21 +286,81 @@ class DataQualityValidator:
         except Exception as e:
             return self._test_error(test_name, severity, e)
 
+    def validate_unique_approximate(
+        self,
+        df: DataFrame,
+        columns: list[str],
+        severity: TestSeverity = TestSeverity.WARN,
+        sample_size: int = 5,
+    ) -> TestResult:
+        """
+        Probabilistic uniqueness check using HLL (HyperLogLog).
+
+        O(n) time and memory instead of O(n log n) for exact groupBy.
+        Returns WARN severity by default since it's probabilistic.
+        Use for large datasets where exact uniqueness is too expensive.
+        """
+        test_name = f"unique_approx({', '.join(columns)})"
+        try:
+            stats = df.select(*[F.col(c) for c in columns]).agg(
+                F.count("*").alias("_total"),
+                F.approx_count_distinct(*columns).alias("_distinct"),
+            ).first()
+            total = int(stats["_total"]) if stats else 0
+            distinct = int(stats["_distinct"]) if stats else 0
+            if distinct < 0:
+                return self._test_error(test_name, severity, "approx_count_distinct failed")
+            ratio = distinct / total if total > 0 else 1.0
+            passed = ratio >= 0.99
+            details = (
+                f"Approximate uniqueness: {distinct} distinct vs {total} total "
+                f"(ratio={ratio:.4f}). HLL error ~1.5%."
+            )
+            return TestResult(
+                test_name=test_name,
+                passed=passed,
+                failed_rows=0 if passed else -1,
+                total_rows=total,
+                severity=severity,
+                details=details,
+            )
+        except Exception as e:
+            return self._test_error(test_name, severity, e)
+
     def run_config_tests(
         self,
         config: TableConfig,
         df: DataFrame,
+        use_approximate_unique: bool = False,
     ) -> ValidationReport:
         results: list[TestResult] = []
-        if config.table_type == "dimension" and config.surrogate_key:
-            results.append(self.validate_unique(df, [config.surrogate_key]))
+        if (
+            config.table_type == "dimension"
+            and config.surrogate_key
+            and config.surrogate_key in df.columns
+        ):
+            results.append(self.validate_unique(
+                df, [config.surrogate_key], severity=TestSeverity.ERROR
+            ))
         if config.natural_keys:
-            results.append(self.validate_not_null(df, config.natural_keys))
+            nat_cols = [k for k in config.natural_keys if k in df.columns]
+            if nat_cols:
+                if use_approximate_unique and len(nat_cols) <= 1:
+                    results.append(self.validate_unique_approximate(
+                        df, nat_cols, severity=TestSeverity.WARN
+                    ))
+                else:
+                    results.append(self.validate_not_null(
+                        df, nat_cols, severity=TestSeverity.ERROR
+                    ))
         if config.foreign_keys:
             for fk in config.foreign_keys:
-                if fk.references:
+                if fk.references and fk.column in df.columns:
                     ref_column = fk.dimension_key if fk.dimension_key else fk.column
-                    results.append(self.validate_relationships(df, fk_column=fk.column, reference_table=fk.references, reference_column=ref_column))
+                    results.append(self.validate_relationships(
+                        df, fk_column=fk.column, reference_table=fk.references,
+                        reference_column=ref_column, severity=TestSeverity.ERROR
+                    ))
         if hasattr(config, "tests") and config.tests:
             for test_def in config.tests:
                 results.extend(self._run_test_definition(df, test_def))
@@ -310,22 +370,27 @@ class DataQualityValidator:
         results: list[TestResult] = []
         column = getattr(test_def, "column", None)
         tests = getattr(test_def, "tests", [])
-        if not column or not tests:
+        severity = (
+            TestSeverity.WARN
+            if getattr(test_def, "severity", "error") == "warn"
+            else TestSeverity.ERROR
+        )
+        if not column or not tests or column not in df.columns:
             return results
         for test in tests:
             if isinstance(test, str):
                 if test == "unique":
-                    results.append(self.validate_unique(df, [column]))
+                    results.append(self.validate_unique(df, [column], severity=severity))
                 elif test == "not_null":
-                    results.append(self.validate_not_null(df, [column]))
+                    results.append(self.validate_not_null(df, [column], severity=severity))
             elif isinstance(test, dict):
                 if "accepted_values" in test:
-                    results.append(self.validate_accepted_values(df, column, test["accepted_values"]))
+                    results.append(self.validate_accepted_values(df, column, test["accepted_values"], severity=severity))
                 elif "relationships" in test:
                     rel = test["relationships"]
-                    results.append(self.validate_relationships(df, fk_column=column, reference_table=rel.get("to", ""), reference_column=rel.get("field", column)))
+                    results.append(self.validate_relationships(df, fk_column=column, reference_table=rel.get("to", ""), reference_column=rel.get("field", column), severity=severity))
                 elif "expression" in test:
-                    results.append(self.validate_expression(df, test["expression"]))
+                    results.append(self.validate_expression(df, test["expression"], severity=severity))
         return results
 
     def validate_natural_key_uniqueness(

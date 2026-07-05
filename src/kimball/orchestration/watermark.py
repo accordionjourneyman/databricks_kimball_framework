@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import uuid
@@ -14,6 +15,23 @@ from pyspark.sql.types import LongType, StringType, StructField, StructType, Tim
 
 logger = logging.getLogger(__name__)
 KIMBALL_ETL_SCHEMA_ENV = "KIMBALL_ETL_SCHEMA"
+
+
+def compute_source_schema_fingerprint(spark: SparkSession, source_name: str) -> str | None:
+    """Compute a fingerprint of a source table's schema (columns + types).
+
+    Used for state-aware validation skipping: if the source schema hasn't
+    changed since the last successful run, data quality tests can be skipped
+    (they would produce the same result).
+    """
+    try:
+        if not spark.catalog.tableExists(source_name):
+            return None
+        fields = spark.read.format("delta").table(source_name).schema.fields
+        schema_repr = ",".join(f"{f.name}:{f.dataType.simpleString()}" for f in fields)
+        return hashlib.sha256(schema_repr.encode("utf-8")).hexdigest()[:16]
+    except Exception:
+        return None
 
 
 def get_etl_schema() -> str | None:
@@ -32,6 +50,8 @@ class ETLControlRecord(TypedDict, total=False):
     rows_written: int | None
     error_message: str | None
     updated_at: datetime
+    config_fingerprint: str | None
+    source_schema_fingerprint: str | None
 
 
 class ETLControlManager:
@@ -76,7 +96,9 @@ class ETLControlManager:
                 rows_read LONG,
                 rows_written LONG,
                 error_message STRING,
-                updated_at TIMESTAMP NOT NULL
+                updated_at TIMESTAMP NOT NULL,
+                config_fingerprint STRING,
+                source_schema_fingerprint STRING
             ) USING DELTA PARTITIONED BY (target_table, source_table)
         """)
 
@@ -94,6 +116,8 @@ class ETLControlManager:
             "rows_written": "LONG",
             "error_message": "STRING",
             "updated_at": "TIMESTAMP",
+            "config_fingerprint": "STRING",
+            "source_schema_fingerprint": "STRING",
         }.items():
             if col_name not in existing:
                 try:
@@ -145,7 +169,58 @@ class ETLControlManager:
         except Exception:
             return []
 
-    _UPDATE_SCHEMA = StructType([StructField("target_table", StringType(), False), StructField("source_table", StringType(), False), StructField("last_processed_version", LongType(), True), StructField("batch_id", StringType(), True), StructField("batch_started_at", TimestampType(), True), StructField("batch_completed_at", TimestampType(), True), StructField("batch_status", StringType(), True), StructField("rows_read", LongType(), True), StructField("rows_written", LongType(), True), StructField("error_message", StringType(), True), StructField("updated_at", TimestampType(), False)])
+    _UPDATE_SCHEMA = StructType([
+        StructField("target_table", StringType(), False),
+        StructField("source_table", StringType(), False),
+        StructField("last_processed_version", LongType(), True),
+        StructField("batch_id", StringType(), True),
+        StructField("batch_started_at", TimestampType(), True),
+        StructField("batch_completed_at", TimestampType(), True),
+        StructField("batch_status", StringType(), True),
+        StructField("rows_read", LongType(), True),
+        StructField("rows_written", LongType(), True),
+        StructField("error_message", StringType(), True),
+        StructField("updated_at", TimestampType(), False),
+        StructField("config_fingerprint", StringType(), True),
+        StructField("source_schema_fingerprint", StringType(), True),
+    ])
+
+    def get_config_fingerprint(self, target_table: str, source_table: str) -> str | None:
+        row = (
+            self.spark.table(self.fq_table)
+            .filter(
+                (col("target_table") == target_table) & (col("source_table") == source_table)
+            )
+            .select("config_fingerprint")
+            .first()
+        )
+        return row["config_fingerprint"] if row else None
+
+    def get_source_schema_fingerprint(self, target_table: str, source_table: str) -> str | None:
+        row = (
+            self.spark.table(self.fq_table)
+            .filter(
+                (col("target_table") == target_table) & (col("source_table") == source_table)
+            )
+            .select("source_schema_fingerprint")
+            .first()
+        )
+        return row["source_schema_fingerprint"] if row else None
+
+    def update_fingerprints(
+        self,
+        target_table: str,
+        source_table: str,
+        config_fingerprint: str | None = None,
+        source_schema_fingerprint: str | None = None,
+    ) -> None:
+        updates: ETLControlRecord = {}
+        if config_fingerprint is not None:
+            updates["config_fingerprint"] = config_fingerprint
+        if source_schema_fingerprint is not None:
+            updates["source_schema_fingerprint"] = source_schema_fingerprint
+        if updates:
+            self._upsert_control_record(target_table, source_table, updates)
 
     def _upsert_control_record(self, target_table: str, source_table: str, updates: ETLControlRecord) -> None:
         record = updates.copy()

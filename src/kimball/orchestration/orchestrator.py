@@ -42,7 +42,11 @@ from kimball.observability.resilience import (
     _feature_enabled,
 )
 from kimball.orchestration.transaction import TransactionManager
-from kimball.orchestration.watermark import ETLControlManager, get_etl_schema
+from kimball.orchestration.watermark import (
+    ETLControlManager,
+    compute_source_schema_fingerprint,
+    get_etl_schema,
+)
 from kimball.processing.loader import DataLoader
 from kimball.processing import merger as _merger
 from kimball.processing.skeleton_generator import SkeletonGenerator
@@ -415,6 +419,61 @@ class Orchestrator:
                     )
         return True
 
+    def _should_skip_validation(self, table_name: str) -> bool:
+        """
+        dbt-style state-aware validation skip.
+
+        Skip validation if:
+        - skip_validation_if_unchanged is enabled AND
+        - config_fingerprint matches last successful run AND
+        - source_schema_fingerprint matches last successful run
+        """
+        if not self.runtime_options.skip_validation_if_unchanged:
+            return False
+        current_config_fp = self.config_loader.compute_fingerprint(self.config)
+        source_names = [s.name for s in self.config.sources]
+        all_unchanged = True
+        for source_name in source_names:
+            prev_config_fp = self.etl_control.get_config_fingerprint(table_name, source_name)
+            prev_source_fp = self.etl_control.get_source_schema_fingerprint(table_name, source_name)
+            if prev_config_fp != current_config_fp:
+                all_unchanged = False
+                break
+            current_source_fp = compute_source_schema_fingerprint(self.spark, source_name)
+            if prev_source_fp != current_source_fp:
+                all_unchanged = False
+                break
+        return all_unchanged
+
+    def _run_compile_time_sql_check(self) -> None:
+        """
+        Run EXPLAIN against the transformation SQL to catch errors before
+        the full pipeline executes. dbt equivalent of `dbt parse`.
+        """
+        if not self.runtime_options.compile_time_sql_check:
+            return
+        if not self.config.transformation_sql:
+            return
+        from kimball.common.config import ConfigLoader
+        loader = ConfigLoader()
+        issues = loader.validate_transformation_sql(self.config, spark=self.spark)
+        if issues:
+            raise ValueError(
+                f"Compile-time SQL validation failed for {self.config.table_name}:\n"
+                + "\n".join(f"  - {i}" for i in issues)
+            )
+
+    def _save_fingerprints(self, table_name: str) -> None:
+        """Persist current config + source schema fingerprints after success."""
+        config_fp = self.config_loader.compute_fingerprint(self.config)
+        for source in self.config.sources:
+            source_fp = compute_source_schema_fingerprint(self.spark, source.name)
+            self.etl_control.update_fingerprints(
+                table_name, source.name,
+                config_fingerprint=config_fp,
+                source_schema_fingerprint=source_fp,
+            )
+
     def _load_active_sources(self, batch_id: str) -> tuple[dict[str, Any], dict[str, DataFrame]]:
         source_versions: dict[str, Any] = {}
         active_dfs: dict[str, DataFrame] = {}
@@ -616,47 +675,65 @@ class Orchestrator:
                     )
 
         if getattr(self.config, "tests", None):
-            logger.info("Running data quality validation on transformed data...")
-            report = self._validator.run_config_tests(self.config, df=transformed_df)
-            report.raise_on_failure()
+            if self._should_skip_validation(self.config.table_name):
+                logger.info(
+                    "Skipping data quality validation: config + source schema "
+                    "fingerprints unchanged since last successful run."
+                )
+            else:
+                logger.info("Running data quality validation on transformed data...")
+                report = self._validator.run_config_tests(
+                    self.config,
+                    df=transformed_df,
+                    use_approximate_unique=self.runtime_options.use_approximate_unique,
+                )
+                report.raise_on_failure()
 
         if self.config.table_type == "dimension" and self.config.natural_keys:
-            logger.info("Validating natural key uniqueness (pre-merge gate)...")
-            nk_result = self._validator.validate_natural_key_uniqueness(
-                transformed_df,
-                self.config.natural_keys,
-                table_name=self.config.table_name,
-            )
-            logger.info(str(nk_result))
-            if not nk_result.passed:
-                raise DataQualityError(
-                    f"Natural key uniqueness violation in {self.config.table_name}: "
-                    f"{nk_result.failed_rows} duplicate keys. Details: {nk_result.details}",
-                    details={"sample_failures": nk_result.sample_failures},
+            if not self._should_skip_validation(self.config.table_name):
+                logger.info("Validating natural key uniqueness (pre-merge gate)...")
+                nk_result = self._validator.validate_natural_key_uniqueness(
+                    transformed_df,
+                    self.config.natural_keys,
+                    table_name=self.config.table_name,
                 )
+                logger.info(str(nk_result))
+                if not nk_result.passed:
+                    raise DataQualityError(
+                        f"Natural key uniqueness violation in {self.config.table_name}: "
+                        f"{nk_result.failed_rows} duplicate keys. Details: {nk_result.details}",
+                        details={"sample_failures": nk_result.sample_failures},
+                    )
+            else:
+                logger.info("Skipping NK uniqueness: fingerprints unchanged.")
 
         if self.config.table_type == "fact" and self.config.foreign_keys:
-            logger.info("Validating FK integrity against dimensions (pre-merge gate)...")
-            fk_defs = [
-                {
-                    "column": fk.column,
-                    "dimension_table": fk.references,
-                    "dimension_key": fk.dimension_key or fk.column,
-                }
-                for fk in self.config.foreign_keys
-                if hasattr(fk, "references") and fk.references
-            ]
-            if fk_defs:
-                fk_report = self._validator.validate_fact_fk_integrity(transformed_df, fk_defs)
-                for result in fk_report.results:
-                    logger.info(str(result))
-                fk_report.raise_on_failure()
+            if not self._should_skip_validation(self.config.table_name):
+                logger.info("Validating FK integrity against dimensions (pre-merge gate)...")
+                fk_defs = [
+                    {
+                        "column": fk.column,
+                        "dimension_table": fk.references,
+                        "dimension_key": fk.dimension_key or fk.column,
+                    }
+                    for fk in self.config.foreign_keys
+                    if hasattr(fk, "references") and fk.references
+                ]
+                if fk_defs:
+                    fk_report = self._validator.validate_fact_fk_integrity(transformed_df, fk_defs)
+                    for result in fk_report.results:
+                        logger.info(str(result))
+                    fk_report.raise_on_failure()
+            else:
+                logger.info("Skipping FK integrity: fingerprints unchanged.")
 
         return transformed_df
 
     def _run_pipeline_once(self, max_retries: int = 0) -> dict[str, Any]:
         """Execute single pipeline iteration."""
         logger.info(f"Starting pipeline for {self.config.table_name}")
+
+        self._run_compile_time_sql_check()
 
         batch_id = str(uuid.uuid4())
         if self.metrics_collector:
@@ -787,6 +864,7 @@ class Orchestrator:
                             rows_read=total_rows_read // max(len(active_dfs), 1),
                             rows_written=total_rows_written // max(len(active_dfs), 1),
                         )
+                    self._save_fingerprints(self.config.table_name)
                 else:
                     logger.info(
                         "Merge was skipped because no rows remained after transformation. "

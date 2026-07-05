@@ -1,0 +1,13 @@
+{
+  "scenario": "validation_approximate",
+  "scale": "tiny",
+  "first_ms": 25165.348291397095,
+  "second_ms": 18083.76932144165,
+  "params": {
+    "products": 5000,
+    "n_changed": 1500,
+    "n_deleted": 500,
+    "n_new": 500
+  },
+  "timestamp": "2026-07-05T09:22:54"
+}
