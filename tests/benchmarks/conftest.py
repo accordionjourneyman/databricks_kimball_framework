@@ -18,6 +18,7 @@ def scale(request):
 def _is_databricks_runtime() -> bool:
     """Return True if running inside a Databricks cluster (Spark Connect or DBR)."""
     import os
+
     return bool(
         os.environ.get("SPARK_REMOTE")
         or os.environ.get("DATABRICKS_RUNTIME_VERSION")
@@ -44,11 +45,13 @@ def spark():
 
     if _is_databricks_runtime():
         from pyspark.sql import SparkSession
+
         session = SparkSession.builder.getOrCreate()
     else:
         import tempfile
 
         from pyspark.sql import SparkSession
+
         session = (
             SparkSession.builder.appName("KimballBenchmark")
             .master("local[2]")
@@ -71,6 +74,7 @@ def spark():
 
     if "databricks.sdk.runtime" in sys.modules:
         import types
+
         mock_runtime = types.ModuleType("databricks.sdk.runtime")
         mock_runtime.spark = session
         mock_runtime.dbutils = MagicMock()
@@ -84,6 +88,7 @@ def spark():
 def bench_db(spark):
     import os
     import uuid
+
     db = f"kimball_bench_{uuid.uuid4().hex[:8]}"
     spark.sql(f"CREATE DATABASE IF NOT EXISTS {db}")
     os.environ["KIMBALL_ETL_SCHEMA"] = db

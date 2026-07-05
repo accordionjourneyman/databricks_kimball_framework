@@ -45,6 +45,7 @@ def tmp_config(tmp_path, config_loader):
         path = tmp_path / f"olist_{uuid.uuid4().hex[:8]}.yml"
         path.write_text(content, encoding="utf-8")
         return str(path)
+
     return _write
 
 
@@ -114,9 +115,15 @@ transformation_sql: |
         rows = spark.table(f"{test_db}.fact_orders").collect()
         assert len(rows) == 3, f"Expected 3 order lines, got {len(rows)}"
         total_price = sum(r.price for r in rows)
-        assert abs(total_price - 225.0) < 0.01, f"Expected total 225.0, got {total_price}"
+        assert abs(total_price - 225.0) < 0.01, (
+            f"Expected total 225.0, got {total_price}"
+        )
 
-        for t in [f"{test_db}.fact_orders", f"{test_db}.orders", f"{test_db}.order_items"]:
+        for t in [
+            f"{test_db}.fact_orders",
+            f"{test_db}.orders",
+            f"{test_db}.order_items",
+        ]:
             spark.sql(f"DROP TABLE IF EXISTS {t}")
 
 
@@ -186,7 +193,11 @@ transformation_sql: |
         bridge_count = spark.table(f"{test_db}.seller_producer_bridge").count()
         assert bridge_count == 2
 
-        for t in [f"{test_db}.dim_seller", f"{test_db}.sellers", f"{test_db}.seller_producer_bridge"]:
+        for t in [
+            f"{test_db}.dim_seller",
+            f"{test_db}.sellers",
+            f"{test_db}.seller_producer_bridge",
+        ]:
             spark.sql(f"DROP TABLE IF EXISTS {t}")
 
 

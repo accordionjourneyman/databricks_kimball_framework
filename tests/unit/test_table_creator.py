@@ -17,6 +17,7 @@ def spark_mock():
 def table_creator(spark_mock):
     with patch("kimball.processing.table_creator.get_spark", return_value=spark_mock):
         from kimball.processing.table_creator import TableCreator
+
         return TableCreator()
 
 
@@ -95,8 +96,11 @@ class TestCreateTableWithClustering:
     def test_skips_existing_table(self, spark_mock):
         spark_mock.catalog.tableExists.return_value = True
         schema_df = MagicMock()
-        with patch("kimball.processing.table_creator.get_spark", return_value=spark_mock):
+        with patch(
+            "kimball.processing.table_creator.get_spark", return_value=spark_mock
+        ):
             from kimball.processing.table_creator import TableCreator
+
             table_creator = TableCreator()
             table_creator.create_table_with_clustering("db.tbl", schema_df)
         spark_mock.sql.assert_not_called()
@@ -110,12 +114,17 @@ class TestCreateTableWithClustering:
         schema_df.schema.fields = [field]
 
         with (
-            patch("kimball.processing.table_creator.get_spark", return_value=spark_mock),
+            patch(
+                "kimball.processing.table_creator.get_spark", return_value=spark_mock
+            ),
             patch("kimball.processing.table_creator.get_runtime_policy") as mock_policy,
         ):
-            mock_policy.return_value.identity_column_def.return_value = "id BIGINT NOT NULL GENERATED ALWAYS AS IDENTITY"
+            mock_policy.return_value.identity_column_def.return_value = (
+                "id BIGINT NOT NULL GENERATED ALWAYS AS IDENTITY"
+            )
             mock_policy.return_value.cluster_clause.return_value = " CLUSTER BY (id)"
             from kimball.processing.table_creator import TableCreator
+
             table_creator = TableCreator()
             table_creator.create_table_with_clustering(
                 "db.tbl", schema_df, cluster_by=["id"]
@@ -130,8 +139,11 @@ class TestCreateTableWithClustering:
 
 class TestEnableDeltaFeatures:
     def test_enables_features(self, spark_mock):
-        with patch("kimball.processing.table_creator.get_spark", return_value=spark_mock):
+        with patch(
+            "kimball.processing.table_creator.get_spark", return_value=spark_mock
+        ):
             from kimball.processing.table_creator import TableCreator
+
             table_creator = TableCreator()
             table_creator.enable_delta_features("db.tbl")
         spark_mock.sql.assert_called_once()

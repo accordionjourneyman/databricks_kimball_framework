@@ -44,10 +44,12 @@ def config_loader():
 @pytest.fixture
 def tmp_config(tmp_path, config_loader):
     """Helper to write a config YAML and return its path."""
+
     def _write(content: str) -> str:
         path = tmp_path / f"test_config_{uuid.uuid4().hex[:8]}.yml"
         path.write_text(content, encoding="utf-8")
         return str(path)
+
     return _write
 
 
@@ -99,7 +101,12 @@ transformation_sql: |
         assert result["status"] == "SUCCESS"
 
         # Verify initial load (2 data rows; default rows may also be seeded)
-        rows = spark.table(f"{test_db}.dim_customer").filter("customer_id > 0").orderBy("customer_id").collect()
+        rows = (
+            spark.table(f"{test_db}.dim_customer")
+            .filter("customer_id > 0")
+            .orderBy("customer_id")
+            .collect()
+        )
         assert len(rows) == 2
         assert rows[0]["name"] == "Alice"
         assert rows[0]["city"] == "Lisbon"
@@ -114,7 +121,12 @@ transformation_sql: |
         result2 = orchestrator2.run()
         assert result2["status"] == "SUCCESS"
 
-        rows2 = spark.table(f"{test_db}.dim_customer").filter("customer_id > 0").orderBy("customer_id").collect()
+        rows2 = (
+            spark.table(f"{test_db}.dim_customer")
+            .filter("customer_id > 0")
+            .orderBy("customer_id")
+            .collect()
+        )
         assert len(rows2) == 2
         # Alice's city should be updated
         alice = [r for r in rows2 if r["customer_id"] == 1][0]
@@ -190,9 +202,12 @@ transformation_sql: |
         result2 = orchestrator2.run()
         assert result2["status"] == "SUCCESS"
 
-        all_rows = spark.table(f"{test_db}.dim_product").filter(
-            "product_id = 100"
-        ).orderBy("product_sk").collect()
+        all_rows = (
+            spark.table(f"{test_db}.dim_product")
+            .filter("product_id = 100")
+            .orderBy("product_sk")
+            .collect()
+        )
 
         # Should have 2 rows: old (expired) + new (current)
         assert len(all_rows) == 2
@@ -249,9 +264,11 @@ transformation_sql: |
         assert result["status"] == "SUCCESS"
 
         # Verify 3 active rows
-        active = spark.table(f"{test_db}.dim_customer_del").filter(
-            "__is_current = true AND customer_id > 0"
-        ).collect()
+        active = (
+            spark.table(f"{test_db}.dim_customer_del")
+            .filter("__is_current = true AND customer_id > 0")
+            .collect()
+        )
         assert len(active) == 3
 
         # Delete Charlie from source
@@ -263,17 +280,21 @@ transformation_sql: |
         assert result2["status"] == "SUCCESS"
 
         # Charlie should be expired
-        charlie_rows = spark.table(f"{test_db}.dim_customer_del").filter(
-            "customer_id = 3"
-        ).collect()
+        charlie_rows = (
+            spark.table(f"{test_db}.dim_customer_del")
+            .filter("customer_id = 3")
+            .collect()
+        )
         assert len(charlie_rows) == 1
         assert not charlie_rows[0]["__is_current"]
         assert charlie_rows[0]["__is_deleted"]
 
         # Alice and Bob should still be active
-        still_active = spark.table(f"{test_db}.dim_customer_del").filter(
-            "__is_current = true AND customer_id > 0"
-        ).collect()
+        still_active = (
+            spark.table(f"{test_db}.dim_customer_del")
+            .filter("__is_current = true AND customer_id > 0")
+            .collect()
+        )
         assert len(still_active) == 2
 
         # Cleanup
@@ -289,9 +310,7 @@ transformation_sql: |
 class TestSchemaEvolutionIntegration:
     """End-to-end schema evolution tests."""
 
-    def test_scd2_add_new_column(
-        self, spark: SparkSession, test_db: str, tmp_config
-    ):
+    def test_scd2_add_new_column(self, spark: SparkSession, test_db: str, tmp_config):
         """Adding a new column to source + config should evolve target schema."""
         spark.sql(f"""
             CREATE TABLE {test_db}.evolve_src (
@@ -327,7 +346,9 @@ transformation_sql: |
 
         # Add column to source
         spark.sql(f"ALTER TABLE {test_db}.evolve_src ADD COLUMN val_b STRING")
-        spark.sql(f"UPDATE {test_db}.evolve_src SET val_b = 'extra' WHERE entity_id = 1")
+        spark.sql(
+            f"UPDATE {test_db}.evolve_src SET val_b = 'extra' WHERE entity_id = 1"
+        )
 
         # Evolved config with new column + schema_evolution enabled
         config_v2 = tmp_config(f"""

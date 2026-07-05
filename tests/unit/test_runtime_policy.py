@@ -15,5 +15,7 @@ def test_local_policy_uses_plain_bigint_and_includes_sk() -> None:
     policy = RuntimePolicy(is_databricks=False)
 
     assert policy.identity_column_def("surrogate_key") == "surrogate_key BIGINT"
-    assert policy.cluster_clause(None, ["event_date"]) == "\nPARTITIONED BY (event_date)"
+    assert (
+        policy.cluster_clause(None, ["event_date"]) == "\nPARTITIONED BY (event_date)"
+    )
     assert policy.should_include_sk_in_insert() is True

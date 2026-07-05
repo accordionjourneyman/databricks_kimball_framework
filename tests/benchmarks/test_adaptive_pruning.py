@@ -19,9 +19,7 @@ def _generate_products_wide(
 ) -> None:
     """Generate n products with many extra columns to make pruning worthwhile."""
     spark.sql(f"DROP TABLE IF EXISTS {db}.products_src")
-    extra_col_defs = ", ".join(
-        f"extra_{i} STRING" for i in range(extra_cols)
-    )
+    extra_col_defs = ", ".join(f"extra_{i} STRING" for i in range(extra_cols))
     spark.sql(f"""
         CREATE TABLE {db}.products_src (
             product_id INT, name STRING, price DECIMAL(10,2), category_id INT,
@@ -46,12 +44,16 @@ def _generate_products_wide(
         .alias("size"),
         (rand() * 5000).cast("int").alias("weight_g"),
         (rand() > 0.2).alias("in_stock"),
-        date_add(lit("2024-01-01").cast("date"), (rand() * 1000).cast("int")).alias("launch_date"),
+        date_add(lit("2024-01-01").cast("date"), (rand() * 1000).cast("int")).alias(
+            "launch_date"
+        ),
         (rand() * 5).alias("rating"),
     ]
     for i in range(extra_cols):
         select_cols.append(
-            concat(lit("val_"), (rand() * 1000).cast("int").cast("string")).alias(f"extra_{i}")
+            concat(lit("val_"), (rand() * 1000).cast("int").cast("string")).alias(
+                f"extra_{i}"
+            )
         )
     df = spark.range(n).select(*select_cols)
     df.write.format("delta").mode("overwrite").saveAsTable(f"{db}.products_src")
@@ -95,7 +97,12 @@ def _write(content: str, tmp_path) -> str:
 def _save(scenario: str, scale: str, **kwargs):
     out_dir = Path(__file__).parent.parent.parent / "tools" / "benchmarks" / "results"
     out_dir.mkdir(parents=True, exist_ok=True)
-    data = {"scenario": scenario, "scale": scale, **kwargs, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    data = {
+        "scenario": scenario,
+        "scale": scale,
+        **kwargs,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
     out = out_dir / f"{scenario}_{scale}.json"
     with open(out, "w") as f:
         json.dump(data, f, indent=2)
@@ -110,8 +117,12 @@ class TestAdaptivePruning:
     ):
         """Baseline: schema_evolution=true (old behavior = no pruning at all)."""
         params = SCALE_PARAMS[scale]
-        _generate_products_wide(spark, params["products"], bench_db, params["extra_cols"])
-        config_path = _write(_make_config_pruning(bench_db, schema_evolution=True), tmp_path)
+        _generate_products_wide(
+            spark, params["products"], bench_db, params["extra_cols"]
+        )
+        config_path = _write(
+            _make_config_pruning(bench_db, schema_evolution=True), tmp_path
+        )
 
         start = time.time()
         result = Orchestrator(config_path, spark=spark, etl_schema=bench_db).run()
@@ -120,7 +131,7 @@ class TestAdaptivePruning:
         spark.sql(f"""
             UPDATE {bench_db}.products_src
             SET price = price * 1.15
-            WHERE product_id < {params['n_changed']}
+            WHERE product_id < {params["n_changed"]}
         """)
 
         start = time.time()
@@ -130,15 +141,25 @@ class TestAdaptivePruning:
         assert result["status"] == "SUCCESS"
         assert result2["status"] == "SUCCESS"
 
-        _save("pruning_baseline", scale, first_ms=first_ms, second_ms=second_ms, params=params)
+        _save(
+            "pruning_baseline",
+            scale,
+            first_ms=first_ms,
+            second_ms=second_ms,
+            params=params,
+        )
 
     def test_adaptive_pruning(
         self, spark: SparkSession, bench_db: str, scale, tmp_path
     ):
         """New adaptive pruning: drops unused extra columns even with schema_evolution=true."""
         params = SCALE_PARAMS[scale]
-        _generate_products_wide(spark, params["products"], bench_db, params["extra_cols"])
-        config_path = _write(_make_config_pruning(bench_db, schema_evolution=True), tmp_path)
+        _generate_products_wide(
+            spark, params["products"], bench_db, params["extra_cols"]
+        )
+        config_path = _write(
+            _make_config_pruning(bench_db, schema_evolution=True), tmp_path
+        )
 
         start = time.time()
         result = Orchestrator(config_path, spark=spark, etl_schema=bench_db).run()
@@ -147,7 +168,7 @@ class TestAdaptivePruning:
         spark.sql(f"""
             UPDATE {bench_db}.products_src
             SET price = price * 1.15
-            WHERE product_id < {params['n_changed']}
+            WHERE product_id < {params["n_changed"]}
         """)
 
         start = time.time()

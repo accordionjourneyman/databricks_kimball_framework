@@ -24,34 +24,38 @@ def _generate_products(spark: SparkSession, n: int, db: str) -> None:
             in_stock BOOLEAN, launch_date DATE, rating DOUBLE
         ) USING DELTA
     """)
-    df = (
-        spark.range(n)
-        .select(
-            col("id").cast("int").alias("product_id"),
-            concat(lit("Product_"), col("id").cast("string")).alias("name"),
-            (rand() * 1000).cast("decimal(10,2)").alias("price"),
-            (rand() * 100).cast("int").alias("category_id"),
-            concat(lit("Brand_"), (rand() * 50).cast("int").cast("string")).alias("brand"),
-            when(rand() < 0.3, lit("red"))
-            .when(rand() < 0.6, lit("blue"))
-            .otherwise(lit("green"))
-            .alias("color"),
-            when(rand() < 0.5, lit("S"))
-            .when(rand() < 0.8, lit("M"))
-            .otherwise(lit("L"))
-            .alias("size"),
-            (rand() * 5000).cast("int").alias("weight_g"),
-            (rand() > 0.2).alias("in_stock"),
-            date_add(lit("2024-01-01").cast("date"), (rand() * 1000).cast("int")).alias("launch_date"),
-            (rand() * 5).alias("rating"),
-        )
+    df = spark.range(n).select(
+        col("id").cast("int").alias("product_id"),
+        concat(lit("Product_"), col("id").cast("string")).alias("name"),
+        (rand() * 1000).cast("decimal(10,2)").alias("price"),
+        (rand() * 100).cast("int").alias("category_id"),
+        concat(lit("Brand_"), (rand() * 50).cast("int").cast("string")).alias("brand"),
+        when(rand() < 0.3, lit("red"))
+        .when(rand() < 0.6, lit("blue"))
+        .otherwise(lit("green"))
+        .alias("color"),
+        when(rand() < 0.5, lit("S"))
+        .when(rand() < 0.8, lit("M"))
+        .otherwise(lit("L"))
+        .alias("size"),
+        (rand() * 5000).cast("int").alias("weight_g"),
+        (rand() > 0.2).alias("in_stock"),
+        date_add(lit("2024-01-01").cast("date"), (rand() * 1000).cast("int")).alias(
+            "launch_date"
+        ),
+        (rand() * 5).alias("rating"),
     )
     df.write.format("delta").mode("overwrite").saveAsTable(f"{db}.products_src")
 
 
 SCALE_PARAMS = {
     "tiny": {"products": 5_000, "n_changed": 1_500, "n_deleted": 500, "n_new": 500},
-    "small": {"products": 100_000, "n_changed": 30_000, "n_deleted": 10_000, "n_new": 10_000},
+    "small": {
+        "products": 100_000,
+        "n_changed": 30_000,
+        "n_deleted": 10_000,
+        "n_new": 10_000,
+    },
 }
 
 
@@ -92,7 +96,12 @@ def _write(content: str, tmp_path) -> str:
 def _save(scenario: str, scale: str, **kwargs):
     out_dir = Path(__file__).parent.parent.parent / "tools" / "benchmarks" / "results"
     out_dir.mkdir(parents=True, exist_ok=True)
-    data = {"scenario": scenario, "scale": scale, **kwargs, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    data = {
+        "scenario": scenario,
+        "scale": scale,
+        **kwargs,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
     out = out_dir / f"{scenario}_{scale}.json"
     with open(out, "w") as f:
         json.dump(data, f, indent=2)
@@ -120,7 +129,7 @@ class TestValidationOptimizations:
         spark.sql(f"""
             UPDATE {bench_db}.products_src
             SET price = price * 1.15
-            WHERE product_id < {params['n_changed']}
+            WHERE product_id < {params["n_changed"]}
         """)
 
         start = time.time()
@@ -130,8 +139,13 @@ class TestValidationOptimizations:
         assert result["status"] == "SUCCESS"
         assert result2["status"] == "SUCCESS"
 
-        _save("validation_full", scale, first_ms=first_ms, second_ms=second_ms,
-              params=params)
+        _save(
+            "validation_full",
+            scale,
+            first_ms=first_ms,
+            second_ms=second_ms,
+            params=params,
+        )
 
     def test_state_aware_skip(
         self, spark: SparkSession, bench_db: str, scale, tmp_path
@@ -150,7 +164,7 @@ class TestValidationOptimizations:
         spark.sql(f"""
             UPDATE {bench_db}.products_src
             SET price = price * 1.15
-            WHERE product_id < {params['n_changed']}
+            WHERE product_id < {params["n_changed"]}
         """)
 
         start = time.time()
@@ -160,8 +174,13 @@ class TestValidationOptimizations:
         assert result["status"] == "SUCCESS"
         assert result2["status"] == "SUCCESS"
 
-        _save("validation_state_aware", scale, first_ms=first_ms, second_ms=second_ms,
-              params=params)
+        _save(
+            "validation_state_aware",
+            scale,
+            first_ms=first_ms,
+            second_ms=second_ms,
+            params=params,
+        )
 
     def test_approximate_unique(
         self, spark: SparkSession, bench_db: str, scale, tmp_path
@@ -181,7 +200,7 @@ class TestValidationOptimizations:
         spark.sql(f"""
             UPDATE {bench_db}.products_src
             SET price = price * 1.15
-            WHERE product_id < {params['n_changed']}
+            WHERE product_id < {params["n_changed"]}
         """)
 
         start = time.time()
@@ -191,8 +210,13 @@ class TestValidationOptimizations:
         assert result["status"] == "SUCCESS"
         assert result2["status"] == "SUCCESS"
 
-        _save("validation_approximate", scale, first_ms=first_ms, second_ms=second_ms,
-              params=params)
+        _save(
+            "validation_approximate",
+            scale,
+            first_ms=first_ms,
+            second_ms=second_ms,
+            params=params,
+        )
 
     def test_combined_optimizations(
         self, spark: SparkSession, bench_db: str, scale, tmp_path
@@ -212,7 +236,7 @@ class TestValidationOptimizations:
         spark.sql(f"""
             UPDATE {bench_db}.products_src
             SET price = price * 1.15
-            WHERE product_id < {params['n_changed']}
+            WHERE product_id < {params["n_changed"]}
         """)
 
         start = time.time()
@@ -222,5 +246,10 @@ class TestValidationOptimizations:
         assert result["status"] == "SUCCESS"
         assert result2["status"] == "SUCCESS"
 
-        _save("validation_combined", scale, first_ms=first_ms, second_ms=second_ms,
-              params=params)
+        _save(
+            "validation_combined",
+            scale,
+            first_ms=first_ms,
+            second_ms=second_ms,
+            params=params,
+        )

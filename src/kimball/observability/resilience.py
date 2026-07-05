@@ -53,7 +53,9 @@ def _feature_enabled(feature: str) -> bool:
     return os.environ.get(f"KIMBALL_ENABLE_{feature.upper()}") == "1"
 
 
-def _ensure_delta_table(table_name: str, schema: StructType, partition_by: str | None = None) -> None:
+def _ensure_delta_table(
+    table_name: str, schema: StructType, partition_by: str | None = None
+) -> None:
     if not get_spark().catalog.tableExists(table_name):
         empty_df = get_spark().createDataFrame([], schema)
         writer = empty_df.write.format("delta")
@@ -281,7 +283,9 @@ class StagingCleanupManager:
                         continue
                     self.unregister_staging_table(staging_table_name)
                     cleaned += 1
-                    logger.info(f"Cleaned up orphaned staging table: {staging_table_name}")
+                    logger.info(
+                        f"Cleaned up orphaned staging table: {staging_table_name}"
+                    )
                 except Exception as e:
                     logger.info(f"Failed to cleanup {staging_table_name}: {e}")
                     failed += 1

@@ -9,7 +9,10 @@ logger = logging.getLogger(__name__)
 
 class SkeletonGenerator:
     def __init__(self, spark_session: SparkSession | None = None) -> None:
-        self.spark = spark_session or __import__("databricks.sdk.runtime", fromlist=["spark"]).spark
+        self.spark = (
+            spark_session
+            or __import__("databricks.sdk.runtime", fromlist=["spark"]).spark
+        )
 
     def generate_skeletons(
         self,
@@ -22,13 +25,17 @@ class SkeletonGenerator:
         batch_id: str | None = None,
     ) -> None:
         if not self.spark.catalog.tableExists(dim_table_name):
-            logger.info(f"Dimension table {dim_table_name} does not exist. Skipping skeleton generation.")
+            logger.info(
+                f"Dimension table {dim_table_name} does not exist. Skipping skeleton generation."
+            )
             return
         dim_table = DeltaTable.forName(self.spark, dim_table_name)
         dim_df = dim_table.toDF()
         has_skeleton_col = "__is_skeleton" in [f.name for f in dim_df.schema.fields]
         if not has_skeleton_col:
-            logger.info(f"Dimension table {dim_table_name} does not have __is_skeleton column. Skipping skeleton generation.")
+            logger.info(
+                f"Dimension table {dim_table_name} does not have __is_skeleton column. Skipping skeleton generation."
+            )
             return
         fact_keys = fact_df.select(col(fact_join_key).alias("key")).distinct()
         dim_keys = dim_df.select(col(dim_join_key).alias("key"))
@@ -38,6 +45,7 @@ class SkeletonGenerator:
             return
         skeletons = missing.withColumnRenamed("key", dim_join_key)
         from datetime import datetime
+
         skeletons = (
             skeletons.withColumn("__is_current", lit(True))
             .withColumn("__valid_from", lit(datetime(1800, 1, 1, 0, 0, 0)))
@@ -56,10 +64,19 @@ class SkeletonGenerator:
         skeletons = skeletons.select(*exprs)
         if surrogate_key_strategy == "hash":
             from kimball.processing.key_generator import HashKeyGenerator
-            skeletons = HashKeyGenerator([dim_join_key]).generate_keys(skeletons, surrogate_key_col)
+
+            skeletons = HashKeyGenerator([dim_join_key]).generate_keys(
+                skeletons, surrogate_key_col
+            )
         cols = [f.name for f in dim_df.schema.fields]
-        if surrogate_key_strategy == "identity" and surrogate_key_col in skeletons.columns:
+        if (
+            surrogate_key_strategy == "identity"
+            and surrogate_key_col in skeletons.columns
+        ):
             skeletons = skeletons.drop(surrogate_key_col)
             cols = [c for c in cols if c != surrogate_key_col]
-        dim_table.alias("target").merge(skeletons.select(*cols).alias("source"), f"target.{dim_join_key} <=> source.{dim_join_key}").whenNotMatchedInsertAll().execute()
+        dim_table.alias("target").merge(
+            skeletons.select(*cols).alias("source"),
+            f"target.{dim_join_key} <=> source.{dim_join_key}",
+        ).whenNotMatchedInsertAll().execute()
         logger.info(f"Inserted skeleton rows into {dim_table_name} (via atomic MERGE).")

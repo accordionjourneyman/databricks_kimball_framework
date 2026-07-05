@@ -153,9 +153,12 @@ class RuntimeOptions:
             skew_threshold_mb=int(os.environ.get("KIMBALL_SKEW_THRESHOLD_MB", "256")),
             skew_factor=int(os.environ.get("KIMBALL_SKEW_FACTOR", "5")),
             skip_grain_check=os.environ.get("KIMBALL_SKIP_GRAIN_CHECK", "") == "1",
-            skip_validation_if_unchanged=os.environ.get("KIMBALL_SKIP_VALIDATION_IF_UNCHANGED", "") == "1",
-            use_approximate_unique=os.environ.get("KIMBALL_USE_APPROXIMATE_UNIQUE", "") == "1",
-            compile_time_sql_check=os.environ.get("KIMBALL_COMPILE_TIME_SQL_CHECK", "1") != "0",
+            skip_validation_if_unchanged=os.environ.get(
+                "KIMBALL_SKIP_VALIDATION_IF_UNCHANGED", ""
+            )
+            == "1",
+            use_approximate_unique=os.environ.get("KIMBALL_USE_APPROXIMATE_UNIQUE", "")
+            == "1",
+            compile_time_sql_check=os.environ.get("KIMBALL_COMPILE_TIME_SQL_CHECK", "1")
+            != "0",
         )
-
-

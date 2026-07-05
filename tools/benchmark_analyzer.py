@@ -74,8 +74,8 @@ def print_summary_table(results: list[dict[str, Any]]) -> None:
         print(
             f"{r['scenario']:<30} {r['scale']:<12} "
             f"{r['first_run_total_ms']:>8.0f} {r['second_run_total_ms']:>8.0f} "
-            f"{r['first_run_total_shuffle_bytes']/1024/1024:>8.1f} "
-            f"{r['second_run_total_shuffle_bytes']/1024/1024:>8.1f} "
+            f"{r['first_run_total_shuffle_bytes'] / 1024 / 1024:>8.1f} "
+            f"{r['second_run_total_shuffle_bytes'] / 1024 / 1024:>8.1f} "
             f"{r['first_run_exchanges']:>7} {r['second_run_exchanges']:>7}"
         )
 
@@ -114,13 +114,19 @@ def identify_bottlenecks(results: list[dict[str, Any]]) -> list[str]:
     if high_exch:
         findings.append(
             "High shuffle boundary count (>10) in: "
-            + ", ".join(f"{r['scenario']}@{r['scale']}({r['second_run_exchanges']})" for r in high_exch)
+            + ", ".join(
+                f"{r['scenario']}@{r['scale']}({r['second_run_exchanges']})"
+                for r in high_exch
+            )
         )
 
     # 4. SCD2 specific: compare second run to first run
-    scd2_runs = [r for r in results if r["scenario"] in (
-        "scd2_change_detection", "scd2_full_cdc_delete", "scd2_effective_at"
-    )]
+    scd2_runs = [
+        r
+        for r in results
+        if r["scenario"]
+        in ("scd2_change_detection", "scd2_full_cdc_delete", "scd2_effective_at")
+    ]
     for r in scd2_runs:
         if r["first_run_total_ms"] > 0:
             ratio = r["second_run_total_ms"] / r["first_run_total_ms"]
@@ -134,7 +140,10 @@ def identify_bottlenecks(results: list[dict[str, Any]]) -> list[str]:
     if window_runs:
         findings.append(
             "Window operations (single-partition) in: "
-            + ", ".join(f"{r['scenario']}@{r['scale']}({r['second_run_windows']})" for r in window_runs)
+            + ", ".join(
+                f"{r['scenario']}@{r['scale']}({r['second_run_windows']})"
+                for r in window_runs
+            )
         )
 
     # 6. Join strategies used
@@ -167,22 +176,26 @@ def identify_bottlenecks(results: list[dict[str, Any]]) -> list[str]:
     return findings
 
 
-def print_top_stages_per_scenario(results: list[dict[str, Any]], top_n: int = 5) -> None:
+def print_top_stages_per_scenario(
+    results: list[dict[str, Any]], top_n: int = 5
+) -> None:
     """For each scenario, print the top N slowest stages in the second run."""
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print("  TOP SLOWEST STAGES (second run, per scenario)")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
     for r in results:
         stages = r.get("second_run_stages", [])
         if not stages:
             continue
         sorted_stages = sorted(stages, key=lambda s: -s.get("duration_ms", 0))[:top_n]
-        print(f"\n  {r['scenario']} @ {r['scale']} (total: {r['second_run_total_ms']:.0f}ms):")
+        print(
+            f"\n  {r['scenario']} @ {r['scale']} (total: {r['second_run_total_ms']:.0f}ms):"
+        )
         for s in sorted_stages:
             print(
                 f"    {s['duration_ms']:>8.0f}ms  "
-                f"shuffle_read={s.get('shuffle_read_bytes', 0)/1024/1024:>6.1f}MB  "
-                f"shuffle_write={s.get('shuffle_write_bytes', 0)/1024/1024:>6.1f}MB  "
+                f"shuffle_read={s.get('shuffle_read_bytes', 0) / 1024 / 1024:>6.1f}MB  "
+                f"shuffle_write={s.get('shuffle_write_bytes', 0) / 1024 / 1024:>6.1f}MB  "
                 f"tasks={s.get('num_tasks', 0):>3}  "
                 f"{s['name'][:50]}"
             )
@@ -222,16 +235,16 @@ def main() -> None:
     print_summary_table(results)
     print_top_stages_per_scenario(results)
 
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print("  BOTTLENECK ANALYSIS")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
     findings = identify_bottlenecks(results)
     for i, f in enumerate(findings, 1):
         print(f"  {i}. {f}")
 
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print("  TOP RECOMMENDATIONS (based on findings)")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
     for rec in generate_recommendations(findings, results):
         print(f"  * {rec}")
 

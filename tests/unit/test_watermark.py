@@ -80,7 +80,9 @@ def test_batch_start_records_running_state_and_returns_uuid(manager):
 def test_batch_complete_updates_watermark_and_metrics(manager):
     manager._upsert_control_record = MagicMock()
 
-    manager.batch_complete("target", "source", new_version=42, rows_read=10, rows_written=4)
+    manager.batch_complete(
+        "target", "source", new_version=42, rows_read=10, rows_written=4
+    )
 
     manager._upsert_control_record.assert_called_once()
     args, kwargs = manager._upsert_control_record.call_args
@@ -152,7 +154,9 @@ def test_get_running_batches_filters_only_running_records(manager, spark_mock):
 
 
 @patch("kimball.orchestration.watermark.DeltaTable.forName")
-def test_control_table_supports_independent_concurrent_updates(mock_for_name, manager, spark_mock):
+def test_control_table_supports_independent_concurrent_updates(
+    mock_for_name, manager, spark_mock
+):
     store = {}
 
     class FakeDataFrame:
@@ -180,7 +184,9 @@ def test_control_table_supports_independent_concurrent_updates(mock_for_name, ma
             for row in self._rows:
                 key = (row["target_table"], row["source_table"])
                 if key in self._store:
-                    self._store[key].update({k: v for k, v in row.items() if v is not None})
+                    self._store[key].update(
+                        {k: v for k, v in row.items() if v is not None}
+                    )
                 else:
                     self._store[key] = dict(row)
 
@@ -195,7 +201,9 @@ def test_control_table_supports_independent_concurrent_updates(mock_for_name, ma
             return FakeMergeBuilder(update_df._rows, self._store)
 
     mock_for_name.return_value = FakeDeltaTable(store)
-    spark_mock.createDataFrame.side_effect = lambda rows, schema=None: FakeDataFrame(rows, schema)
+    spark_mock.createDataFrame.side_effect = lambda rows, schema=None: FakeDataFrame(
+        rows, schema
+    )
 
     manager.update_watermark("dim_customer", "orders", 10)
     manager.update_watermark("dim_product", "orders", 20)
@@ -205,10 +213,30 @@ def test_control_table_supports_independent_concurrent_updates(mock_for_name, ma
     assert store[("dim_product", "orders")]["last_processed_version"] == 20
 
 
-def test_control_table_keeps_separate_status_for_each_concurrent_job(manager, spark_mock):
+def test_control_table_keeps_separate_status_for_each_concurrent_job(
+    manager, spark_mock
+):
     spark_mock.table.return_value.filter.return_value.first.side_effect = [
-        Row(batch_id="batch-1", batch_status="RUNNING", batch_started_at=None, batch_completed_at=None, last_processed_version=None, rows_read=None, rows_written=None, error_message=None),
-        Row(batch_id="batch-2", batch_status="RUNNING", batch_started_at=None, batch_completed_at=None, last_processed_version=None, rows_read=None, rows_written=None, error_message=None),
+        Row(
+            batch_id="batch-1",
+            batch_status="RUNNING",
+            batch_started_at=None,
+            batch_completed_at=None,
+            last_processed_version=None,
+            rows_read=None,
+            rows_written=None,
+            error_message=None,
+        ),
+        Row(
+            batch_id="batch-2",
+            batch_status="RUNNING",
+            batch_started_at=None,
+            batch_completed_at=None,
+            last_processed_version=None,
+            rows_read=None,
+            rows_written=None,
+            error_message=None,
+        ),
     ]
 
     status_a = manager.get_batch_status("dim_customer", "orders")
@@ -221,7 +249,9 @@ def test_control_table_keeps_separate_status_for_each_concurrent_job(manager, sp
 
 
 @patch("kimball.orchestration.watermark.DeltaTable.forName")
-def test_upsert_control_records_uses_union_of_update_keys(mock_for_name, manager, spark_mock):
+def test_upsert_control_records_uses_union_of_update_keys(
+    mock_for_name, manager, spark_mock
+):
     delta_table = MagicMock()
     mock_for_name.return_value = delta_table
 
@@ -250,7 +280,12 @@ def test_upsert_control_records_uses_union_of_update_keys(mock_for_name, manager
     manager._upsert_control_records(
         [
             {"target_table": "t", "source_table": "s", "batch_id": "b1"},
-            {"target_table": "t", "source_table": "s", "rows_read": 10, "rows_written": 5},
+            {
+                "target_table": "t",
+                "source_table": "s",
+                "rows_read": 10,
+                "rows_written": 5,
+            },
         ]
     )
 

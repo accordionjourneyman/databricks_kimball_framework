@@ -30,35 +30,44 @@ def _generate_products(spark: SparkSession, n: int, db: str) -> None:
             in_stock BOOLEAN, launch_date DATE, rating DOUBLE
         ) USING DELTA
     """)
-    df = (
-        spark.range(n)
-        .select(
-            col("id").cast("int").alias("product_id"),
-            concat(lit("Product_"), col("id").cast("string")).alias("name"),
-            (rand() * 1000).cast("decimal(10,2)").alias("price"),
-            (rand() * 100).cast("int").alias("category_id"),
-            concat(lit("Brand_"), (rand() * 50).cast("int").cast("string")).alias("brand"),
-            when(rand() < 0.3, lit("red"))
-            .when(rand() < 0.6, lit("blue"))
-            .otherwise(lit("green"))
-            .alias("color"),
-            when(rand() < 0.5, lit("S"))
-            .when(rand() < 0.8, lit("M"))
-            .otherwise(lit("L"))
-            .alias("size"),
-            (rand() * 5000).cast("int").alias("weight_g"),
-            (rand() > 0.2).alias("in_stock"),
-            date_add(lit("2024-01-01").cast("date"), (rand() * 1000).cast("int")).alias("launch_date"),
-            (rand() * 5).alias("rating"),
-        )
+    df = spark.range(n).select(
+        col("id").cast("int").alias("product_id"),
+        concat(lit("Product_"), col("id").cast("string")).alias("name"),
+        (rand() * 1000).cast("decimal(10,2)").alias("price"),
+        (rand() * 100).cast("int").alias("category_id"),
+        concat(lit("Brand_"), (rand() * 50).cast("int").cast("string")).alias("brand"),
+        when(rand() < 0.3, lit("red"))
+        .when(rand() < 0.6, lit("blue"))
+        .otherwise(lit("green"))
+        .alias("color"),
+        when(rand() < 0.5, lit("S"))
+        .when(rand() < 0.8, lit("M"))
+        .otherwise(lit("L"))
+        .alias("size"),
+        (rand() * 5000).cast("int").alias("weight_g"),
+        (rand() > 0.2).alias("in_stock"),
+        date_add(lit("2024-01-01").cast("date"), (rand() * 1000).cast("int")).alias(
+            "launch_date"
+        ),
+        (rand() * 5).alias("rating"),
     )
     df.write.format("delta").mode("overwrite").saveAsTable(f"{db}.products_src")
 
 
 SCALE_TIERS = {
     "tiny": {"products": 1_000, "n_changed": 300, "n_deleted": 100, "n_new": 100},
-    "small": {"products": 100_000, "n_changed": 30_000, "n_deleted": 10_000, "n_new": 10_000},
-    "medium": {"products": 1_000_000, "n_changed": 300_000, "n_deleted": 100_000, "n_new": 100_000},
+    "small": {
+        "products": 100_000,
+        "n_changed": 30_000,
+        "n_deleted": 10_000,
+        "n_new": 10_000,
+    },
+    "medium": {
+        "products": 1_000_000,
+        "n_changed": 300_000,
+        "n_deleted": 100_000,
+        "n_new": 100_000,
+    },
 }
 
 
@@ -86,11 +95,22 @@ def bench_db(spark: SparkSession):
     spark.sql(f"DROP DATABASE IF EXISTS {db} CASCADE")
 
 
-def _make_config(db: str, table_suffix: str, scd_type: int = 1,
-                 track_cols: list[str] | None = None) -> str:
+def _make_config(
+    db: str, table_suffix: str, scd_type: int = 1, track_cols: list[str] | None = None
+) -> str:
     """Generate a config YAML for a products dimension."""
-    track = track_cols or ["name", "price", "category_id", "brand", "color", "size",
-                           "weight_g", "in_stock", "launch_date", "rating"]
+    track = track_cols or [
+        "name",
+        "price",
+        "category_id",
+        "brand",
+        "color",
+        "size",
+        "weight_g",
+        "in_stock",
+        "launch_date",
+        "rating",
+    ]
     track_yaml = "[" + ", ".join(track) + "]" if scd_type == 2 else "[]"
     return f"""
 table_name: {db}.dim_product{table_suffix}
@@ -125,7 +145,9 @@ class TestBenchmarkSCD1:
         params = SCALE_TIERS[scale]
         _generate_products(spark, params["products"], bench_db)
 
-        config_path = _write_config(_make_config(bench_db, "_scd1", scd_type=1), tmp_path)
+        config_path = _write_config(
+            _make_config(bench_db, "_scd1", scd_type=1), tmp_path
+        )
 
         start = time.time()
         result = Orchestrator(config_path, spark=spark, etl_schema=bench_db).run()
@@ -137,7 +159,7 @@ class TestBenchmarkSCD1:
         spark.sql(f"""
             UPDATE {bench_db}.products_src
             SET price = price * 1.15
-            WHERE product_id < {params['n_changed']}
+            WHERE product_id < {params["n_changed"]}
         """)
 
         start = time.time()
@@ -152,7 +174,9 @@ class TestBenchmarkSCD1:
 class TestBenchmarkSCD2ChangeDetection:
     """SCD2 change detection: hashdiff comparison, row classification."""
 
-    def test_scd2_change_detection(self, spark: SparkSession, bench_db: str, scale, tmp_path):
+    def test_scd2_change_detection(
+        self, spark: SparkSession, bench_db: str, scale, tmp_path
+    ):
         params = SCALE_TIERS[scale]
         _generate_products(spark, params["products"], bench_db)
 
@@ -170,7 +194,7 @@ class TestBenchmarkSCD2ChangeDetection:
         spark.sql(f"""
             UPDATE {bench_db}.products_src
             SET price = price * 1.15
-            WHERE product_id < {params['n_changed']}
+            WHERE product_id < {params["n_changed"]}
         """)
 
         start = time.time()
@@ -185,7 +209,9 @@ class TestBenchmarkSCD2ChangeDetection:
 class TestBenchmarkSCD2FullCDCDelete:
     """SCD2 with full CDC: anti-join to detect deletes."""
 
-    def test_scd2_full_cdc_delete(self, spark: SparkSession, bench_db: str, scale, tmp_path):
+    def test_scd2_full_cdc_delete(
+        self, spark: SparkSession, bench_db: str, scale, tmp_path
+    ):
         params = SCALE_TIERS[scale]
         _generate_products(spark, params["products"], bench_db)
 
@@ -200,7 +226,9 @@ class TestBenchmarkSCD2FullCDCDelete:
         assert result["status"] == "SUCCESS", f"First run failed: {result}"
 
         # Delete some products (triggers full CDC delete detection)
-        spark.sql(f"DELETE FROM {bench_db}.products_src WHERE product_id < {params['n_deleted']}")
+        spark.sql(
+            f"DELETE FROM {bench_db}.products_src WHERE product_id < {params['n_deleted']}"
+        )
 
         start = time.time()
         result2 = Orchestrator(config_path, spark=spark, etl_schema=bench_db).run()
@@ -214,7 +242,9 @@ class TestBenchmarkSCD2FullCDCDelete:
 class TestBenchmarkValidation:
     """Validation overhead: NK uniqueness + FK integrity checks."""
 
-    def test_validation_overhead(self, spark: SparkSession, bench_db: str, scale, tmp_path):
+    def test_validation_overhead(
+        self, spark: SparkSession, bench_db: str, scale, tmp_path
+    ):
         params = SCALE_TIERS[scale]
         _generate_products(spark, params["products"], bench_db)
 
@@ -231,7 +261,7 @@ class TestBenchmarkValidation:
         spark.sql(f"""
             UPDATE {bench_db}.products_src
             SET price = price * 1.10
-            WHERE product_id < {params['n_changed']}
+            WHERE product_id < {params["n_changed"]}
         """)
 
         start = time.time()
@@ -243,9 +273,13 @@ class TestBenchmarkValidation:
         _save_result("validation_overhead", scale, first_ms, second_ms, params)
 
 
-def _save_result(scenario: str, scale: str, first_ms: float, second_ms: float, params: dict):
+def _save_result(
+    scenario: str, scale: str, first_ms: float, second_ms: float, params: dict
+):
     """Write benchmark result to JSON for the analyzer to read."""
-    output_dir = Path(__file__).parent.parent.parent / "tools" / "benchmarks" / "results"
+    output_dir = (
+        Path(__file__).parent.parent.parent / "tools" / "benchmarks" / "results"
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     result = {
         "scenario": scenario,
@@ -260,4 +294,6 @@ def _save_result(scenario: str, scale: str, first_ms: float, second_ms: float, p
     outfile = output_dir / f"{scenario}_{scale}.json"
     with open(outfile, "w") as f:
         json.dump(result, f, indent=2)
-    print(f"\n  [{scenario} @ {scale}] first={first_ms:.0f}ms  second={second_ms:.0f}ms")
+    print(
+        f"\n  [{scenario} @ {scale}] first={first_ms:.0f}ms  second={second_ms:.0f}ms"
+    )

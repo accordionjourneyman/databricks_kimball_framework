@@ -93,7 +93,9 @@ class TableConfig(BaseModel):
         if self.scd_type == 4 and not self.history_table:
             raise ValueError("SCD Type 4 requires 'history_table' to be specified.")
         if self.scd_type == 6 and not self.current_value_columns:
-            raise ValueError("SCD Type 6 requires 'current_value_columns' to be specified.")
+            raise ValueError(
+                "SCD Type 6 requires 'current_value_columns' to be specified."
+            )
         return self
 
 
@@ -106,7 +108,9 @@ class ConfigLoader:
             rendered = (
                 __import__("jinja2.sandbox", fromlist=["SandboxedEnvironment"])
                 .SandboxedEnvironment(
-                    undefined=__import__("jinja2", fromlist=["StrictUndefined"]).StrictUndefined
+                    undefined=__import__(
+                        "jinja2", fromlist=["StrictUndefined"]
+                    ).StrictUndefined
                 )
                 .from_string(f.read())
                 .render(self.env_vars)
@@ -114,7 +118,9 @@ class ConfigLoader:
         try:
             return TableConfig(**yaml.safe_load(rendered))
         except ValidationError as e:
-            raise ValueError(f"Configuration validation error in {file_path}: {e}") from e
+            raise ValueError(
+                f"Configuration validation error in {file_path}: {e}"
+            ) from e
 
     def validate_transformation_sql(
         self,
@@ -170,14 +176,19 @@ class ConfigLoader:
         Raises if the SQL is invalid or references missing columns.
         """
         import uuid as _uuid
+
         views: list[str] = []
         for source in config.sources:
             view_name = f"_kimball_dryrun_{_uuid.uuid4().hex[:8]}"
             try:
                 if spark.catalog.tableExists(source.name):
-                    spark.read.format("delta").table(source.name).limit(0).createOrReplaceTempView(view_name)
+                    spark.read.format("delta").table(source.name).limit(
+                        0
+                    ).createOrReplaceTempView(view_name)
                 else:
-                    spark.createDataFrame([], schema="x int").createOrReplaceTempView(view_name)
+                    spark.createDataFrame([], schema="x int").createOrReplaceTempView(
+                        view_name
+                    )
                 views.append(view_name)
                 if source.alias != view_name:
                     spark.sql(
@@ -195,7 +206,9 @@ class ConfigLoader:
                 except Exception:
                     pass
 
-    def compute_fingerprint(self, config: TableConfig, sql_text: str | None = None) -> str:
+    def compute_fingerprint(
+        self, config: TableConfig, sql_text: str | None = None
+    ) -> str:
         """
         Compute a deterministic fingerprint of the config + transformation SQL.
 

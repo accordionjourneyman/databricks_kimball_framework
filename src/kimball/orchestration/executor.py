@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PipelineResult:
     """Result of a single pipeline execution."""
+
     config_path: str
     table_name: str
     table_type: str
@@ -34,6 +35,7 @@ class PipelineResult:
 @dataclass
 class ExecutionSummary:
     """Summary of the entire execution run."""
+
     total_pipelines: int
     successful: int
     failed: int
@@ -120,7 +122,12 @@ class PipelineExecutor:
                 raise NonRetriableError(f"Invalid config file: {path}") from e
 
     def _failed_result(
-        self, path: str, table_name: str, table_type: str, duration: float, error_msg: str
+        self,
+        path: str,
+        table_name: str,
+        table_type: str,
+        duration: float,
+        error_msg: str,
     ) -> PipelineResult:
         return PipelineResult(
             config_path=path,
@@ -159,7 +166,9 @@ class PipelineExecutor:
             duration = time.time() - start_time
             error_msg = f"{type(e).__name__}: {str(e)}"
             logger.info(f"  ✗ Failed: {table_name} - {error_msg}")
-            return self._failed_result(path, table_name, table_type, duration, error_msg)
+            return self._failed_result(
+                path, table_name, table_type, duration, error_msg
+            )
 
     def _run_wave(
         self, wave_name: str, pipelines: list[dict[str, Any]]
@@ -185,13 +194,19 @@ class PipelineExecutor:
 
     def _run_parallel(self, pipelines: list[dict[str, Any]]) -> list[PipelineResult]:
         results = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            future_to_pipeline = {executor.submit(self._run_single_pipeline, p): p for p in pipelines}
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=self.max_workers
+        ) as executor:
+            future_to_pipeline = {
+                executor.submit(self._run_single_pipeline, p): p for p in pipelines
+            }
             for future in concurrent.futures.as_completed(future_to_pipeline):
                 result = future.result()
                 results.append(result)
                 if result.status == "FAILED" and self.stop_on_failure:
-                    logger.info(f"\n⚠ Failure detected in {result.table_name}. Cancelling remaining...")
+                    logger.info(
+                        f"\n⚠ Failure detected in {result.table_name}. Cancelling remaining..."
+                    )
                     for f in future_to_pipeline:
                         f.cancel()
                     break
@@ -214,7 +229,9 @@ class PipelineExecutor:
         dim_failures = [r for r in dim_results if r.status == "FAILED"]
         if dim_failures and self.stop_on_failure:
             wave_failed = True
-            logger.info(f"\n⚠ {len(dim_failures)} dimension(s) failed. Skipping facts wave.")
+            logger.info(
+                f"\n⚠ {len(dim_failures)} dimension(s) failed. Skipping facts wave."
+            )
 
             for fact in self.facts:
                 all_results.append(
@@ -265,7 +282,9 @@ class PipelineExecutor:
             logger.info(f"  {i}. {fact['table_name']} ({fact['path']})")
 
         logger.info("\nExecution Order:")
-        logger.info(f"  1. All dimensions run in parallel (max {self.max_workers} workers)")
+        logger.info(
+            f"  1. All dimensions run in parallel (max {self.max_workers} workers)"
+        )
         logger.info("  2. After ALL dimensions complete, facts run in parallel")
         if self.stop_on_failure:
             logger.info("  3. If any dimension fails, facts wave is skipped")

@@ -46,6 +46,7 @@ def tmp_config(tmp_path, config_loader):
         path = tmp_path / f"taxi_{uuid.uuid4().hex[:8]}.yml"
         path.write_text(content, encoding="utf-8")
         return str(path)
+
     return _write
 
 
@@ -89,7 +90,9 @@ transformation_sql: |
         result = orchestrator.run()
         assert result["status"] == "SUCCESS"
 
-        initial_rows = spark.table(f"{test_db}.dim_zone").filter("location_id = 1").collect()
+        initial_rows = (
+            spark.table(f"{test_db}.dim_zone").filter("location_id = 1").collect()
+        )
         assert len(initial_rows) == 1
         assert initial_rows[0]["__is_current"]
         initial_valid_from = initial_rows[0]["__valid_from"]
@@ -173,7 +176,10 @@ transformation_sql: |
         total_fare = sum(r.fare_amount for r in rows)
         assert abs(total_fare - 37.5) < 0.01
 
-        by_date = {str(r.pickup_date): len([x for x in rows if x.pickup_date == r.pickup_date]) for r in rows}
+        by_date = {
+            str(r.pickup_date): len([x for x in rows if x.pickup_date == r.pickup_date])
+            for r in rows
+        }
         assert by_date.get("2024-03-15") == 2
         assert by_date.get("2024-03-16") == 1
 

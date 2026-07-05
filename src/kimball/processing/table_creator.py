@@ -267,7 +267,9 @@ class TableCreator:
                 logger.info(f"Warning: Delta features failed: {first_line}")
 
         # Apply basic Delta constraints after table creation
-        self.apply_basic_constraints(table_name, surrogate_key_col, schema_df, surrogate_key_strategy)
+        self.apply_basic_constraints(
+            table_name, surrogate_key_col, schema_df, surrogate_key_strategy
+        )
 
         # Apply additional constraints from config
         if config:

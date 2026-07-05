@@ -22,7 +22,13 @@ def spark_mock():
 @patch("kimball.processing.merger.DeltaTable")
 @patch("kimball.common.spark_session.get_spark")
 def test_merge_execution(
-    mock_get_spark, mock_delta_table, mock_window, mock_row_number, mock_col, mock_lit, mock_curr_ts
+    mock_get_spark,
+    mock_delta_table,
+    mock_window,
+    mock_row_number,
+    mock_col,
+    mock_lit,
+    mock_curr_ts,
 ):
     # Setup mocks
     mock_dt_instance = MagicMock()

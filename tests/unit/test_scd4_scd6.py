@@ -55,8 +55,10 @@ class TestCreateMergeStrategy:
 
 class TestSCD4Function:
     def test_merge_scd4_calls_scd1_and_history(self):
-        with patch("kimball.processing.merger.merge_scd1") as mock_scd1, \
-             patch("kimball.processing.merger._merge_history") as mock_hist:
+        with (
+            patch("kimball.processing.merger.merge_scd1") as mock_scd1,
+            patch("kimball.processing.merger._merge_history") as mock_hist,
+        ):
             _merger.merge_scd4(
                 MagicMock(),
                 target_table_name="dim_product",
@@ -76,9 +78,11 @@ class TestSCD6Function:
         mock_spark = MagicMock()
         mock_df.sparkSession = mock_spark
 
-        with patch("kimball.processing.merger.DeltaTable") as mock_dt, \
-             patch("kimball.processing.merger.broadcast", lambda x: x), \
-             patch("kimball.processing.merger.compute_hashdiff", return_value="hash"):
+        with (
+            patch("kimball.processing.merger.DeltaTable") as mock_dt,
+            patch("kimball.processing.merger.broadcast", lambda x: x),
+            patch("kimball.processing.merger.compute_hashdiff", return_value="hash"),
+        ):
             mock_dt.forName.return_value = MagicMock()
             _merger.merge_scd6(
                 mock_df,

@@ -82,6 +82,7 @@ SCALE_MAP = {
 @dataclass
 class ScenarioResult:
     """Collected metrics for a single scenario run."""
+
     scenario: str
     scale: str
     rows_in_target: int
@@ -159,7 +160,11 @@ def render_config(template_path: Path, db: str) -> str:
 
     with open(template_path) as f:
         content = f.read()
-    rendered = SandboxedEnvironment(undefined=StrictUndefined).from_string(content).render(db=db)
+    rendered = (
+        SandboxedEnvironment(undefined=StrictUndefined)
+        .from_string(content)
+        .render(db=db)
+    )
     return rendered
 
 
@@ -199,6 +204,7 @@ def run_orchestrator(
         error = None
     except Exception as e:
         import traceback
+
         result = {"status": "ERROR", "error": str(e)}
         error = traceback.format_exc()
     duration_ms = (time.time() - start) * 1000
@@ -225,20 +231,21 @@ def setup_identity_bridge_data(spark: SparkSession, db: str, n_customers: int) -
         ) USING DELTA
     """)
     bridge_count = max(1, n_customers // 2)
-    bridge_df = (
-        spark.range(bridge_count)
-        .select(
-            col("id").cast("int").alias("customer_id"),
-            (col("id") / 3).cast("int").alias("canonical_customer_id"),
-        )
+    bridge_df = spark.range(bridge_count).select(
+        col("id").cast("int").alias("customer_id"),
+        (col("id") / 3).cast("int").alias("canonical_customer_id"),
     )
-    bridge_df.write.format("delta").mode("overwrite").saveAsTable(f"{db}.customer_bridge")
+    bridge_df.write.format("delta").mode("overwrite").saveAsTable(
+        f"{db}.customer_bridge"
+    )
 
 
 def setup_schema_evolution(spark: SparkSession, db: str) -> None:
     """Add a new column to source to test schema evolution path."""
     spark.sql(f"ALTER TABLE {db}.products_src ADD COLUMN new_col STRING")
-    spark.sql(f"UPDATE {db}.products_src SET new_col = 'added_later' WHERE product_id < 100")
+    spark.sql(
+        f"UPDATE {db}.products_src SET new_col = 'added_later' WHERE product_id < 100"
+    )
 
 
 def run_scenario(
@@ -250,9 +257,9 @@ def run_scenario(
     output_dir: Path,
 ) -> ScenarioResult:
     """Run a single benchmark scenario and return results."""
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  Scenario: {scenario}  Scale: {scale_name}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     db = create_benchmark_database(spark)
     result = ScenarioResult(
@@ -310,11 +317,11 @@ def run_scenario(
         result.first_run_disk_spill = first["disk_spill"]
         result.first_run_stages = first["stages"]
 
-        target_table_name = config_text.split('table_name:')[1].split()[0].strip()
+        target_table_name = config_text.split("table_name:")[1].split()[0].strip()
         target_exists = spark.catalog.tableExists(target_table_name)
         print(
             f"  First run:  {first['duration_ms']:.0f}ms  "
-            f"shuffle={first['total_shuffle']/1024/1024:.1f}MB  "
+            f"shuffle={first['total_shuffle'] / 1024 / 1024:.1f}MB  "
             f"status={result.first_run_status}  "
             f"target_exists={target_exists}"
         )
@@ -348,14 +355,22 @@ def run_scenario(
         result.second_run_disk_spill = second["disk_spill"]
         result.second_run_stages = second["stages"]
 
-        if scenario in ("scd2_change_detection", "scd2_full_cdc_delete", "scd2_effective_at",
-                        "scd1_baseline", "schema_evolution", "validation_overhead",
-                        "identity_bridge"):
+        if scenario in (
+            "scd2_change_detection",
+            "scd2_full_cdc_delete",
+            "scd2_effective_at",
+            "scd1_baseline",
+            "schema_evolution",
+            "validation_overhead",
+            "identity_bridge",
+        ):
             try:
                 plan_excerpt = capture_execution_plan(
-                    spark.read.format("delta").table(
+                    spark.read.format("delta")
+                    .table(
                         f"{db}.{config_text.split('table_name:')[1].split('.')[1].split()[0]}"
-                    ).limit(1)
+                    )
+                    .limit(1)
                 )
                 result.second_run_join_types = extract_join_types(plan_excerpt)
                 result.second_run_exchanges = extract_exchanges(plan_excerpt)
@@ -364,14 +379,16 @@ def run_scenario(
                 pass
         print(
             f"  Second run: {second['duration_ms']:.0f}ms  "
-            f"shuffle={second['total_shuffle']/1024/1024:.1f}MB  "
+            f"shuffle={second['total_shuffle'] / 1024 / 1024:.1f}MB  "
             f"status={result.second_run_status}"
         )
 
         # --- Row count ---
         try:
             result.rows_in_target = (
-                spark.table(f"{db}.{config_text.split('table_name:')[1].split('.')[1].split()[0]}")
+                spark.table(
+                    f"{db}.{config_text.split('table_name:')[1].split('.')[1].split()[0]}"
+                )
                 .filter("__is_current = true")
                 .count()
             )
@@ -430,41 +447,54 @@ def main() -> None:
                 )
                 d = result.to_dict()
                 all_results.append(d)
-                summary_rows.append({
-                    "scenario": scenario,
-                    "scale": scale.name,
-                    "first_ms": d["first_run_total_ms"],
-                    "second_ms": d["second_run_total_ms"],
-                    "first_shuffle_mb": round(d["first_run_total_shuffle_bytes"] / 1024 / 1024, 1),
-                    "second_shuffle_mb": round(d["second_run_total_shuffle_bytes"] / 1024 / 1024, 1),
-                    "first_spill_mb": round(d["first_run_disk_spill_bytes"] / 1024 / 1024, 1),
-                    "second_spill_mb": round(d["second_run_disk_spill_bytes"] / 1024 / 1024, 1),
-                    "first_exchanges": d["first_run_exchanges"],
-                    "second_exchanges": d["second_run_exchanges"],
-                    "first_status": d["first_run_status"],
-                    "second_status": d["second_run_status"],
-                })
+                summary_rows.append(
+                    {
+                        "scenario": scenario,
+                        "scale": scale.name,
+                        "first_ms": d["first_run_total_ms"],
+                        "second_ms": d["second_run_total_ms"],
+                        "first_shuffle_mb": round(
+                            d["first_run_total_shuffle_bytes"] / 1024 / 1024, 1
+                        ),
+                        "second_shuffle_mb": round(
+                            d["second_run_total_shuffle_bytes"] / 1024 / 1024, 1
+                        ),
+                        "first_spill_mb": round(
+                            d["first_run_disk_spill_bytes"] / 1024 / 1024, 1
+                        ),
+                        "second_spill_mb": round(
+                            d["second_run_disk_spill_bytes"] / 1024 / 1024, 1
+                        ),
+                        "first_exchanges": d["first_run_exchanges"],
+                        "second_exchanges": d["second_run_exchanges"],
+                        "first_status": d["first_run_status"],
+                        "second_status": d["second_run_status"],
+                    }
+                )
     finally:
         spark.stop()
 
     # Write results
     timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     report_path = output_dir / f"benchmark_{timestamp_str}.json"
-    save_metrics_report(str(report_path), {
-        "timestamp": datetime.now().isoformat(),
-        "scenarios": scenarios,
-        "scales": [s.name for s in scales],
-        "results": all_results,
-    })
+    save_metrics_report(
+        str(report_path),
+        {
+            "timestamp": datetime.now().isoformat(),
+            "scenarios": scenarios,
+            "scales": [s.name for s in scales],
+            "results": all_results,
+        },
+    )
 
     summary_path = output_dir / f"summary_{timestamp_str}.json"
     save_metrics_report(str(summary_path), summary_rows)
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("  Results written to:")
     print(f"    Full report: {report_path}")
     print(f"    Summary:     {summary_path}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
 
 if __name__ == "__main__":

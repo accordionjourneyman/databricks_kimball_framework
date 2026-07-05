@@ -517,7 +517,7 @@ def main() -> int:
 
     if "--" in sys.argv:
         sep_idx = sys.argv.index("--")
-        pytest_args = sys.argv[sep_idx + 1:]
+        pytest_args = sys.argv[sep_idx + 1 :]
         args = parser.parse_args(sys.argv[1:sep_idx])
     else:
         args = parser.parse_args()

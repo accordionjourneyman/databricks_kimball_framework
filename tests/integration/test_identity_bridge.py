@@ -19,11 +19,15 @@ def local_spark():
     session = (
         SparkSession.builder.appName("KimballBridgeTest")
         .master("local[*]")
-        .config("spark.sql.warehouse.dir", tempfile.mkdtemp(prefix="spark-warehouse-bridge-"))
+        .config(
+            "spark.sql.warehouse.dir",
+            tempfile.mkdtemp(prefix="spark-warehouse-bridge-"),
+        )
         .getOrCreate()
     )
     if "databricks.sdk.runtime" in sys.modules:
         import types
+
         mock_runtime = types.ModuleType("databricks.sdk.runtime")
         mock_runtime.spark = session
         mock_runtime.dbutils = MagicMock()
@@ -63,11 +67,15 @@ def orchestrator_with_bridge(bridge_data, bridge_view_name, local_spark):
         patch("kimball.orchestration.orchestrator.QueryMetricsCollector"),
         patch("kimball.orchestration.orchestrator.PipelineCheckpoint"),
         patch("kimball.orchestration.orchestrator.StagingCleanupManager"),
-        patch("kimball.orchestration.orchestrator._feature_enabled", return_value=False),
+        patch(
+            "kimball.orchestration.orchestrator._feature_enabled", return_value=False
+        ),
     ):
         mock_loader_cls.return_value.load_config.return_value = MagicMock()
         mock_runtime.from_environment.return_value = MagicMock(
-            shuffle_partitions="auto", skew_threshold_mb=512, skew_factor=2.0,
+            shuffle_partitions="auto",
+            skew_threshold_mb=512,
+            skew_factor=2.0,
         )
         from kimball.orchestration.orchestrator import Orchestrator
 
@@ -98,7 +106,9 @@ def orchestrator_with_bridge(bridge_data, bridge_view_name, local_spark):
 
 
 class TestIdentityBridgeIntegration:
-    def test_resolves_merged_keys(self, local_spark: SparkSession, orchestrator_with_bridge):
+    def test_resolves_merged_keys(
+        self, local_spark: SparkSession, orchestrator_with_bridge
+    ):
         source_data = [("A", 100), ("B", 200)]
         source_df = local_spark.createDataFrame(source_data, ["business_key", "val"])
 
@@ -108,7 +118,9 @@ class TestIdentityBridgeIntegration:
         assert rows.get("C") is not None, "A and B should both resolve to C"
         assert rows["C"] == 100 or rows["C"] == 200
 
-    def test_preserves_unmapped_keys(self, local_spark: SparkSession, orchestrator_with_bridge):
+    def test_preserves_unmapped_keys(
+        self, local_spark: SparkSession, orchestrator_with_bridge
+    ):
         source_data = [("X", 300)]
         source_df = local_spark.createDataFrame(source_data, ["business_key", "val"])
 
@@ -118,8 +130,12 @@ class TestIdentityBridgeIntegration:
         assert len(rows) == 1
         assert rows[0].business_key == "X"
 
-    def test_handles_empty_bridge_table(self, local_spark: SparkSession, bridge_view_name):
-        local_spark.createDataFrame([], schema="business_key string, target_key string").createOrReplaceTempView(bridge_view_name)
+    def test_handles_empty_bridge_table(
+        self, local_spark: SparkSession, bridge_view_name
+    ):
+        local_spark.createDataFrame(
+            [], schema="business_key string, target_key string"
+        ).createOrReplaceTempView(bridge_view_name)
         with (
             patch("kimball.orchestration.orchestrator.ConfigLoader") as mock_loader_cls,
             patch("kimball.orchestration.orchestrator.RuntimeOptions") as mock_runtime,
@@ -132,11 +148,16 @@ class TestIdentityBridgeIntegration:
             patch("kimball.orchestration.orchestrator.QueryMetricsCollector"),
             patch("kimball.orchestration.orchestrator.PipelineCheckpoint"),
             patch("kimball.orchestration.orchestrator.StagingCleanupManager"),
-            patch("kimball.orchestration.orchestrator._feature_enabled", return_value=False),
+            patch(
+                "kimball.orchestration.orchestrator._feature_enabled",
+                return_value=False,
+            ),
         ):
             mock_loader_cls.return_value.load_config.return_value = MagicMock()
             mock_runtime.from_environment.return_value = MagicMock(
-                shuffle_partitions="auto", skew_threshold_mb=512, skew_factor=2.0,
+                shuffle_partitions="auto",
+                skew_threshold_mb=512,
+                skew_factor=2.0,
             )
             from kimball.orchestration.orchestrator import Orchestrator
 
@@ -165,7 +186,9 @@ class TestIdentityBridgeIntegration:
             orch._validator = MagicMock()
 
             source_data = [("A", 100)]
-            source_df = local_spark.createDataFrame(source_data, ["business_key", "val"])
+            source_df = local_spark.createDataFrame(
+                source_data, ["business_key", "val"]
+            )
 
             result_df = orch._apply_identity_bridge(source_df)
             rows = result_df.collect()

@@ -26,6 +26,7 @@ from pyspark.sql.functions import (
 @dataclass
 class ScaleTier:
     """Defines data volume at a given scale."""
+
     name: str
     products: int
     customers: int
@@ -106,27 +107,26 @@ def generate_products(spark: SparkSession, n: int, db: str) -> None:
             rating DOUBLE
         ) USING DELTA
     """)
-    df = (
-        spark.range(n)
-        .select(
-            col("id").cast("int").alias("product_id"),
-            concat(lit("Product_"), col("id").cast("string")).alias("name"),
-            (rand() * 1000).cast("decimal(10,2)").alias("price"),
-            (rand() * 100).cast("int").alias("category_id"),
-            concat(lit("Brand_"), (rand() * 50).cast("int").cast("string")).alias("brand"),
-            when(rand() < 0.3, lit("red"))
-            .when(rand() < 0.6, lit("blue"))
-            .otherwise(lit("green"))
-            .alias("color"),
-            when(rand() < 0.5, lit("S"))
-            .when(rand() < 0.8, lit("M"))
-            .otherwise(lit("L"))
-            .alias("size"),
-            (rand() * 5000).cast("int").alias("weight_g"),
-            (rand() > 0.2).alias("in_stock"),
-            date_add(lit("2024-01-01").cast("date"), (rand() * 1000).cast("int")).alias("launch_date"),
-            (rand() * 5).alias("rating"),
-        )
+    df = spark.range(n).select(
+        col("id").cast("int").alias("product_id"),
+        concat(lit("Product_"), col("id").cast("string")).alias("name"),
+        (rand() * 1000).cast("decimal(10,2)").alias("price"),
+        (rand() * 100).cast("int").alias("category_id"),
+        concat(lit("Brand_"), (rand() * 50).cast("int").cast("string")).alias("brand"),
+        when(rand() < 0.3, lit("red"))
+        .when(rand() < 0.6, lit("blue"))
+        .otherwise(lit("green"))
+        .alias("color"),
+        when(rand() < 0.5, lit("S"))
+        .when(rand() < 0.8, lit("M"))
+        .otherwise(lit("L"))
+        .alias("size"),
+        (rand() * 5000).cast("int").alias("weight_g"),
+        (rand() > 0.2).alias("in_stock"),
+        date_add(lit("2024-01-01").cast("date"), (rand() * 1000).cast("int")).alias(
+            "launch_date"
+        ),
+        (rand() * 5).alias("rating"),
     )
     df.write.format("delta").mode("overwrite").saveAsTable(f"{db}.products_src")
 
@@ -146,25 +146,24 @@ def generate_customers(spark: SparkSession, n: int, db: str) -> None:
             lifetime_value DECIMAL(12,2)
         ) USING DELTA
     """)
-    df = (
-        spark.range(n)
-        .select(
-            col("id").cast("int").alias("customer_id"),
-            concat(lit("Customer_"), col("id").cast("string")).alias("name"),
-            concat(lit("user"), col("id").cast("string"), lit("@example.com")).alias("email"),
-            when(rand() < 0.4, lit("US"))
-            .when(rand() < 0.7, lit("UK"))
-            .when(rand() < 0.85, lit("DE"))
-            .otherwise(lit("FR"))
-            .alias("country"),
-            concat(lit("City_"), (rand() * 1000).cast("int").cast("string")).alias("city"),
-            (randn() * 15 + 40).cast("int").alias("age"),
-            when(rand() < 0.6, lit("retail"))
-            .when(rand() < 0.9, lit("wholesale"))
-            .otherwise(lit("vip"))
-            .alias("segment"),
-            (rand() * 50000).cast("decimal(12,2)").alias("lifetime_value"),
-        )
+    df = spark.range(n).select(
+        col("id").cast("int").alias("customer_id"),
+        concat(lit("Customer_"), col("id").cast("string")).alias("name"),
+        concat(lit("user"), col("id").cast("string"), lit("@example.com")).alias(
+            "email"
+        ),
+        when(rand() < 0.4, lit("US"))
+        .when(rand() < 0.7, lit("UK"))
+        .when(rand() < 0.85, lit("DE"))
+        .otherwise(lit("FR"))
+        .alias("country"),
+        concat(lit("City_"), (rand() * 1000).cast("int").cast("string")).alias("city"),
+        (randn() * 15 + 40).cast("int").alias("age"),
+        when(rand() < 0.6, lit("retail"))
+        .when(rand() < 0.9, lit("wholesale"))
+        .otherwise(lit("vip"))
+        .alias("segment"),
+        (rand() * 50000).cast("decimal(12,2)").alias("lifetime_value"),
     )
     df.write.format("delta").mode("overwrite").saveAsTable(f"{db}.customers_src")
 
@@ -190,19 +189,13 @@ def generate_orders(
             order_timestamp TIMESTAMP
         ) USING DELTA
     """)
-    orders_df = (
-        spark.range(n)
-        .select(
-            col("id").alias("order_id"),
-            (rand() * n_customers).cast("int").alias("customer_id"),
-            current_timestamp().alias("order_timestamp"),
-        )
+    orders_df = spark.range(n).select(
+        col("id").alias("order_id"),
+        (rand() * n_customers).cast("int").alias("customer_id"),
+        current_timestamp().alias("order_timestamp"),
     )
-    items_df = (
-        spark.range(n_items_per_order)
-        .select(
-            col("id").cast("int").alias("order_item_id"),
-        )
+    items_df = spark.range(n_items_per_order).select(
+        col("id").cast("int").alias("order_item_id"),
     )
     df = orders_df.crossJoin(items_df).select(
         col("order_id"),
@@ -242,7 +235,9 @@ def make_changes(
         lit("M").alias("size"),
         (rand() * 5000).cast("int").alias("weight_g"),
         lit(True).alias("in_stock"),
-        date_add(lit("2024-01-01").cast("date"), (rand() * 1000).cast("int")).alias("launch_date"),
+        date_add(lit("2024-01-01").cast("date"), (rand() * 1000).cast("int")).alias(
+            "launch_date"
+        ),
         (rand() * 5).alias("rating"),
     )
     new_ids.write.format("delta").mode("append").saveAsTable(f"{db}.products_src")

@@ -46,6 +46,7 @@ def tmp_config(tmp_path, config_loader):
         path = tmp_path / f"synthea_{uuid.uuid4().hex[:8]}.yml"
         path.write_text(content, encoding="utf-8")
         return str(path)
+
     return _write
 
 
@@ -114,9 +115,7 @@ transformation_sql: |
         assert new["marital_status"] == "married"
 
         p2_rows = (
-            spark.table(f"{test_db}.dim_patient")
-            .filter("patient_id = 2")
-            .collect()
+            spark.table(f"{test_db}.dim_patient").filter("patient_id = 2").collect()
         )
         assert len(p2_rows) == 1
         assert p2_rows[0]["__is_current"]
@@ -285,9 +284,18 @@ transformation_sql: |
   SELECT condition_id, patient_id, provider_id, condition_code, diagnosis_date FROM c
 """)
 
-        assert Orchestrator(dim_config, spark=spark, etl_schema=test_db).run()["status"] == "SUCCESS"
-        assert Orchestrator(enc_config, spark=spark, etl_schema=test_db).run()["status"] == "SUCCESS"
-        assert Orchestrator(cond_config, spark=spark, etl_schema=test_db).run()["status"] == "SUCCESS"
+        assert (
+            Orchestrator(dim_config, spark=spark, etl_schema=test_db).run()["status"]
+            == "SUCCESS"
+        )
+        assert (
+            Orchestrator(enc_config, spark=spark, etl_schema=test_db).run()["status"]
+            == "SUCCESS"
+        )
+        assert (
+            Orchestrator(cond_config, spark=spark, etl_schema=test_db).run()["status"]
+            == "SUCCESS"
+        )
 
         enc_rows = spark.table(f"{test_db}.fact_encounters").collect()
         cond_rows = spark.table(f"{test_db}.fact_conditions").collect()

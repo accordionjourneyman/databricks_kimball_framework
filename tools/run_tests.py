@@ -35,13 +35,15 @@ def parse_args() -> argparse.Namespace:
         description="Kimball Framework test runner with target selection"
     )
     parser.add_argument(
-        "-t", "--target",
+        "-t",
+        "--target",
         choices=["local", "databricks"],
         default="local",
         help="Execution target: 'local' (local Spark+Delta) or 'databricks' (remote Databricks Connect)",
     )
     parser.add_argument(
-        "-k", "--keyword",
+        "-k",
+        "--keyword",
         default=None,
         help="pytest -k keyword expression to filter tests",
     )
@@ -56,22 +58,26 @@ def parse_args() -> argparse.Namespace:
         help="Run only unit tests (default)",
     )
     parser.add_argument(
-        "-v", "--verbose",
+        "-v",
+        "--verbose",
         action="store_true",
         help="Verbose pytest output",
     )
     parser.add_argument(
-        "--tb", "--traceback",
+        "--tb",
+        "--traceback",
         default="short",
         help="Traceback style (short, long, line, native)",
     )
     parser.add_argument(
-        "-x", "--exitfirst",
+        "-x",
+        "--exitfirst",
         action="store_true",
         help="Exit on first failure",
     )
     parser.add_argument(
-        "--lf", "--last-failed",
+        "--lf",
+        "--last-failed",
         action="store_true",
         help="Re-run only the tests that failed last time",
     )
@@ -142,6 +148,7 @@ def setup_databricks_environment(args: argparse.Namespace) -> dict[str, str]:
     if os.path.exists(dotenv_path):
         try:
             from dotenv import load_dotenv
+
             load_dotenv(dotenv_path, override=False)
             env = os.environ.copy()
             env["KIMBALL_TARGET"] = "databricks"

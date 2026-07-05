@@ -46,6 +46,7 @@ def tmp_config(tmp_path, config_loader):
         path = tmp_path / f"retail_{uuid.uuid4().hex[:8]}.yml"
         path.write_text(content, encoding="utf-8")
         return str(path)
+
     return _write
 
 
@@ -96,7 +97,11 @@ transformation_sql: |
         result2 = orchestrator2.run()
         assert result2["status"] == "SUCCESS"
 
-        rows = spark.table(f"{test_db}.dim_product").filter("stock_code = 'S001'").collect()
+        rows = (
+            spark.table(f"{test_db}.dim_product")
+            .filter("stock_code = 'S001'")
+            .collect()
+        )
         assert len(rows) == 1, "SCD1 should overwrite, not version"
         assert "T-LIGHT HOLDER" in rows[0]["description"]
 
@@ -209,7 +214,11 @@ transformation_sql: |
         result = orchestrator.run()
         assert result["status"] == "SUCCESS"
 
-        active = spark.table(f"{test_db}.dim_customer").filter("__is_current = true AND customer_id > 0").collect()
+        active = (
+            spark.table(f"{test_db}.dim_customer")
+            .filter("__is_current = true AND customer_id > 0")
+            .collect()
+        )
         assert len(active) == 3
 
         spark.sql(f"DELETE FROM {test_db}.customers WHERE customer_id = 3")
@@ -218,12 +227,18 @@ transformation_sql: |
         result2 = orchestrator2.run()
         assert result2["status"] == "SUCCESS"
 
-        c3_rows = spark.table(f"{test_db}.dim_customer").filter("customer_id = 3").collect()
+        c3_rows = (
+            spark.table(f"{test_db}.dim_customer").filter("customer_id = 3").collect()
+        )
         assert len(c3_rows) == 1
         assert not c3_rows[0]["__is_current"]
         assert c3_rows[0]["__is_deleted"]
 
-        still_active = spark.table(f"{test_db}.dim_customer").filter("__is_current = true AND customer_id > 0").collect()
+        still_active = (
+            spark.table(f"{test_db}.dim_customer")
+            .filter("__is_current = true AND customer_id > 0")
+            .collect()
+        )
         assert len(still_active) == 2
 
         for t in [f"{test_db}.dim_customer", f"{test_db}.customers"]:
@@ -278,8 +293,12 @@ transformation_sql: |
         assert returns[0]["quantity"] == -3
         assert returns[0]["line_revenue"] < 0
 
-        sales_revenue = sum(r.line_revenue for r in rows if not r.invoice_no.startswith("C"))
-        returns_revenue = sum(r.line_revenue for r in rows if r.invoice_no.startswith("C"))
+        sales_revenue = sum(
+            r.line_revenue for r in rows if not r.invoice_no.startswith("C")
+        )
+        returns_revenue = sum(
+            r.line_revenue for r in rows if r.invoice_no.startswith("C")
+        )
         net = sales_revenue + returns_revenue
         assert net < sales_revenue, "Returns should reduce net revenue"
 

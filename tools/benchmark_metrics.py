@@ -24,6 +24,7 @@ from pyspark.sql import DataFrame, SparkSession
 @dataclass
 class StageMetric:
     """Metrics for a single Spark stage."""
+
     stage_id: int
     name: str
     duration_ms: float
@@ -121,6 +122,7 @@ class _ListenerAdapter:
 @dataclass
 class StageProfile:
     """Profile of a single named stage in the pipeline."""
+
     name: str
     duration_ms: float
     rows_in: int
@@ -133,7 +135,9 @@ class StageProfile:
 
 
 @contextmanager
-def profile_stage(name: str, df: DataFrame | None = None, rows_before: int | None = None):
+def profile_stage(
+    name: str, df: DataFrame | None = None, rows_before: int | None = None
+):
     """Context manager: times a stage, captures row count, and the physical plan.
 
     Usage:
@@ -174,6 +178,7 @@ def capture_execution_plan(df: DataFrame, max_chars: int = 2000) -> str:
 def extract_join_types(plan: str) -> list[str]:
     """Extract join strategy names from a physical plan string."""
     import re
+
     patterns = [
         r"(BroadcastHashJoin|BroadcastExchange|"
         r"SortMergeJoin|ShuffledHashJoin|"

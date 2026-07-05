@@ -44,20 +44,37 @@ def config_mock():
 
 
 @pytest.fixture
-def orchestrator(spark_mock, etl_control_mock, transaction_manager_mock, loader_mock, merger_mock, config_mock):
+def orchestrator(
+    spark_mock,
+    etl_control_mock,
+    transaction_manager_mock,
+    loader_mock,
+    merger_mock,
+    config_mock,
+):
     with (
         patch("kimball.orchestration.orchestrator.ConfigLoader") as mock_loader_cls,
         patch("kimball.orchestration.orchestrator.RuntimeOptions") as mock_runtime,
-        patch("kimball.orchestration.orchestrator.ETLControlManager", return_value=etl_control_mock),
-        patch("kimball.orchestration.orchestrator.DataLoader", return_value=loader_mock),
+        patch(
+            "kimball.orchestration.orchestrator.ETLControlManager",
+            return_value=etl_control_mock,
+        ),
+        patch(
+            "kimball.orchestration.orchestrator.DataLoader", return_value=loader_mock
+        ),
         patch("kimball.orchestration.orchestrator._merger"),
         patch("kimball.orchestration.orchestrator.SkeletonGenerator"),
         patch("kimball.orchestration.orchestrator.TableCreator"),
-        patch("kimball.orchestration.orchestrator.TransactionManager", return_value=transaction_manager_mock),
+        patch(
+            "kimball.orchestration.orchestrator.TransactionManager",
+            return_value=transaction_manager_mock,
+        ),
         patch("kimball.orchestration.orchestrator.QueryMetricsCollector"),
         patch("kimball.orchestration.orchestrator.PipelineCheckpoint"),
         patch("kimball.orchestration.orchestrator.StagingCleanupManager"),
-        patch("kimball.orchestration.orchestrator._feature_enabled", return_value=False),
+        patch(
+            "kimball.orchestration.orchestrator._feature_enabled", return_value=False
+        ),
     ):
         mock_loader_cls.return_value.load_config.return_value = config_mock
         mock_runtime.from_environment.return_value = MagicMock(
@@ -66,6 +83,7 @@ def orchestrator(spark_mock, etl_control_mock, transaction_manager_mock, loader_
             skew_factor=2.0,
         )
         from kimball.orchestration.orchestrator import Orchestrator
+
         orch = Orchestrator.__new__(Orchestrator)
         orch.config = config_mock
         orch.spark = spark_mock

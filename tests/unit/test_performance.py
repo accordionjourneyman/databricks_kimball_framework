@@ -42,6 +42,7 @@ class TestHashdiffBench:
 
     def test_hashdiff_10_columns_1k(self, benchmark, small_spark):
         from pyspark.sql.functions import col
+
         df = small_spark.range(1000).select(
             *(col("id").cast("int").alias(f"col_{i}") for i in range(10))
         )
@@ -51,6 +52,7 @@ class TestHashdiffBench:
 
     def test_hashdiff_3_columns_10k(self, benchmark, small_spark):
         from pyspark.sql.functions import col
+
         df = small_spark.range(10000).select(
             col("id").cast("int").alias("a"),
             col("id").cast("string").alias("b"),
@@ -66,6 +68,7 @@ class TestValidationBench:
 
     def test_validate_unique_1k(self, benchmark, small_spark):
         from pyspark.sql.functions import col
+
         df = small_spark.range(1000).select(col("id").cast("int").alias("k"))
         validator = DataQualityValidator(spark_session=small_spark)
         result = benchmark(
@@ -75,6 +78,7 @@ class TestValidationBench:
 
     def test_validate_unique_100k(self, benchmark, medium_spark):
         from pyspark.sql.functions import col
+
         df = medium_spark.range(100000).select(col("id").cast("int").alias("k"))
         validator = DataQualityValidator(spark_session=medium_spark)
         result = benchmark(
@@ -84,6 +88,7 @@ class TestValidationBench:
 
     def test_validate_unique_approximate_1m(self, benchmark, medium_spark):
         from pyspark.sql.functions import col
+
         df = medium_spark.range(1_000_000).select(col("id").cast("int").alias("k"))
         validator = DataQualityValidator(spark_session=medium_spark)
         result = benchmark(
@@ -95,6 +100,7 @@ class TestValidationBench:
 
     def test_validate_not_null_1k(self, benchmark, small_spark):
         from pyspark.sql.functions import col
+
         df = small_spark.range(1000).select(col("id").cast("int").alias("v"))
         validator = DataQualityValidator(spark_session=small_spark)
         result = benchmark(
@@ -146,10 +152,22 @@ class TestSchemaFingerprintBench:
 
     def test_hash_10_columns(self, benchmark):
         schema_repr = ",".join(
-            f"{f.name}:{f.dataType.simpleString()}" for f in [
-                type("F", (), {"name": f"col_{i}", "dataType": type("D", (), {"simpleString": lambda self: "int"})()})()
+            f"{f.name}:{f.dataType.simpleString()}"
+            for f in [
+                type(
+                    "F",
+                    (),
+                    {
+                        "name": f"col_{i}",
+                        "dataType": type(
+                            "D", (), {"simpleString": lambda self: "int"}
+                        )(),
+                    },
+                )()
                 for i in range(10)
             ]
         )
-        result = benchmark(lambda: hashlib.sha256(schema_repr.encode("utf-8")).hexdigest()[:16])
+        result = benchmark(
+            lambda: hashlib.sha256(schema_repr.encode("utf-8")).hexdigest()[:16]
+        )
         assert len(result) == 16
