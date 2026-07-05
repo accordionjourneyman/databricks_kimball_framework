@@ -70,7 +70,7 @@ class TestValidationBench:
         from pyspark.sql.functions import col
 
         df = small_spark.range(1000).select(col("id").cast("int").alias("k"))
-        validator = DataQualityValidator(spark_session=small_spark)
+        validator = DataQualityValidator(spark=small_spark)
         result = benchmark(
             lambda: validator.validate_unique(df, ["k"], severity=TestSeverity.ERROR)
         )
@@ -80,7 +80,7 @@ class TestValidationBench:
         from pyspark.sql.functions import col
 
         df = medium_spark.range(100000).select(col("id").cast("int").alias("k"))
-        validator = DataQualityValidator(spark_session=medium_spark)
+        validator = DataQualityValidator(spark=medium_spark)
         result = benchmark(
             lambda: validator.validate_unique(df, ["k"], severity=TestSeverity.ERROR)
         )
@@ -90,7 +90,7 @@ class TestValidationBench:
         from pyspark.sql.functions import col
 
         df = medium_spark.range(1_000_000).select(col("id").cast("int").alias("k"))
-        validator = DataQualityValidator(spark_session=medium_spark)
+        validator = DataQualityValidator(spark=medium_spark)
         result = benchmark(
             lambda: validator.validate_unique_approximate(
                 df, ["k"], severity=TestSeverity.WARN
@@ -102,7 +102,7 @@ class TestValidationBench:
         from pyspark.sql.functions import col
 
         df = small_spark.range(1000).select(col("id").cast("int").alias("v"))
-        validator = DataQualityValidator(spark_session=small_spark)
+        validator = DataQualityValidator(spark=small_spark)
         result = benchmark(
             lambda: validator.validate_not_null(df, ["v"], severity=TestSeverity.ERROR)
         )
