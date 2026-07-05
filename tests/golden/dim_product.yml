@@ -1,4 +1,4 @@
-table_name: {{ catalog }}.kimball_golden.dim_product
+table_name: {{ catalog }}.{{ out_schema }}.dim_product
 table_type: dimension
 scd_type: 1
 keys:
@@ -6,7 +6,7 @@ keys:
   natural_keys: [product_id]
 surrogate_key_strategy: identity
 sources:
-  - name: {{ catalog }}.kimball_golden_raw.products
+  - name: {{ catalog }}.{{ raw_schema }}.products
     alias: p
     cdc_strategy: cdf
     starting_version: 0

@@ -1,4 +1,4 @@
-table_name: spark_catalog.kimball_golden.dim_product
+table_name: kimball_golden_fa298550.dim_product
 table_type: dimension
 scd_type: 1
 keys:
@@ -6,7 +6,7 @@ keys:
   natural_keys: [product_id]
 surrogate_key_strategy: identity
 sources:
-  - name: spark_catalog.kimball_golden_raw.products
+  - name: kimball_golden_raw_fa298550.products
     alias: p
     cdc_strategy: cdf
     starting_version: 0

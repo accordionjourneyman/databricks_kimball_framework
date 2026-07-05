@@ -18,6 +18,7 @@ Connect / Databricks Runtime.
 from __future__ import annotations
 
 import os
+import uuid
 from pathlib import Path
 
 import pytest
@@ -81,18 +82,39 @@ ORDER_ITEMS_SCHEMA = StructType(
 
 
 def _catalog(spark: SparkSession) -> str:
-    """Return the integration-test catalog."""
-    return os.environ.get("KIMBALL_TEST_CATALOG", "spark_catalog")
+    """Return the integration-test catalog.
+
+    For local Spark (the default), ``spark_catalog`` is the implicit V1 catalog
+    and 3-part table names like ``spark_catalog.schema.table`` raise a parse
+    error in the Delta Java APIs. In that case we return an empty string so
+    table names collapse to ``schema.table`` form.
+    """
+    catalog = os.environ.get("KIMBALL_TEST_CATALOG", "spark_catalog")
+    return "" if catalog == "spark_catalog" else catalog
 
 
 def _full_table(catalog: str, schema: str, table: str) -> str:
-    return f"{catalog}.{schema}.{table}"
+    return f"{catalog}.{schema}.{table}" if catalog else f"{schema}.{table}"
 
 
-def _render_config(raw_config_path: Path, catalog: str) -> str:
-    """Render Jinja2 placeholders in a config file and return the rendered path."""
+def _render_config(raw_config_path: Path, catalog: str, run_id: str) -> str:
+    """Render Jinja2 placeholders in a config file and return the rendered path.
+
+    Each config may reference ``{{ catalog }}``, ``{{ raw_schema }}`` and
+    ``{{ out_schema }}``; the latter two are derived from ``run_id`` so multiple
+    runs in the same Spark session don't collide on table names.
+
+    When ``catalog`` is empty (local Spark default), we still need *something*
+    in place of ``{{ catalog }}.`` in the rendered file; the orchestrator then
+    treats it as a relative 2-part name ``schema.table``.
+    """
     raw_content = raw_config_path.read_text(encoding="utf-8")
-    rendered = raw_content.replace("{{ catalog }}", catalog)
+    catalog_prefix = f"{catalog}." if catalog else ""
+    rendered = raw_content.replace("{{ catalog }}.", catalog_prefix)
+    rendered = rendered.replace(
+        "{{ raw_schema }}", f"kimball_golden_raw_{run_id}"
+    )
+    rendered = rendered.replace("{{ out_schema }}", f"kimball_golden_{run_id}")
     rendered_path = raw_config_path.parent / f"_{raw_config_path.name}"
     rendered_path.write_text(rendered, encoding="utf-8")
     return str(rendered_path)
@@ -137,86 +159,107 @@ def _merge_into_silver(
 
 
 @pytest.fixture(scope="module")
-def golden_catalog() -> str:
-    """Return the integration-test catalog (module-level constant)."""
-    return os.environ.get("KIMBALL_TEST_CATALOG", "spark_catalog")
+def run_id() -> str:
+    """Unique ID per test run so schemas do not collide with prior runs."""
+    return uuid.uuid4().hex[:8]
 
 
 @pytest.fixture(scope="module")
-def golden_schemas(spark: SparkSession, golden_catalog: str):
-    """Create raw and golden schemas, dropping any prior tables for a clean run."""
-    spark.sql(f"CREATE SCHEMA IF NOT EXISTS {golden_catalog}.kimball_golden_raw")
-    spark.sql(f"CREATE SCHEMA IF NOT EXISTS {golden_catalog}.kimball_golden")
-
-    for schema in ("kimball_golden_raw", "kimball_golden"):
-        rows = spark.sql(f"SHOW TABLES IN {golden_catalog}.{schema}").collect()
-        for row in rows:
-            spark.sql(f"DROP TABLE IF EXISTS {golden_catalog}.{schema}.{row.tableName}")
-
-    yield golden_catalog
-
-    # Optional cleanup: uncomment to drop schemas after tests
-    # spark.sql(f"DROP SCHEMA IF EXISTS {golden_catalog}.kimball_golden_raw CASCADE")
-    # spark.sql(f"DROP SCHEMA IF EXISTS {golden_catalog}.kimball_golden CASCADE")
+def golden_catalog(spark: SparkSession) -> str:
+    """Return the integration-test catalog (empty for local Spark default)."""
+    return _catalog(spark)
 
 
 @pytest.fixture(scope="module")
-def rendered_configs(golden_catalog: str) -> list[str]:
-    """Return paths to rendered config files."""
+def golden_schemas(spark: SparkSession, golden_catalog: str, run_id: str):
+    """Create unique raw and golden schemas for this run; drop them on teardown.
+
+    Unique names per run prevent collisions when the same Spark session is reused
+    across modules (which is the case when this file is collected alongside the
+    integration tests).
+    """
+    raw_schema = f"kimball_golden_raw_{run_id}"
+    out_schema = f"kimball_golden_{run_id}"
+
+    full_raw = f"{golden_catalog}.{raw_schema}" if golden_catalog else raw_schema
+    full_out = f"{golden_catalog}.{out_schema}" if golden_catalog else out_schema
+
+    spark.sql(f"CREATE SCHEMA IF NOT EXISTS {full_raw}")
+    spark.sql(f"CREATE SCHEMA IF NOT EXISTS {full_out}")
+
+    yield raw_schema, out_schema
+
+    spark.sql(f"DROP SCHEMA IF EXISTS {full_raw} CASCADE")
+    spark.sql(f"DROP SCHEMA IF EXISTS {full_out} CASCADE")
+
+
+@pytest.fixture(scope="module")
+def rendered_configs(spark: SparkSession, run_id: str) -> list[str]:
+    """Return paths to rendered config files (catalog + unique schemas baked in)."""
+    catalog = _catalog(spark)
     return [
-        _render_config(GOLDEN_DIR / "dim_customer.yml", golden_catalog),
-        _render_config(GOLDEN_DIR / "dim_product.yml", golden_catalog),
-        _render_config(GOLDEN_DIR / "fact_sales.yml", golden_catalog),
+        _render_config(
+            GOLDEN_DIR / "dim_customer.yml", catalog, run_id
+        ),
+        _render_config(
+            GOLDEN_DIR / "dim_product.yml", catalog, run_id
+        ),
+        _render_config(
+            GOLDEN_DIR / "fact_sales.yml", catalog, run_id
+        ),
     ]
 
 
 @pytest.fixture(scope="module")
-def day1_data(spark: SparkSession, golden_schemas: str) -> str:
+def day1_data(spark: SparkSession, golden_schemas: tuple[str, str]) -> str:
     """Load day 1 CSV data into CDF-enabled silver tables."""
+    raw_schema, _ = golden_schemas
     day1 = GOLDEN_DIR / "data" / "day1"
+    catalog = _catalog(spark)
     _merge_into_silver(
         spark,
-        golden_schemas,
-        "kimball_golden_raw",
+        catalog,
+        raw_schema,
         "customers",
         _read_csv(spark, day1 / "customers.csv", CUSTOMERS_SCHEMA),
         ["customer_id"],
     )
     _merge_into_silver(
         spark,
-        golden_schemas,
-        "kimball_golden_raw",
+        catalog,
+        raw_schema,
         "products",
         _read_csv(spark, day1 / "products.csv", PRODUCTS_SCHEMA),
         ["product_id"],
     )
     _merge_into_silver(
         spark,
-        golden_schemas,
-        "kimball_golden_raw",
+        catalog,
+        raw_schema,
         "orders",
         _read_csv(spark, day1 / "orders.csv", ORDERS_SCHEMA),
         ["order_id"],
     )
     _merge_into_silver(
         spark,
-        golden_schemas,
-        "kimball_golden_raw",
+        catalog,
+        raw_schema,
         "order_items",
         _read_csv(spark, day1 / "order_items.csv", ORDER_ITEMS_SCHEMA),
         ["order_item_id"],
     )
-    return golden_schemas
+    return catalog
 
 
 @pytest.fixture(scope="module")
-def day2_data(spark: SparkSession, day1_data: str) -> str:
+def day2_data(spark: SparkSession, day1_data: str, golden_schemas: tuple[str, str]) -> str:
     """Merge day 2 CSV data into silver tables to generate CDF updates."""
+    raw_schema, _ = golden_schemas
     day2 = GOLDEN_DIR / "data" / "day2"
     _merge_into_silver(
         spark,
         day1_data,
-        "kimball_golden_raw",
+        raw_schema,
         "customers",
         _read_csv(spark, day2 / "customers.csv", CUSTOMERS_SCHEMA),
         ["customer_id"],
@@ -224,7 +267,7 @@ def day2_data(spark: SparkSession, day1_data: str) -> str:
     _merge_into_silver(
         spark,
         day1_data,
-        "kimball_golden_raw",
+        raw_schema,
         "products",
         _read_csv(spark, day2 / "products.csv", PRODUCTS_SCHEMA),
         ["product_id"],
@@ -232,7 +275,7 @@ def day2_data(spark: SparkSession, day1_data: str) -> str:
     _merge_into_silver(
         spark,
         day1_data,
-        "kimball_golden_raw",
+        raw_schema,
         "orders",
         _read_csv(spark, day2 / "orders.csv", ORDERS_SCHEMA),
         ["order_id"],
@@ -240,7 +283,7 @@ def day2_data(spark: SparkSession, day1_data: str) -> str:
     _merge_into_silver(
         spark,
         day1_data,
-        "kimball_golden_raw",
+        raw_schema,
         "order_items",
         _read_csv(spark, day2 / "order_items.csv", ORDER_ITEMS_SCHEMA),
         ["order_item_id"],
@@ -248,19 +291,25 @@ def day2_data(spark: SparkSession, day1_data: str) -> str:
     return day1_data
 
 
-def _run_pipelines(rendered_configs: list[str], catalog: str) -> None:
+def _run_pipelines(
+    rendered_configs: list[str], catalog: str, out_schema: str
+) -> None:
     """Execute the pipeline executor and raise on any failure."""
-    os.environ["KIMBALL_ETL_SCHEMA"] = f"{catalog}.kimball_golden"
-    executor = PipelineExecutor(
-        rendered_configs, etl_schema=f"{catalog}.kimball_golden"
-    )
+    etl_target = f"{catalog}.{out_schema}" if catalog else out_schema
+    os.environ["KIMBALL_ETL_SCHEMA"] = etl_target
+    executor = PipelineExecutor(rendered_configs, etl_schema=etl_target)
     summary = executor.run()
     assert summary.failed == 0, f"Pipelines failed: {summary.results}"
 
 
+def _q(catalog: str, schema: str, table: str) -> str:
+    """Quote a possibly-empty catalog prefix around a schema.table name."""
+    return f"{catalog}.{schema}.{table}" if catalog else f"{schema}.{table}"
+
+
 def test_config_renders(rendered_configs: list[str]) -> None:
     """Smoke test: all golden configs load and validate."""
-    loader = ConfigLoader(env_vars={"catalog": "spark_catalog"})
+    loader = ConfigLoader(env_vars={"catalog": ""})
     for path in rendered_configs:
         config = loader.load_config(path)
         assert config.table_name
@@ -270,14 +319,16 @@ def test_config_renders(rendered_configs: list[str]) -> None:
 def test_day1_pipeline(
     spark: SparkSession,
     day1_data: str,
+    golden_schemas: tuple[str, str],
     rendered_configs: list[str],
 ) -> None:
     """Run day 1 dimensions and facts, then assert expected state."""
-    _run_pipelines(rendered_configs, day1_data)
+    _, out_schema = golden_schemas
+    _run_pipelines(rendered_configs, day1_data, out_schema)
 
-    customer_count = spark.table(f"{day1_data}.kimball_golden.dim_customer").count()
-    product_count = spark.table(f"{day1_data}.kimball_golden.dim_product").count()
-    fact_count = spark.table(f"{day1_data}.kimball_golden.fact_sales").count()
+    customer_count = spark.table(_q(day1_data, out_schema, "dim_customer")).count()
+    product_count = spark.table(_q(day1_data, out_schema, "dim_product")).count()
+    fact_count = spark.table(_q(day1_data, out_schema, "fact_sales")).count()
 
     # 2 real customers + 3 seeded defaults (-1, -2, -3) = 5
     assert customer_count == 5, f"Expected 5 customer rows, got {customer_count}"
@@ -289,7 +340,7 @@ def test_day1_pipeline(
     # Alice and Bob should each have 1 current row
     alice = spark.sql(
         f"""
-        SELECT * FROM {day1_data}.kimball_golden.dim_customer
+        SELECT * FROM {_q(day1_data, out_schema, "dim_customer")}
         WHERE customer_id = 1 AND __is_current = true
         """
     ).collect()
@@ -300,16 +351,18 @@ def test_day1_pipeline(
 def test_day2_pipeline(
     spark: SparkSession,
     day2_data: str,
+    golden_schemas: tuple[str, str],
     rendered_configs: list[str],
 ) -> None:
     """Run day 2 incremental load and assert SCD2 + SCD1 behavior."""
-    _run_pipelines(rendered_configs, day2_data)
+    _, out_schema = golden_schemas
+    _run_pipelines(rendered_configs, day2_data, out_schema)
 
     # Alice should now have 2 history rows: old NY (expired) and new LA (current)
     alice_history = spark.sql(
         f"""
         SELECT customer_sk, address, __is_current
-        FROM {day2_data}.kimball_golden.dim_customer
+        FROM {_q(day2_data, out_schema, "dim_customer")}
         WHERE customer_id = 1
         ORDER BY __valid_from
         """
@@ -323,7 +376,7 @@ def test_day2_pipeline(
     # Charlie (new customer) should have 1 current row
     charlie = spark.sql(
         f"""
-        SELECT * FROM {day2_data}.kimball_golden.dim_customer
+        SELECT * FROM {_q(day2_data, out_schema, "dim_customer")}
         WHERE customer_id = 3 AND __is_current = true
         """
     ).collect()
@@ -333,27 +386,28 @@ def test_day2_pipeline(
     # Laptop price should be updated to 900 (SCD1)
     laptop = spark.sql(
         f"""
-        SELECT unit_cost FROM {day2_data}.kimball_golden.dim_product
+        SELECT unit_cost FROM {_q(day2_data, out_schema, "dim_product")}
         WHERE product_id = 101
         """
     ).collect()[0]
     assert laptop.unit_cost == 900.0, f"Expected 900.0, got {laptop.unit_cost}"
 
     # Fact count should be 4 total order items
-    fact_count = spark.table(f"{day2_data}.kimball_golden.fact_sales").count()
+    fact_count = spark.table(_q(day2_data, out_schema, "fact_sales")).count()
     assert fact_count == 4, f"Expected 4 fact rows, got {fact_count}"
 
     # Alice's day 1 order should still link to her NY SK
     # Alice's day 2 order should link to her LA SK
+    raw_schema, _ = golden_schemas
     links = spark.sql(
         f"""
         SELECT
           o.order_id,
           o.order_date,
           c.address AS linked_customer_address
-        FROM {day2_data}.kimball_golden.fact_sales f
-        JOIN {day2_data}.kimball_golden.dim_customer c ON f.customer_sk = c.customer_sk
-        JOIN {day2_data}.kimball_golden_raw.orders o ON f.order_id = o.order_id
+        FROM {_q(day2_data, out_schema, "fact_sales")} f
+        JOIN {_q(day2_data, out_schema, "dim_customer")} c ON f.customer_sk = c.customer_sk
+        JOIN {_q(day2_data, raw_schema, "orders")} o ON f.order_id = o.order_id
         WHERE o.customer_id = 1
         ORDER BY o.order_date
         """

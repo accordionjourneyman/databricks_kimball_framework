@@ -1,32 +1,32 @@
-table_name: {{ catalog }}.kimball_golden.fact_sales
+table_name: {{ catalog }}.{{ out_schema }}.fact_sales
 table_type: fact
 merge_keys: [order_item_id]
 
 foreign_keys:
   - column: customer_sk
-    references: {{ catalog }}.kimball_golden.dim_customer
+    references: {{ catalog }}.{{ out_schema }}.dim_customer
     dimension_key: customer_sk
     default_value: -1
   - column: product_sk
-    references: {{ catalog }}.kimball_golden.dim_product
+    references: {{ catalog }}.{{ out_schema }}.dim_product
     dimension_key: product_sk
     default_value: -1
 
 sources:
-  - name: {{ catalog }}.kimball_golden_raw.order_items
+  - name: {{ catalog }}.{{ raw_schema }}.order_items
     alias: oi
     cdc_strategy: cdf
     starting_version: 0
     primary_keys: [order_item_id]
-  - name: {{ catalog }}.kimball_golden_raw.orders
+  - name: {{ catalog }}.{{ raw_schema }}.orders
     alias: o
     cdc_strategy: cdf
     starting_version: 0
     primary_keys: [order_id]
-  - name: {{ catalog }}.kimball_golden.dim_customer
+  - name: {{ catalog }}.{{ out_schema }}.dim_customer
     alias: c
     cdc_strategy: full
-  - name: {{ catalog }}.kimball_golden.dim_product
+  - name: {{ catalog }}.{{ out_schema }}.dim_product
     alias: p
     cdc_strategy: full
 
@@ -50,7 +50,7 @@ transformation_sql: |
 
 audit_columns: true
 early_arriving_facts:
-  - dimension_table: {{ catalog }}.kimball_golden.dim_customer
+  - dimension_table: {{ catalog }}.{{ out_schema }}.dim_customer
     fact_join_key: customer_id
     dimension_join_key: customer_id
     surrogate_key_col: customer_sk

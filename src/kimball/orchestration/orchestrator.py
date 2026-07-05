@@ -290,6 +290,14 @@ class Orchestrator:
             return False
 
         logger.info(f"Creating table {self.config.table_name}...")
+        self._create_target_table(transformed_df)
+
+        if self.config.scd_type == 4 and self.config.history_table:
+            self.table_creator.create_history_table(self.config.history_table)
+
+        return True
+
+    def _create_target_table(self, transformed_df) -> None:
         schema_df = self.table_creator.add_system_columns(
             transformed_df.limit(0),
             self.config.scd_type,
@@ -316,11 +324,6 @@ class Orchestrator:
             surrogate_key_col=self.config.surrogate_key,
             surrogate_key_strategy=self.config.surrogate_key_strategy,
         )
-
-        if self.config.scd_type == 4 and self.config.history_table:
-            self.table_creator.create_history_table(self.config.history_table)
-
-        return True
 
     def _prepare_source_df_for_merge(self, transformed_df) -> DataFrame:
         """Checkpoint and prune the transformed data before merge execution."""
