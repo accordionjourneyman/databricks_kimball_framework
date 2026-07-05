@@ -67,27 +67,20 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-benchmarks-
 
-      - name: Cache Delta JARs
-        id: cache-delta-jars
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/delta-jars
-          key: ${{ runner.os }}-delta-jars-${{ env.SPARK_VERSION }}-${{ env.DELTA_VERSION }}
-
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install "pyspark==${{ env.SPARK_VERSION }}" "delta-spark==${{ env.DELTA_VERSION }}" pyyaml jinja2 pydantic pytest
 
-      - name: Download Delta JARs
-        if: steps.cache-delta-jars.outputs.cache-hit != 'true'
+      - name: Ensure Delta JARs on Spark classpath
         run: |
-          mkdir -p ~/.cache/delta-jars
           SPARK_JARS_DIR=$(python -c "import pyspark, os; print(os.path.join(os.path.dirname(pyspark.__file__), 'jars'))")
+          echo "Spark jars dir: $SPARK_JARS_DIR"
           curl -fsSL -o "$SPARK_JARS_DIR/delta-spark_2.12-${{ env.DELTA_VERSION }}.jar" \
             "https://repo1.maven.org/maven2/io/delta/delta-spark_2.12/${{ env.DELTA_VERSION }}/delta-spark_2.12-${{ env.DELTA_VERSION }}.jar"
           curl -fsSL -o "$SPARK_JARS_DIR/delta-storage-${{ env.DELTA_VERSION }}.jar" \
             "https://repo1.maven.org/maven2/io/delta/delta-storage/${{ env.DELTA_VERSION }}/delta-storage-${{ env.DELTA_VERSION }}.jar"
+          ls -la "$SPARK_JARS_DIR"/delta-*.jar
           echo "Delta JARs installed to $SPARK_JARS_DIR"
 
       - name: Run benchmarks

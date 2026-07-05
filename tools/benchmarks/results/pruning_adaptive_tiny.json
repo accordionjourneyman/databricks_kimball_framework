@@ -1,8 +1,8 @@
 {
   "scenario": "pruning_adaptive",
   "scale": "tiny",
-  "first_ms": 14085.817337036133,
-  "second_ms": 9660.362720489502,
+  "first_ms": 13775.909423828125,
+  "second_ms": 8540.647029876709,
   "params": {
     "products": 5000,
     "n_changed": 1500,
@@ -10,5 +10,5 @@
   },
   "tracked_columns_in_target": true,
   "extra_columns_in_target": false,
-  "timestamp": "2026-07-05T10:03:59"
+  "timestamp": "2026-07-05T16:52:31"
 }

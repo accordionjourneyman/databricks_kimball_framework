@@ -1,12 +1,12 @@
 {
   "scenario": "pruning_baseline",
   "scale": "tiny",
-  "first_ms": 17000.67138671875,
-  "second_ms": 9136.671781539917,
+  "first_ms": 18141.80088043213,
+  "second_ms": 9448.99606704712,
   "params": {
     "products": 5000,
     "n_changed": 1500,
     "extra_cols": 20
   },
-  "timestamp": "2026-07-05T10:03:32"
+  "timestamp": "2026-07-05T16:52:07"
 }
