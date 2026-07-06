@@ -32,6 +32,8 @@ sys.modules["databricks.sdk.runtime"] = mock_db_sdk
 
 def _is_remote_spark_requested() -> bool:
     """Return True if Databricks Connect credentials are configured."""
+    if os.environ.get("KIMBALL_TEST_TARGET", "").lower() == "local":
+        return False
     return bool(
         os.environ.get("DATABRICKS_HOST") and os.environ.get("DATABRICKS_TOKEN")
     )
@@ -65,17 +67,34 @@ def _create_remote_spark_session() -> SparkSession:
     return builder.getOrCreate()
 
 
+def _is_remote_only() -> bool:
+    """Check whether pyspark is in remote-only mode (databricks-connect installed)."""
+    try:
+        from pyspark.rdd import is_remote_only
+
+        return is_remote_only()
+    except ImportError:
+        return False
+
+
 def _create_local_spark_session() -> SparkSession:
     """Create a local SparkSession with Delta Lake support."""
-    return (
-        SparkSession.builder.appName("KimballFrameworkTest")
-        .master("local[*]")
-        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-        .config(
-            "spark.sql.catalog.spark_catalog",
-            "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+    builder = SparkSession.builder.appName("KimballFrameworkTest")
+    if _is_remote_only():
+        # pyspark 4.x with databricks-connect: only Spark Connect sessions are
+        # allowed.  .remote("local[...]") starts an embedded Connect server.
+        builder = builder.remote("local[*]")
+    else:
+        builder = (
+            builder.master("local[*]")
+            .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+            .config(
+                "spark.sql.catalog.spark_catalog",
+                "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+            )
         )
-        .config("spark.sql.ansi.enabled", "true")
+    return (
+        builder.config("spark.sql.ansi.enabled", "true")
         .config(
             "spark.sql.warehouse.dir",
             tempfile.mkdtemp(prefix="spark-warehouse-kimball-tests-"),

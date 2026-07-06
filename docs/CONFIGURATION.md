@@ -218,6 +218,64 @@ sources:
     primary_keys: [order_id, line_number] # Composite key
 ```
 
+### streaming (per-source)
+
+Optional sub-config that enables Spark Structured Streaming for a CDF source.
+When set, the framework consumes CDF through a streaming query instead of the
+default batch `readChangeDataFeed` path.
+
+**Example:**
+
+```yaml
+sources:
+  - name: silver.customers
+    alias: c
+    cdc_strategy: cdf
+    primary_keys: [customer_id]
+    streaming:
+      enabled: true
+      trigger: available_now          # or: processing_time
+      trigger_interval: "30 seconds"  # only used by processing_time
+      checkpoint_location: /Volumes/main/etl/_checkpoints/customers
+      starting_version: 0
+      ignore_deletes: false
+      ignore_changes: false
+```
+
+**Fields:**
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `enabled` | Yes | `false` | Enable streaming for this source |
+| `trigger` | No | `available_now` | `available_now` (one batch, then stop) or `processing_time` (continuous) |
+| `trigger_interval` | No | `"30 seconds"` | Interval for `processing_time` trigger |
+| `checkpoint_location` | No | Auto-generated | Path for Spark streaming checkpoints |
+| `starting_version` | No | Latest | Delta version to start reading CDF from |
+| `starting_timestamp` | No | None | Timestamp to start reading CDF from (alternative to version) |
+| `ignore_deletes` | No | `false` | Skip CDF delete events |
+| `ignore_changes` | No | `false` | Skip CDF update events |
+
+> **`starting_version` vs `starting_timestamp`:** Only one can be set.
+> If neither is set, the stream starts from the latest table version
+> (only new changes after the stream starts are captured).
+
+**When to use streaming:**
+
+- You need sub-minute freshness (continuous ingestion)
+- You want to process changes as they arrive rather than on a schedule
+- Your source table has CDF enabled and you're already using `cdc_strategy: cdf`
+
+**When NOT to use streaming:**
+
+- One-off backfills or historical loads (use batch)
+- Schema changes are frequent (streaming does not evolve the target schema)
+- You need FK validation or fingerprint caching (not yet implemented in streaming)
+
+> **Target table must exist:** The streaming orchestrator does not create
+> the target table or seed default rows. Run the batch `Orchestrator` once
+> to create it, then switch to `StreamingOrchestrator` for subsequent runs.
+> See [Streaming CDF](STREAMING.md) for full documentation.
+
 ### transformation_sql
 
 Spark SQL to transform source data.

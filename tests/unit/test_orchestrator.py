@@ -312,3 +312,68 @@ class TestIdentityBridge:
         result = orchestrator._apply_identity_bridge(mock_df)
         assert result is mock_df
         mock_df.createOrReplaceTempView.assert_not_called()
+
+
+class TestFullReload:
+    """Orchestrator.run(full_reload=True) drops the target, resets watermarks,
+    and runs a full snapshot."""
+
+    def test_full_reload_drops_target_and_resets_watermarks(self, orchestrator):
+        orchestrator.spark.catalog.tableExists.return_value = True
+        source_a = MagicMock()
+        source_a.name = "src_a"
+        source_b = MagicMock()
+        source_b.name = "src_b"
+        orchestrator.config.sources = [source_a, source_b]
+        orchestrator.config.scd_type = 1
+        orchestrator.config.history_table = None
+
+        with patch.object(
+            orchestrator, "_run_pipeline_once", return_value={"status": "SUCCESS"}
+        ) as mock_run:
+            result = orchestrator._run_full_reload()
+
+        assert result["status"] == "SUCCESS"
+
+        # Target table was dropped
+        drop_calls = [
+            c[0][0]
+            for c in orchestrator.spark.sql.call_args_list
+            if "DROP TABLE" in c[0][0]
+        ]
+        assert any("test_table" in c for c in drop_calls)
+
+        # Watermarks were reset for both sources
+        assert orchestrator.etl_control.reset_watermark.call_count == 2
+        orchestrator.etl_control.reset_watermark.assert_any_call("test_table", "src_a")
+        orchestrator.etl_control.reset_watermark.assert_any_call("test_table", "src_b")
+
+        # _run_pipeline_once was called
+        mock_run.assert_called_once()
+
+    def test_full_reload_skips_drop_when_table_missing(self, orchestrator):
+        orchestrator.spark.catalog.tableExists.return_value = False
+        orchestrator.config.sources = []
+        orchestrator.config.scd_type = 1
+        orchestrator.config.history_table = None
+
+        with patch.object(
+            orchestrator, "_run_pipeline_once", return_value={"status": "SUCCESS"}
+        ):
+            result = orchestrator._run_full_reload()
+
+        assert result["status"] == "SUCCESS"
+        # No DROP TABLE calls because the table didn't exist
+        drop_calls = [
+            c for c in orchestrator.spark.sql.call_args_list if "DROP TABLE" in str(c)
+        ]
+        assert len(drop_calls) == 0
+
+    def test_run_dispatches_to_full_reload(self, orchestrator):
+        with patch.object(
+            orchestrator, "_run_full_reload", return_value={"status": "SUCCESS"}
+        ) as mock_reload:
+            result = orchestrator.run(full_reload=True)
+
+        assert result["status"] == "SUCCESS"
+        mock_reload.assert_called_once()

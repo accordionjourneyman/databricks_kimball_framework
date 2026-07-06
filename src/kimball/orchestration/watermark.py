@@ -355,6 +355,18 @@ class ETLControlManager:
         if updates:
             self._upsert_control_record(target_table, source_table, updates)
 
+    def reset_watermark(
+        self, target_table: str, source_table: str | None = None
+    ) -> None:
+        """Delete watermark records for a target (and optionally a specific source).
+
+        Used by ``full_reload`` to force the next run to start from scratch.
+        """
+        condition = f"target_table = '{target_table}'"
+        if source_table is not None:
+            condition += f" AND source_table = '{source_table}'"
+        self.spark.sql(f"DELETE FROM {self.fq_table} WHERE {condition}")
+
     def _upsert_control_record(
         self, target_table: str, source_table: str, updates: ETLControlRecord
     ) -> None:

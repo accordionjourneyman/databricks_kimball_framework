@@ -1031,3 +1031,44 @@ class TestSCD2ValidFromFallbackBug:
                 "BUG-SCD2-002 regression: __valid_from should NOT use "
                 "SQL_DEFAULT_VALID_FROM as COALESCE fallback."
             )
+
+
+# =====================================================================
+# 8. FULL RELOAD
+# =====================================================================
+
+
+class TestResetWatermark:
+    """reset_watermark deletes control records so the next run starts fresh."""
+
+    def test_reset_watermark_deletes_by_target_and_source(self):
+        from kimball.orchestration.watermark import ETLControlManager
+
+        spark_mock = MagicMock()
+        spark_mock.catalog.tableExists.return_value = True
+        spark_mock.sql = MagicMock()
+
+        manager = ETLControlManager(etl_schema="test", spark_session=spark_mock)
+        manager.reset_watermark("dim_customer", "silver.customers")
+
+        sql_calls = [c[0][0] for c in spark_mock.sql.call_args_list]
+        delete_sql = [s for s in sql_calls if "DELETE FROM" in s]
+        assert len(delete_sql) == 1
+        assert "dim_customer" in delete_sql[0]
+        assert "silver.customers" in delete_sql[0]
+
+    def test_reset_watermark_deletes_all_sources_when_source_is_none(self):
+        from kimball.orchestration.watermark import ETLControlManager
+
+        spark_mock = MagicMock()
+        spark_mock.catalog.tableExists.return_value = True
+        spark_mock.sql = MagicMock()
+
+        manager = ETLControlManager(etl_schema="test", spark_session=spark_mock)
+        manager.reset_watermark("dim_customer")
+
+        sql_calls = [c[0][0] for c in spark_mock.sql.call_args_list]
+        delete_sql = [s for s in sql_calls if "DELETE FROM" in s]
+        assert len(delete_sql) == 1
+        assert "dim_customer" in delete_sql[0]
+        assert "source_table" not in delete_sql[0]

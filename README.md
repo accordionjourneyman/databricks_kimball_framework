@@ -30,6 +30,7 @@ pip install .
 ```
 
 Then open `examples/Kimball_Demo.py` in Databricks.
+For the streaming variant, open `examples/Kimball_Streaming_Demo.py`.
 
 ## Features
 
@@ -37,6 +38,7 @@ Then open `examples/Kimball_Demo.py` in Databricks.
 - **SCD Type 2**: Track history with valid_from/valid_to
 - **Surrogate Keys**: Hash or identity-based (Delta Identity Columns)
 - **Change Data Feed (CDF)**: Incremental processing with watermark tracking
+- **Structured Streaming**: Per-source streaming via `StreamingOrchestrator` — same config, same SQL, same merger
 - **Foreign Key Lookups**: With Kimball-style defaults (-1 for unknown)
 - **Performance Optimized**: Configurable "lite" validations vs "strict" dev checks
 - **Crash Recovery**: Transactional batch recovery — see [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md#2-crash-consistency-atomic-batch-recovery)
@@ -48,6 +50,7 @@ Then open `examples/Kimball_Demo.py` in Databricks.
 │   ├── common/            # Config, errors, utilities
 │   ├── orchestration/     # Orchestrator, watermarks, executor
 │   ├── processing/        # Loader, merger, key generators
+│   ├── streaming/         # Streaming CDF orchestrator, loader, checkpoint
 │   └── observability/     # Bus matrix, resilience features
 ├── tests/                 # Unit and integration tests
 ├── examples/              # Demo notebook and YAML configs
@@ -59,6 +62,7 @@ Then open `examples/Kimball_Demo.py` in Databricks.
 - [Getting Started](docs/GETTING_STARTED.md)
 - [Configuration](docs/CONFIGURATION.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [Streaming CDF](docs/STREAMING.md)
 - [Known Limitations](KNOWN_LIMITATIONS.md)
 
 ## Usage
@@ -77,4 +81,3 @@ Orchestrator("examples/configs/dim_customer.yml").run()
 ## License
 
 Licensed under the Apache License, Version 2.0. See the `LICENSE` file for details.
-

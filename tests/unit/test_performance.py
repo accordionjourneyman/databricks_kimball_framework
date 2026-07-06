@@ -22,19 +22,49 @@ from kimball.processing.hashing import compute_hashdiff
 from kimball.validation import DataQualityValidator, TestSeverity
 
 
+def _has_java() -> bool:
+    """Return True if a Java runtime is available for local Spark."""
+    import shutil
+
+    return shutil.which("java") is not None or bool(os.environ.get("JAVA_HOME"))
+
+
+def _is_remote_only() -> bool:
+    """Check whether pyspark is in remote-only mode (databricks-connect installed)."""
+    try:
+        from pyspark.rdd import is_remote_only
+
+        return is_remote_only()
+    except ImportError:
+        return False
+
+
+def _local_spark_builder(app_name: str) -> SparkSession.Builder:
+    builder = SparkSession.builder.appName(app_name)
+    if _is_remote_only():
+        builder = builder.remote("local[2]")
+    else:
+        builder = builder.master("local[2]")
+    return builder
+
+
 @pytest.fixture(scope="module")
 def small_spark():
-    """Local Spark session for benchmark tests (skipped on Databricks)."""
+    """Local Spark session for benchmark tests (skipped on Databricks / missing Java)."""
     if os.environ.get("DATABRICKS_RUNTIME_VERSION") or os.environ.get("SPARK_REMOTE"):
         pytest.skip("Skipping local-only benchmark on Databricks")
-    return SparkSession.builder.appName("BenchUnit").master("local[2]").getOrCreate()
+    if not _has_java():
+        pytest.skip("Java is not available — skipping Spark-dependent benchmarks")
+    return _local_spark_builder("BenchUnit").getOrCreate()
 
 
 @pytest.fixture(scope="module")
 def medium_spark():
     if os.environ.get("DATABRICKS_RUNTIME_VERSION") or os.environ.get("SPARK_REMOTE"):
         pytest.skip("Skipping local-only benchmark on Databricks")
-    return SparkSession.builder.appName("BenchUnit2").master("local[2]").getOrCreate()
+    if not _has_java():
+        pytest.skip("Java is not available — skipping Spark-dependent benchmarks")
+    return _local_spark_builder("BenchUnit2").getOrCreate()
 
 
 class TestHashdiffBench:

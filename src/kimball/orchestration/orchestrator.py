@@ -229,17 +229,23 @@ class Orchestrator:
         if failed > 0:
             logger.warning(f" {failed} staging tables could not be cleaned up")
 
-    def run(self, max_retries: int = 0) -> dict[str, Any]:
+    def run(self, max_retries: int = 0, full_reload: bool = False) -> dict[str, Any]:
         """
         Execute the ETL pipeline with batch lifecycle tracking.
 
         Args:
             max_retries: Maximum number of retries for retriable errors (default: 0, no retry).
                          For production, use Databricks Jobs retry instead.
+            full_reload: If True, drop the target table, reset watermarks, and
+                         perform a full snapshot reload.  Useful for recovery or
+                         replay after schema changes.
 
         Returns:
             dict: Summary of the pipeline run including rows_read and rows_written.
         """
+        if full_reload:
+            return self._run_full_reload()
+
         # PRESERVE_ALL_CHANGES: Loop until watermark catches up to source version
         if self.config.preserve_all_changes and self.config.scd_type == 2:
             return self._run_with_version_loop()
@@ -247,6 +253,30 @@ class Orchestrator:
         if max_retries > 0:
             return self.run_with_retry(max_retries=max_retries)
 
+        return self._run_pipeline_once()
+
+    def _run_full_reload(self) -> dict[str, Any]:
+        """Drop the target table, reset watermarks, and run a full snapshot load."""
+        logger.info(f"Full reload requested for {self.config.table_name}")
+
+        # 1. Drop the target table (and history table for SCD4).
+        if self.spark.catalog.tableExists(self.config.table_name):
+            logger.info(f"Dropping target table {self.config.table_name}")
+            self.spark.sql(
+                f"DROP TABLE IF EXISTS {quote_table_name(self.config.table_name)}"
+            )
+        if self.config.scd_type == 4 and self.config.history_table:
+            if self.spark.catalog.tableExists(self.config.history_table):
+                logger.info(f"Dropping history table {self.config.history_table}")
+                self.spark.sql(
+                    f"DROP TABLE IF EXISTS {quote_table_name(self.config.history_table)}"
+                )
+
+        # 2. Reset watermarks for all sources.
+        for source in self.config.sources:
+            self.etl_control.reset_watermark(self.config.table_name, source.name)
+
+        # 3. Run the normal pipeline — no watermark means full snapshot.
         return self._run_pipeline_once()
 
     def _run_with_version_loop(self, max_iterations: int = 100) -> dict[str, Any]:

@@ -20,3 +20,19 @@ services:
       - PYSPARK_DRIVER_PYTHON=python3
     # Run tests by default; override command for specific tests
     command: ["python", "-m", "pytest", "tests/", "-v", "--tb=short"]
+
+  # Streaming integration tests (separate service for focused runs)
+  kimball-streaming:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./src:/app/src
+      - ./tests:/app/tests
+      - ./pyproject.toml:/app/pyproject.toml
+    environment:
+      - KIMBALL_TARGET=local
+      - KIMBALL_ETL_SCHEMA=etl_control
+      - PYSPARK_PYTHON=python3
+      - PYSPARK_DRIVER_PYTHON=python3
+    command: ["python", "-m", "pytest", "tests/integration/test_streaming_cdf.py", "-v", "--tb=short"]

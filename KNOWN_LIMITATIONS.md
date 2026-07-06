@@ -76,3 +76,36 @@ The framework provides the following guarantees for repeated runs of the same ba
 - Use `upsert` (default) for dimensions and transaction facts.
 - Reserve `append` for immutable event logs where source has exactly-once semantics.
 - Use `partition_overwrite` for bulk restatements with date-partitioned tables.
+
+## 8. Streaming CDF Limitations
+
+The streaming module (`StreamingOrchestrator`) is a first-class feature but has
+the following limitations compared to the batch path:
+
+| Feature | Batch | Streaming |
+|---------|-------|-----------|
+| Target table creation | ✅ Auto-creates + seeds defaults | ❌ Must exist (run batch once first) |
+| Schema evolution | ✅ Supported | ❌ Not implemented |
+| Fingerprint caching | ✅ Supported | ❌ Not implemented |
+| FK validation | ✅ Supported | ❌ Not implemented |
+| Adaptive column pruning | ✅ Supported | ❌ Not implemented |
+| Grain violation checks | ✅ Supported | ❌ Not implemented |
+| Zombie batch recovery | ✅ Supported | ❌ Not implemented |
+| Multi-source pipelines | ✅ Single run | ✅ One query per CDF source |
+| `transformation_sql` | ✅ `spark.sql()` | ✅ `spark.sql()` inside `foreachBatch` |
+
+**When to use streaming:**
+- Sub-minute freshness requirements
+- Continuous ingestion pipelines
+- Sources already using `cdc_strategy: cdf`
+
+**When to stay on batch:**
+- One-off backfills or historical loads
+- Schema changes are frequent
+- You need FK validation or fingerprint caching
+- You need zombie batch recovery
+
+**Checkpoint portability:**
+Checkpoint directories are tied to the Spark application. Moving or copying
+them may cause corruption. Always use a persistent location (DBFS, S3, ADLS)
+for production streaming checkpoints.

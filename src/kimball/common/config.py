@@ -6,6 +6,51 @@ import yaml
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 
+class StreamingSourceConfig(BaseModel):
+    """Optional streaming configuration for a CDF source.
+
+    When set on a ``SourceConfig``, the framework consumes CDF through a
+    Spark structured-streaming query rather than the default batch
+    ``readChangeDataFeed`` path. All other source fields (``name``,
+    ``alias``, ``primary_keys``, ``cdc_strategy: cdf``) keep their
+    existing semantics.
+
+    Example YAML::
+
+        sources:
+          - name: silver.customers
+            alias: c
+            cdc_strategy: cdf
+            primary_keys: [customer_id]
+            streaming:
+              enabled: true
+              trigger: available_now       # or processing_time
+              trigger_interval: "30 seconds"  # only used by processing_time
+              checkpoint_location: /path/to/_checkpoints
+    """
+
+    enabled: bool = False
+    trigger: Literal["available_now", "processing_time"] = "available_now"
+    trigger_interval: str = "30 seconds"
+    checkpoint_location: str | None = None
+    starting_version: int | None = None
+    starting_timestamp: str | None = None
+    ignore_deletes: bool = False
+    ignore_changes: bool = False
+
+    @model_validator(mode="after")
+    def validate_processing_time(self) -> "StreamingSourceConfig":
+        if (
+            self.enabled
+            and self.trigger == "processing_time"
+            and not self.trigger_interval
+        ):
+            raise ValueError(
+                "streaming.trigger_interval is required when trigger='processing_time'"
+            )
+        return self
+
+
 class SourceConfig(BaseModel):
     name: str
     alias: str
@@ -15,6 +60,7 @@ class SourceConfig(BaseModel):
     cdc_strategy: Literal["cdf", "full", "timestamp"] = "cdf"
     primary_keys: list[str] | None = Field(default=None)
     starting_version: int = Field(default=0, ge=0)
+    streaming: StreamingSourceConfig | None = Field(default=None)
 
     @model_validator(mode="before")
     @classmethod

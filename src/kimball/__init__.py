@@ -30,12 +30,20 @@ from kimball.orchestration.watermark import (
     ETLControlManager,
     get_etl_schema,
 )
+from kimball.streaming import (
+    StreamCdfLoader,
+    StreamingOrchestrator,
+    default_checkpoint_path,
+)
 
 __all__ = [
     "Orchestrator",
+    "StreamingOrchestrator",
     "PipelineExecutor",
     "PipelineResult",
     "ExecutionSummary",
+    "StreamCdfLoader",
+    "default_checkpoint_path",
     "generate_bus_matrix",
     # Configuration
     "RuntimeOptions",

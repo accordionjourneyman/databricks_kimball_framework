@@ -39,6 +39,13 @@
 │  • Checkpoints (optional)                                │
 │  • Staging Registry (optional)                           │
 └──────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────┐
+│              StreamingOrchestrator (optional)              │
+│  • Per-source streaming queries via foreachBatch          │
+│  • Reuses batch merger, watermark, config                 │
+│  • Falls back to Orchestrator when no source is streaming │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ## Core Components
@@ -116,6 +123,41 @@ sources:
 - `_change_type` - insert, update_preimage, update_postimage, delete
 - `_commit_version` - Delta version number
 - `_commit_timestamp` - Change timestamp
+
+### StreamingOrchestrator
+
+**Responsibility:** Run a Kimball pipeline as a Spark structured-streaming query.
+
+**Key Methods:**
+
+- `run()` - Start streaming queries, block until trigger completes
+- `stop()` - Stop all active streaming queries
+
+**How it works:**
+
+1. For each source with `streaming.enabled: true`, starts a streaming query
+   using `spark.readStream.format("delta").option("readChangeFeed", "true")`
+2. Each micro-batch is processed in `foreachBatch`:
+   - Drop `update_preimage` rows
+   - Register the batch as a temp view (source alias)
+   - Run `transformation_sql` via `spark.sql()`
+   - Merge into the target table (reuses the batch `DeltaMerger`)
+   - Update the `etl_control` watermark
+3. Falls back to the batch `Orchestrator` when no source has streaming enabled
+
+**Configuration:**
+
+```yaml
+sources:
+  - name: silver.customers
+    alias: c
+    cdc_strategy: cdf
+    streaming:
+      enabled: true
+      trigger: available_now
+```
+
+See [Streaming CDF](STREAMING.md) for full documentation.
 
 ### DeltaMerger
 
