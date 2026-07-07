@@ -266,7 +266,24 @@ class StreamingOrchestrator:
             # 1. Drop update_preimage rows.
             if "_change_type" in batch_df.columns:
                 batch_df = batch_df.filter("_change_type != 'update_preimage'")
-            # 2. Register as a temp view so the user's transformation_sql
+            # 2. Deduplicate within the micro-batch by primary keys, keeping
+            #    the latest change. A CDF batch can contain multiple versions
+            #    of the same key (e.g. starting_version=0 replays history),
+            #    which would otherwise violate the Delta merge one-match rule.
+            primary_keys = source.primary_keys or []
+            if primary_keys and "_commit_version" in batch_df.columns:
+                from pyspark.sql import functions as F
+                from pyspark.sql.window import Window
+
+                window = Window.partitionBy(*primary_keys).orderBy(
+                    F.col("_commit_version").desc()
+                )
+                batch_df = (
+                    batch_df.withColumn("_rn", F.row_number().over(window))
+                    .filter(F.col("_rn") == 1)
+                    .drop("_rn")
+                )
+            # 3. Register as a temp view so the user's transformation_sql
             #    can SELECT against the alias.
             batch_df.createOrReplaceTempView(source.alias)
             try:
