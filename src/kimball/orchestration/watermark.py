@@ -388,7 +388,8 @@ class ETLControlManager:
             }
             item["target_table"] = record["target_table"]
             item["source_table"] = record["source_table"]
-            item.setdefault("updated_at", datetime.now())
+            if not item.get("updated_at"):
+                item["updated_at"] = datetime.now()
             normalized.append(item)
         update_df = self.spark.createDataFrame(normalized, schema=self._UPDATE_SCHEMA)
         update_set = {"updated_at": "u.updated_at"}
