@@ -233,13 +233,20 @@ class StreamingOrchestrator:
                 watermark = self.etl_control.get_watermark(
                     self.config.table_name, source.name
                 )
-                if watermark is not None:
+                latest_v = self.stream_loader.get_latest_version(source.name)
+                if watermark is not None and watermark < latest_v:
                     logger.info(
                         f"Resuming streaming for {source.name} from watermark "
-                        f"version {watermark + 1}"
+                        f"version {watermark + 1} (latest source version {latest_v})"
                     )
                     streaming_cfg = streaming_cfg.model_copy(
                         update={"starting_version": watermark + 1}
+                    )
+                elif watermark is not None:
+                    logger.info(
+                        f"Watermark for {source.name} ({watermark}) is already at "
+                        f"or ahead of latest source version ({latest_v}); "
+                        "starting from latest"
                     )
 
             stream_df = self.stream_loader.stream_cdf(
