@@ -61,7 +61,13 @@ print(f"✓ ETL schema: {os.environ['KIMBALL_ETL_SCHEMA']}")
 # Only one source is marked streaming.enabled: true.
 # The other sources are full-snapshot lookups.
 
-dim_customer_streaming_yaml = """table_name: demo_streaming_gold.dim_customer
+# Streaming checkpoints need a persistent, cluster-accessible location.
+# On Databricks with DBFS disabled, use a Unity Catalog volume.
+_catalog = spark.catalog.currentCatalog()
+spark.sql(f"CREATE VOLUME IF NOT EXISTS {_catalog}.demo_streaming_gold._checkpoints")
+_CHECKPOINT_ROOT = f"/Volumes/{_catalog}/demo_streaming_gold/_checkpoints"
+
+dim_customer_streaming_yaml = f"""table_name: demo_streaming_gold.dim_customer
 table_type: dimension
 scd_type: 2
 keys:
@@ -83,7 +89,7 @@ sources:
     streaming:
       enabled: true
       trigger: available_now
-      checkpoint_location: /tmp/kimball_streaming_checkpoints/customers
+      checkpoint_location: {_CHECKPOINT_ROOT}/customers
       starting_version: 0
 transformation_sql: |
   SELECT customer_id, first_name, last_name, email, address, updated_at, _change_type FROM c
