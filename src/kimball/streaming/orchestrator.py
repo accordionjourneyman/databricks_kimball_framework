@@ -76,7 +76,9 @@ class StreamingOrchestrator:
     ) -> None:
         from kimball.common.config import ConfigLoader
 
+        self._config_path: str | None = None
         if isinstance(config, str):
+            self._config_path = config
             self.config: TableConfig = ConfigLoader().load_config(config)
         else:
             self.config = config
@@ -181,7 +183,11 @@ class StreamingOrchestrator:
         # 3. Run the batch Orchestrator with full_reload=True.
         from kimball.orchestration.orchestrator import Orchestrator
 
-        batch = Orchestrator(self.config, spark=self.spark, etl_schema=self.etl_schema)
+        batch = Orchestrator(
+            self._config_path or self.config,
+            spark=self.spark,
+            etl_schema=self.etl_schema,
+        )
         result = batch.run(full_reload=True)
         if result.get("status") == "FAILED":
             raise RuntimeError(

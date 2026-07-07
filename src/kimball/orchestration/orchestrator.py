@@ -17,7 +17,7 @@ from pyspark.sql import functions as F
 from pyspark.sql.functions import count as spark_count
 from pyspark.sql.types import StringType
 
-from kimball.common.config import ConfigLoader
+from kimball.common.config import ConfigLoader, TableConfig
 from kimball.common.constants import (
     SPARK_CONF_AQE_COALESCE,
     SPARK_CONF_AQE_ENABLED,
@@ -79,7 +79,7 @@ class Orchestrator:
 
     def __init__(
         self,
-        config_path: str,
+        config_path: str | TableConfig,
         spark: SparkSession | None = None,
         etl_schema: str | None = None,
         watermark_database: str | None = None,
@@ -94,7 +94,10 @@ class Orchestrator:
         transaction_manager: TransactionManager | None = None,
     ):
         self.config_loader = ConfigLoader()
-        self.config = self.config_loader.load_config(config_path)
+        if isinstance(config_path, str):
+            self.config = self.config_loader.load_config(config_path)
+        else:
+            self.config = config_path
         self.spark = spark or get_spark()
 
         # Load runtime options for JVM tuning (can be overridden via env vars)
@@ -594,8 +597,6 @@ class Orchestrator:
             return
         if not self.config.transformation_sql:
             return
-        from kimball.common.config import ConfigLoader
-
         loader = ConfigLoader()
         issues = loader.validate_transformation_sql(self.config, spark=self.spark)
         if issues:
