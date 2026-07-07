@@ -259,6 +259,9 @@ print("✓ Day 2 changes ingested")
 # COMMAND ----------
 
 # Streaming run picks up the CDF changes.
+# Clear the checkpoint for this demo run so we always start from the
+# etl_control watermark, not from a previous query's offset.
+dbutils.fs.rm(f"{_CHECKPOINT_ROOT}/customers", recurse=True)
 stream_result = StreamingOrchestrator(
     f"{CONFIG_PATH}/dim_customer.yml",
     spark=spark,
@@ -326,6 +329,9 @@ customers_day3 = [
 
 ingest_silver("customers", customers_day3, customers_schema, ["customer_id"])
 
+# Clear the checkpoint for this demo run so we always start from the
+# etl_control watermark, not from the Day 2 streaming query's offset.
+dbutils.fs.rm(f"{_CHECKPOINT_ROOT}/customers", recurse=True)
 stream_result = StreamingOrchestrator(
     f"{CONFIG_PATH}/dim_customer.yml",
     spark=spark,
