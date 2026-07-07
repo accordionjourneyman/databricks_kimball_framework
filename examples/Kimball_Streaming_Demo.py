@@ -1,17 +1,29 @@
 # Databricks notebook source
-# DBTITLE 1,Cell 1
+# DBTITLE 1,Cell 1 - Install cluster libraries
 # ruff: noqa: F821, E402
 # pyright: reportUndefinedVariable=false
 # Kimball Framework - Streaming Demo
 # This notebook demonstrates the StreamingOrchestrator for CDF-based
 # streaming SCD pipelines on Databricks.
 
+# Install from source into the cluster library environment.
+# %pip installs cluster-wide libraries so streaming foreachBatch workers can
+# import kimball. subprocess pip only installs into the notebook REPL.
+# Update the path below to match where this repo is checked out in your workspace.
+
+# MAGIC %pip install "pydantic<2.10"
+# MAGIC %pip install "/Workspace/Users/t.diogo.marques@gmail.com/databricks_kimball_framework"
+
+# COMMAND ----------
+
+# DBTITLE 1,Cell 2 - ETL Configuration
+# %pip restarts Python, so recompute the repo root from the notebook path.
 import os
-import subprocess
 
-# Databricks notebook globals (dbutils, spark, display) are injected by the runtime.
+from delta.tables import DeltaTable
 
-# Install from source
+from kimball import Orchestrator, StreamingOrchestrator
+
 _nb_path = (
     dbutils.notebook.entry_point.getDbutils()
     .notebook()
@@ -21,20 +33,6 @@ _nb_path = (
 )
 _pyspark_root = "/Workspace" + os.path.dirname(os.path.dirname(_nb_path)) + "/"
 _repo_root = os.path.dirname(os.path.dirname(_pyspark_root))
-# Fix pydantic version compatibility with DBR's typing_extensions
-subprocess.check_call(["pip", "install", "pydantic<2.10", "-q"])
-subprocess.check_call(["pip", "install", _pyspark_root, "-q"])
-print(f"✓ Installed kimball from {_repo_root}")
-
-# COMMAND ----------
-
-# DBTITLE 1,Cell 2
-# ETL Configuration
-import os
-
-from delta.tables import DeltaTable
-
-from kimball import Orchestrator, StreamingOrchestrator
 
 os.environ["KIMBALL_ETL_SCHEMA"] = "demo_streaming_gold"
 
