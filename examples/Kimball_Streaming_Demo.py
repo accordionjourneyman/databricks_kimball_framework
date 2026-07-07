@@ -90,7 +90,8 @@ sources:
       enabled: true
       trigger: available_now
       checkpoint_location: {_CHECKPOINT_ROOT}/customers
-      starting_version: 0
+      # No explicit starting_version: the streaming orchestrator resumes from
+      # the etl_control watermark set by the initial batch load.
 transformation_sql: |
   SELECT customer_id, first_name, last_name, email, address, updated_at, _change_type FROM c
 audit_columns: true

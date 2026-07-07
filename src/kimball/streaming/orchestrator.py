@@ -222,9 +222,29 @@ class StreamingOrchestrator:
 
     def _start_queries(self, summary: dict[str, Any]) -> None:
         for source in self._streaming_sources():
+            # Honour the etl_control watermark when no explicit starting
+            # version/timestamp is configured. This lets a batch seed followed
+            # by a streaming run pick up exactly the next change.
+            streaming_cfg = source.streaming
+            if (
+                streaming_cfg.starting_version is None
+                and streaming_cfg.starting_timestamp is None
+            ):
+                watermark = self.etl_control.get_watermark(
+                    self.config.table_name, source.name
+                )
+                if watermark is not None:
+                    logger.info(
+                        f"Resuming streaming for {source.name} from watermark "
+                        f"version {watermark + 1}"
+                    )
+                    streaming_cfg = streaming_cfg.model_copy(
+                        update={"starting_version": watermark + 1}
+                    )
+
             stream_df = self.stream_loader.stream_cdf(
                 table_name=source.name,
-                config=source.streaming,
+                config=streaming_cfg,
             )
             checkpoint = (
                 source.streaming.checkpoint_location
