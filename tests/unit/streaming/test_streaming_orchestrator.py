@@ -131,6 +131,58 @@ class TestFullReload:
         mock_reload.assert_called_once()
 
 
+class TestWatermarkResume:
+    """Watermark-based starting version must not overshoot the source."""
+
+    def test_start_queries_uses_watermark_plus_one_when_behind(self) -> None:
+        spark = MagicMock()
+        cfg = _make_config(True)
+        orch = StreamingOrchestrator(cfg, spark=spark)
+
+        orch.etl_control.get_watermark = MagicMock(return_value=3)
+        orch.stream_loader.get_latest_version = MagicMock(return_value=5)
+
+        mock_stream_df = MagicMock()
+        mock_stream_df.writeStream = MagicMock()
+        writer = mock_stream_df.writeStream.return_value
+        writer.queryName.return_value = writer
+        writer.foreachBatch.return_value = writer
+        writer.option.return_value = writer
+        writer.trigger.return_value = writer
+        writer.start.return_value = MagicMock()
+        orch.stream_loader.stream_cdf = MagicMock(return_value=mock_stream_df)
+
+        orch._start_queries({"queries": {}})
+
+        call_kwargs = orch.stream_loader.stream_cdf.call_args[1]
+        assert call_kwargs["config"].starting_version == 4
+
+    def test_start_queries_does_not_overshoot_when_watermark_at_latest(
+        self,
+    ) -> None:
+        spark = MagicMock()
+        cfg = _make_config(True)
+        orch = StreamingOrchestrator(cfg, spark=spark)
+
+        orch.etl_control.get_watermark = MagicMock(return_value=5)
+        orch.stream_loader.get_latest_version = MagicMock(return_value=5)
+
+        mock_stream_df = MagicMock()
+        mock_stream_df.writeStream = MagicMock()
+        writer = mock_stream_df.writeStream.return_value
+        writer.queryName.return_value = writer
+        writer.foreachBatch.return_value = writer
+        writer.option.return_value = writer
+        writer.trigger.return_value = writer
+        writer.start.return_value = MagicMock()
+        orch.stream_loader.stream_cdf = MagicMock(return_value=mock_stream_df)
+
+        orch._start_queries({"queries": {}})
+
+        call_kwargs = orch.stream_loader.stream_cdf.call_args[1]
+        assert call_kwargs["config"].starting_version is None
+
+
 class TestPerVersionForeachBatch:
     """_execute_microbatch_per_version splits a micro-batch by _commit_version."""
 
