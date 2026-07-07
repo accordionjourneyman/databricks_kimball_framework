@@ -196,9 +196,12 @@ result = Orchestrator(
     spark=spark,
     etl_schema="demo_streaming_gold",
 ).run()
-print(f"Batch result: {result['status']}")
+print(f"Batch result: {result}")
 
-display(spark.table("demo_streaming_gold.dim_customer"))
+if spark.catalog.tableExists("demo_streaming_gold.dim_customer"):
+    display(spark.table("demo_streaming_gold.dim_customer"))
+else:
+    print("Target table was not created")
 
 # COMMAND ----------
 
