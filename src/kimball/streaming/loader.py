@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
+from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
 
 if TYPE_CHECKING:
@@ -75,6 +76,16 @@ class StreamCdfLoader:
             reader = reader.option("startingTimestamp", config.starting_timestamp)
 
         return cast(DataFrame, reader.table(table_name))
+
+    def get_latest_version(self, table_name: str) -> int:
+        """Return the latest Delta version of ``table_name``."""
+        row = (
+            DeltaTable.forName(self.spark, table_name)
+            .history(1)
+            .select("version")
+            .first()
+        )
+        return int(row["version"]) if row else 0
 
     def default_checkpoint_location(
         self,
