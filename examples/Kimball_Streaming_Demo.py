@@ -1,4 +1,5 @@
 # Databricks notebook source
+# DBTITLE 1,Cell 1
 # ruff: noqa: F821, E402
 # pyright: reportUndefinedVariable=false
 # Kimball Framework - Streaming Demo
@@ -20,12 +21,17 @@ _nb_path = (
 )
 _pyspark_root = "/Workspace" + os.path.dirname(os.path.dirname(_nb_path)) + "/"
 _repo_root = os.path.dirname(os.path.dirname(_pyspark_root))
+# Fix pydantic version compatibility with DBR's typing_extensions
+subprocess.check_call(["pip", "install", "pydantic<2.10", "-q"])
 subprocess.check_call(["pip", "install", _pyspark_root, "-q"])
 print(f"✓ Installed kimball from {_repo_root}")
 
 # COMMAND ----------
 
+# DBTITLE 1,Cell 2
 # ETL Configuration
+import os
+
 from delta.tables import DeltaTable
 
 from kimball import Orchestrator, StreamingOrchestrator
@@ -323,7 +329,7 @@ display(spark.table("demo_streaming_gold.dim_customer"))
 # MAGIC
 # MAGIC `StreamingOrchestrator.run(full_reload=True)` drops the target, resets
 # MAGIC the watermark, clears the streaming checkpoint, runs a batch full
-# snapshot, and then resumes streaming from the fresh baseline.
+# MAGIC # snapshot, and then resumes streaming from the fresh baseline.
 
 # COMMAND ----------
 
