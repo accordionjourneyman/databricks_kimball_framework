@@ -51,6 +51,12 @@ for db in ["demo_streaming_silver", "demo_streaming_gold"]:
     for table in tables:
         spark.sql(f"DROP TABLE IF EXISTS {db}.{table.tableName}")
 
+# Drop the streaming checkpoint volume so a re-run does not try to resume
+# from a checkpoint that points to a replaced source table.
+_catalog = spark.catalog.currentCatalog()
+spark.sql(f"DROP VOLUME IF EXISTS {_catalog}.demo_streaming_gold._checkpoints")
+spark.sql(f"CREATE VOLUME IF NOT EXISTS {_catalog}.demo_streaming_gold._checkpoints")
+
 print("✓ Demo environment set up")
 print(f"✓ Config path: {CONFIG_PATH}")
 print(f"✓ ETL schema: {os.environ['KIMBALL_ETL_SCHEMA']}")
@@ -63,8 +69,7 @@ print(f"✓ ETL schema: {os.environ['KIMBALL_ETL_SCHEMA']}")
 
 # Streaming checkpoints need a persistent, cluster-accessible location.
 # On Databricks with DBFS disabled, use a Unity Catalog volume.
-_catalog = spark.catalog.currentCatalog()
-spark.sql(f"CREATE VOLUME IF NOT EXISTS {_catalog}.demo_streaming_gold._checkpoints")
+# The volume is recreated above to avoid checkpoint-to-table mismatches.
 _CHECKPOINT_ROOT = f"/Volumes/{_catalog}/demo_streaming_gold/_checkpoints"
 
 dim_customer_streaming_yaml = f"""table_name: demo_streaming_gold.dim_customer
