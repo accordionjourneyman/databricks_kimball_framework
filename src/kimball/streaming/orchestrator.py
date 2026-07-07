@@ -286,28 +286,14 @@ class StreamingOrchestrator:
             # 1. Drop update_preimage rows.
             if "_change_type" in batch_df.columns:
                 batch_df = batch_df.filter("_change_type != 'update_preimage'")
-            # 2. Deduplicate within the micro-batch by primary keys, keeping
-            #    the latest change. A CDF batch can contain multiple versions
-            #    of the same key (e.g. starting_version=0 replays history),
-            #    which would otherwise violate the Delta merge one-match rule.
-            primary_keys = source.primary_keys or []
-            if primary_keys and "_commit_version" in batch_df.columns:
-                from pyspark.sql import functions as F
-                from pyspark.sql.window import Window
-
-                window = Window.partitionBy(*primary_keys).orderBy(
-                    F.col("_commit_version").desc()
-                )
-                batch_df = (
-                    batch_df.withColumn("_rn", F.row_number().over(window))
-                    .filter(F.col("_rn") == 1)
-                    .drop("_rn")
-                )
-            # 3. Register as a temp view so the user's transformation_sql
+            # 2. Register as a temp view so the user's transformation_sql
             #    can SELECT against the alias.
             batch_df.createOrReplaceTempView(source.alias)
             try:
-                self._execute_one_microbatch(batch_df, source.name, batch_id)
+                if source.streaming and source.streaming.per_version:
+                    self._execute_microbatch_per_version(batch_df, source, batch_id)
+                else:
+                    self._execute_one_microbatch(batch_df, source.name, batch_id)
             except Exception as exc:  # noqa: BLE001
                 logger.exception(f"Micro-batch {batch_id} for {source.name} failed")
                 self.etl_control.batch_fail(
@@ -388,4 +374,37 @@ class StreamingOrchestrator:
                 new_version=new_version,
                 rows_read=rows_read,
                 rows_written=rows_written,
+            )
+
+    def _execute_microbatch_per_version(
+        self, batch_df: DataFrame, source: Any, batch_id: int
+    ) -> None:
+        """Process each Delta CDF version in the micro-batch sequentially.
+
+        This preserves the same semantics as the batch
+        ``preserve_all_changes`` mode: one merge per Delta version, so SCD2
+        history captures every committed change even when multiple versions
+        for the same key land in one streaming trigger interval.
+        """
+        if "_commit_version" not in batch_df.columns:
+            # No CDF metadata — fall back to single-batch processing.
+            self._execute_one_microbatch(batch_df, source.name, batch_id)
+            return
+
+        versions = sorted(
+            int(r._commit_version)
+            for r in batch_df.select("_commit_version").distinct().collect()
+        )
+        logger.info(
+            f"Processing {len(versions)} Delta version(s) sequentially for "
+            f"{source.name} in micro-batch {batch_id}"
+        )
+        for version in versions:
+            version_df = batch_df.filter(
+                f"`_commit_version` = {version}"
+            )
+            version_df.createOrReplaceTempView(source.alias)
+            self._execute_one_microbatch(version_df, source.name, batch_id)
+            logger.info(
+                f"Processed version {version} for {source.name} in micro-batch {batch_id}"
             )

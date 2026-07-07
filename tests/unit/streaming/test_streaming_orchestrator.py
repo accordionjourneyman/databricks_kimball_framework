@@ -129,3 +129,48 @@ class TestFullReload:
             orch.run(full_reload=True)
 
         mock_reload.assert_called_once()
+
+
+class TestPerVersionForeachBatch:
+    """_execute_microbatch_per_version splits a micro-batch by _commit_version."""
+
+    def test_per_version_processes_each_version_sequentially(self) -> None:
+        spark = MagicMock()
+        cfg = _make_config(True)
+        orch = StreamingOrchestrator(cfg, spark=spark)
+
+        batch_df = MagicMock()
+        batch_df.columns = ["customer_id", "_commit_version"]
+        batch_df.select.return_value.distinct.return_value.collect.return_value = [
+            MagicMock(_commit_version=1),
+            MagicMock(_commit_version=3),
+            MagicMock(_commit_version=2),
+        ]
+
+        calls = []
+
+        def fake_execute_one(version_df, source_name, batch_id):
+            calls.append(source_name)
+
+        with patch.object(orch, "_execute_one_microbatch", side_effect=fake_execute_one):
+            orch._execute_microbatch_per_version(batch_df, cfg.sources[0], 7)
+
+        assert calls == ["silver.customers"] * 3
+        # Verify filter called for versions 1, 2, 3 in order
+        assert batch_df.filter.call_count == 3
+        assert batch_df.filter.call_args_list[0][0][0] == "`_commit_version` = 1"
+        assert batch_df.filter.call_args_list[1][0][0] == "`_commit_version` = 2"
+        assert batch_df.filter.call_args_list[2][0][0] == "`_commit_version` = 3"
+
+    def test_per_version_falls_back_when_no_commit_version(self) -> None:
+        spark = MagicMock()
+        cfg = _make_config(True)
+        orch = StreamingOrchestrator(cfg, spark=spark)
+
+        batch_df = MagicMock()
+        batch_df.columns = ["customer_id"]
+
+        with patch.object(orch, "_execute_one_microbatch") as mock_execute:
+            orch._execute_microbatch_per_version(batch_df, cfg.sources[0], 5)
+
+        mock_execute.assert_called_once_with(batch_df, "silver.customers", 5)

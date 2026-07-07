@@ -76,6 +76,7 @@ sources:
 | `starting_timestamp` | No | None | Timestamp to start reading CDF from (alternative to version) |
 | `ignore_deletes` | No | `false` | Skip CDF delete events |
 | `ignore_changes` | No | `false` | Skip CDF update events |
+| `per_version` | No | `true` | Process each Delta CDF version in a micro-batch separately; preserves SCD2 history. Set `false` to dedup to latest per micro-batch for throughput. |
 
 > **`starting_version` vs `starting_timestamp`:** Only one can be set.
 > If neither is set, the stream starts from the latest table version
@@ -130,7 +131,19 @@ $KIMBALL_STREAMING_CHECKPOINT_ROOT/<sanitised_source_table>
 Default root: `/tmp/kimball_streaming_checkpoints/`
 
 Set `KIMBALL_STREAMING_CHECKPOINT_ROOT` to a persistent location
-(e.g., a DBFS or S3 path) for production use.
+(e.g., a Unity Catalog volume or S3 path) for production use.
+
+## Per-version processing
+
+By default (`per_version: true`) the streaming orchestrator processes
+**each Delta CDF version inside a micro-batch separately**. This matches
+the batch `preserve_all_changes` semantics and guarantees that SCD2
+tables record every committed upstream change, even when multiple
+versions for the same key arrive in one trigger interval.
+
+With `per_version: false` the orchestrator deduplicates the micro-batch
+to the latest change per key and runs a single merge. This is faster but
+may collapse multiple upstream changes into one SCD2 interval.
 
 ## Limitations
 
