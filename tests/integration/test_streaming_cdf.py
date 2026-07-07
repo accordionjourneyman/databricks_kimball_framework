@@ -294,3 +294,110 @@ transformation_sql: |
 
         for t in [f"{test_db}.dim_no_stream", f"{test_db}.no_stream_src"]:
             spark.sql(f"DROP TABLE IF EXISTS {t}")
+
+
+class TestStreamingCdfSCD2:
+    """Streaming CDF integration with SCD2 dimensions and per-version correctness."""
+
+    def test_streaming_scd2_preserves_multiple_versions_in_one_microbatch(
+        self, spark: SparkSession, test_db: str, tmp_config
+    ):
+        """
+        When multiple Delta versions for the same key land in one streaming
+        micro-batch, per_version processing must create a full SCD2 history.
+
+        1. Create CDF-enabled source and seed Alice (version 0).
+        2. Run batch Orchestrator to create SCD2 target.
+        3. Commit TWO separate UPDATE transactions for Alice.
+        4. Run StreamingOrchestrator with availableNow.
+        5. Assert Alice has 3 rows: original + 2 updates.
+        """
+        spark.sql(f"""
+            CREATE TABLE {test_db}.customers_src (
+                customer_id INT,
+                address STRING,
+                updated_at STRING
+            ) USING DELTA
+            TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
+        """)
+        spark.sql(f"""
+            INSERT INTO {test_db}.customers_src VALUES
+            (1, '123 Apple St', '2025-01-01T10:00:00')
+        """)
+
+        batch_cfg = tmp_config(f"""
+table_name: {test_db}.dim_customer
+table_type: dimension
+scd_type: 2
+keys:
+  surrogate_key: customer_sk
+  natural_keys: [customer_id]
+surrogate_key_strategy: identity
+effective_at: updated_at
+track_history_columns:
+  - address
+sources:
+  - name: {test_db}.customers_src
+    alias: c
+    cdc_strategy: cdf
+    primary_keys: [customer_id]
+transformation_sql: |
+  SELECT customer_id, address, updated_at, _change_type FROM c
+""")
+        batch_orch = Orchestrator(batch_cfg, spark=spark, etl_schema=test_db)
+        assert batch_orch.run()["status"] == "SUCCESS"
+
+        # Two separate Delta transactions updating Alice -> two CDF versions.
+        spark.sql(f"""
+            UPDATE {test_db}.customers_src
+            SET address = '456 Banana Blvd', updated_at = '2025-01-02T10:00:00'
+            WHERE customer_id = 1
+        """)
+        spark.sql(f"""
+            UPDATE {test_db}.customers_src
+            SET address = '789 Cherry Ln', updated_at = '2025-01-03T10:00:00'
+            WHERE customer_id = 1
+        """)
+
+        stream_cfg = tmp_config(f"""
+table_name: {test_db}.dim_customer
+table_type: dimension
+scd_type: 2
+keys:
+  surrogate_key: customer_sk
+  natural_keys: [customer_id]
+surrogate_key_strategy: identity
+effective_at: updated_at
+track_history_columns:
+  - address
+sources:
+  - name: {test_db}.customers_src
+    alias: c
+    cdc_strategy: cdf
+    primary_keys: [customer_id]
+    streaming:
+      enabled: true
+      trigger: available_now
+transformation_sql: |
+  SELECT customer_id, address, updated_at, _change_type FROM c
+""")
+        stream_orch = StreamingOrchestrator(stream_cfg, spark=spark, etl_schema=test_db)
+        stream_result = stream_orch.run()
+        assert stream_result["status"] == "SUCCESS", stream_result.get("errors")
+
+        alice_history = (
+            spark.table(f"{test_db}.dim_customer")
+            .filter("customer_id = 1")
+            .orderBy("__valid_from")
+            .collect()
+        )
+        assert len(alice_history) == 3, (
+            f"Expected 3 Alice rows (seed + 2 updates), got {len(alice_history)}: "
+            + str(alice_history)
+        )
+        addresses = [r["address"] for r in alice_history]
+        assert addresses == ["123 Apple St", "456 Banana Blvd", "789 Cherry Ln"]
+        assert alice_history[-1]["__is_current"] is True
+
+        for t in [f"{test_db}.dim_customer", f"{test_db}.customers_src"]:
+            spark.sql(f"DROP TABLE IF EXISTS {t}")

@@ -1,4 +1,4 @@
-"""Tests for StreamingOrchestrator dispatch and lifecycle."""
+﻿"""Tests for StreamingOrchestrator dispatch and lifecycle."""
 
 from __future__ import annotations
 
@@ -174,3 +174,42 @@ class TestPerVersionForeachBatch:
             orch._execute_microbatch_per_version(batch_df, cfg.sources[0], 5)
 
         mock_execute.assert_called_once_with(batch_df, "silver.customers", 5)
+
+    def test_foreach_uses_per_version_when_enabled(self) -> None:
+        spark = MagicMock()
+        cfg = _make_config(True)
+        orch = StreamingOrchestrator(cfg, spark=spark)
+
+        batch_df = MagicMock()
+        batch_df.columns = ["customer_id", "_change_type", "_commit_version"]
+        batch_df.select.return_value.distinct.return_value.collect.return_value = [
+            MagicMock(_commit_version=5),
+        ]
+
+        with patch.object(
+            orch, "_execute_microbatch_per_version"
+        ) as mock_per_version, patch.object(orch, "_execute_one_microbatch") as mock_single:
+            foreach_fn = orch._make_foreach(cfg.sources[0])
+            foreach_fn(batch_df, 42)
+
+        mock_per_version.assert_called_once_with(batch_df.filter.return_value, cfg.sources[0], 42)
+        mock_single.assert_not_called()
+
+    def test_foreach_uses_single_merge_when_per_version_disabled(self) -> None:
+        spark = MagicMock()
+        cfg = _make_config(True)
+        cfg.sources[0].streaming = StreamingSourceConfig(enabled=True, per_version=False)
+        orch = StreamingOrchestrator(cfg, spark=spark)
+
+        batch_df = MagicMock()
+        batch_df.columns = ["customer_id", "_change_type"]
+
+        with patch.object(
+            orch, "_execute_microbatch_per_version"
+        ) as mock_per_version, patch.object(orch, "_execute_one_microbatch") as mock_single:
+            foreach_fn = orch._make_foreach(cfg.sources[0])
+            foreach_fn(batch_df, 42)
+
+        mock_single.assert_called_once_with(batch_df.filter.return_value, "silver.customers", 42)
+        mock_per_version.assert_not_called()
+
