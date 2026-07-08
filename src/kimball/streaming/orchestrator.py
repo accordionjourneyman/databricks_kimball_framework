@@ -37,6 +37,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql.functions import broadcast
 from pyspark.sql.streaming import StreamingQuery
 
 from kimball.processing import merger as _merger
@@ -293,14 +294,23 @@ class StreamingOrchestrator:
             # 1. Drop update_preimage rows.
             if "_change_type" in batch_df.columns:
                 batch_df = batch_df.filter("_change_type != 'update_preimage'")
-            # 2. Register as a temp view so the user's transformation_sql
-            #    can SELECT against the alias.
-            batch_df.createOrReplaceTempView(source.alias)
+            # 2. Materialise the micro-batch as a tiny local Delta table so the
+            #    user's transformation_sql can SELECT against the alias reliably.
+            #    Spark structured streaming does not allow temp views derived
+            #    from a streaming DataFrame to be read from a separate SQL plan.
+            batch_table = (
+                f"{self.etl_schema}._kimball_batch_{source.alias}_{batch_id}"
+            )
+            self.spark.sql(f"DROP TABLE IF EXISTS {batch_table}")
+            batch_df.write.format("delta").mode("overwrite").saveAsTable(
+                batch_table
+            )
+            self.spark.table(batch_table).createOrReplaceTempView(source.alias)
             try:
                 if source.streaming and source.streaming.per_version:
                     self._execute_microbatch_per_version(batch_df, source, batch_id)
                 else:
-                    self._execute_one_microbatch(batch_df, source.name, batch_id)
+                    self._execute_one_microbatch(batch_df, source, batch_id)
             except Exception as exc:  # noqa: BLE001
                 logger.exception(f"Micro-batch {batch_id} for {source.name} failed")
                 self.etl_control.batch_fail(
@@ -309,11 +319,14 @@ class StreamingOrchestrator:
                     error_message=str(exc)[:3500],
                 )
                 raise
+            finally:
+                self.spark.sql(f"DROP TABLE IF EXISTS {batch_table}")
+                self.spark.catalog.dropTempView(source.alias)
 
         return _foreach
 
     def _execute_one_microbatch(
-        self, batch_df: DataFrame, source_name: str, batch_id: int
+        self, batch_df: DataFrame, source: Any, batch_id: int
     ) -> None:
         """Apply the SCD merge for one micro-batch.
 
@@ -321,6 +334,7 @@ class StreamingOrchestrator:
         ``_make_foreach``, so ``transformation_sql`` can SELECT against
         it the same way the batch path does.
         """
+        source_name = source.name
         rows_written = 0
 
         if not self.spark.catalog.tableExists(self.config.table_name):
@@ -330,19 +344,40 @@ class StreamingOrchestrator:
                 "start the streaming query."
             )
 
+        # Derive join keys the same way the batch orchestrator does.
+        if self.config.table_type == "fact":
+            join_keys = self.config.merge_keys or []
+        else:
+            join_keys = self.config.natural_keys or []
+
         # Run transformation_sql against the registered temp view.
         if self.config.transformation_sql:
             source_df = self.spark.sql(self.config.transformation_sql)
         else:
             source_df = batch_df
 
-        rows_read = source_df.count() if source_df.columns else 0
+        # Carry CDF version metadata through to the merge so the SCD2
+        # two-phase dispatcher can detect multiple versions per key.
+        # Join on all columns the transformation selected (that also exist
+        # in the batch table) to avoid Cartesian explosion on multi-version
+        # keys.
+        cdf_meta_cols = [
+            c for c in ("_commit_version", "_commit_timestamp") if c in batch_df.columns
+        ]
+        if cdf_meta_cols and self.config.transformation_sql:
+            batch_table_name = (
+                f"{self.etl_schema}._kimball_batch_{source.alias}_{batch_id}"
+            )
+            batch_table = self.spark.table(batch_table_name)
+            common_cols = [
+                c for c in source_df.columns if c in batch_table.columns
+            ]
+            meta_df = batch_table.select(*(common_cols + cdf_meta_cols))
+            source_df = source_df.join(
+                broadcast(meta_df), common_cols, "left"
+            )
 
-        # Derive join keys the same way the batch orchestrator does.
-        if self.config.table_type == "fact":
-            join_keys = self.config.merge_keys or []
-        else:
-            join_keys = self.config.natural_keys or []
+        rows_read = source_df.count() if source_df.columns else 0
 
         _merger.merge(
             target_table_name=self.config.table_name,
@@ -395,7 +430,7 @@ class StreamingOrchestrator:
         """
         if "_commit_version" not in batch_df.columns:
             # No CDF metadata — fall back to single-batch processing.
-            self._execute_one_microbatch(batch_df, source.name, batch_id)
+            self._execute_one_microbatch(batch_df, source, batch_id)
             return
 
         versions = sorted(
@@ -422,7 +457,7 @@ class StreamingOrchestrator:
             version_df.write.format("delta").mode("overwrite").saveAsTable(local_version_table)
             self.spark.table(local_version_table).createOrReplaceTempView(source.alias)
             self._execute_one_microbatch(
-                self.spark.table(source.alias), source.name, batch_id
+                self.spark.table(source.alias), source, batch_id
             )
             self.spark.catalog.dropTempView(source.alias)
             logger.info(

@@ -37,7 +37,7 @@ class StreamingSourceConfig(BaseModel):
     starting_timestamp: str | None = None
     ignore_deletes: bool = False
     ignore_changes: bool = False
-    per_version: bool = True
+    per_version: bool = False
 
     @model_validator(mode="after")
     def validate_processing_time(self) -> "StreamingSourceConfig":

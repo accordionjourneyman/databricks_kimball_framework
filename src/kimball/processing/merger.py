@@ -60,6 +60,9 @@ _CDF_METADATA = {
     "_commit_version",
     "_commit_timestamp",
     "__merge_action",
+    "__scd2_intermediate",
+    "__scd2_seq",
+    "__scd2_total",
 }
 
 
@@ -255,11 +258,16 @@ def merge_scd1(
         c: f"source.{c}"
         for c in source_df.columns
         if c not in (surrogate_key_col, "_change_type")
+        and c not in _CDF_METADATA
     }
     update_map.update(
         {"__is_deleted": "false", "__etl_processed_at": "current_timestamp()"}
     )
-    insert_map = {c: f"source.{c}" for c in source_df.columns if c != "_change_type"}
+    insert_map = {
+        c: f"source.{c}"
+        for c in source_df.columns
+        if c not in _CDF_METADATA
+    }
     insert_map.update(
         {"__is_deleted": "false", "__etl_processed_at": "current_timestamp()"}
     )
@@ -866,12 +874,8 @@ def _rebuild_scd2_history(
         return
 
     # Join back to the original intermediate payload to recover all columns.
-    join_back_cond = reduce(
-        lambda a, b: a & b,
-        [rows_to_insert[k].eqNullSafe(intermediate_payload[k]) for k in join_keys],
-    ) & (rows_to_insert["__scd2_seq"] == intermediate_payload["__scd2_seq"])
-    # We cannot rely on seq after the union; instead, join on natural keys +
-    # ordering column.
+    # We cannot rely on seq after the union; join on natural keys + ordering
+    # column to match each intermediate row to its ranked chain entry.
     join_back_cond = reduce(
         lambda a, b: a & b,
         [rows_to_insert[k].eqNullSafe(intermediate_payload[k]) for k in join_keys],
@@ -885,7 +889,7 @@ def _rebuild_scd2_history(
 
     # Build final insert DataFrame with SCD2 system columns.
     validity_from_col = (
-        col(effective_at_column)
+        col(effective_at_column).cast("timestamp")
         if effective_at_column and effective_at_column in staged.columns
         else col(rank_col).cast("timestamp")
     )

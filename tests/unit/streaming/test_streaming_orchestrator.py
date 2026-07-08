@@ -201,8 +201,8 @@ class TestPerVersionForeachBatch:
 
         calls = []
 
-        def fake_execute_one(version_df, source_name, batch_id):
-            calls.append(source_name)
+        def fake_execute_one(version_df, source, batch_id):
+            calls.append(source.name)
 
         with patch.object(orch, "_execute_one_microbatch", side_effect=fake_execute_one):
             orch._execute_microbatch_per_version(batch_df, cfg.sources[0], 7)
@@ -225,11 +225,14 @@ class TestPerVersionForeachBatch:
         with patch.object(orch, "_execute_one_microbatch") as mock_execute:
             orch._execute_microbatch_per_version(batch_df, cfg.sources[0], 5)
 
-        mock_execute.assert_called_once_with(batch_df, "silver.customers", 5)
+        mock_execute.assert_called_once_with(batch_df, cfg.sources[0], 5)
 
     def test_foreach_uses_per_version_when_enabled(self) -> None:
         spark = MagicMock()
         cfg = _make_config(True)
+        cfg.sources[0].streaming = StreamingSourceConfig(
+            enabled=True, per_version=True
+        )
         orch = StreamingOrchestrator(cfg, spark=spark)
 
         batch_df = MagicMock()
@@ -262,6 +265,6 @@ class TestPerVersionForeachBatch:
             foreach_fn = orch._make_foreach(cfg.sources[0])
             foreach_fn(batch_df, 42)
 
-        mock_single.assert_called_once_with(batch_df.filter.return_value, "silver.customers", 42)
+        mock_single.assert_called_once_with(batch_df.filter.return_value, cfg.sources[0], 42)
         mock_per_version.assert_not_called()
 
