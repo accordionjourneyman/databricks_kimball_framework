@@ -376,11 +376,13 @@ display(spark.table("demo_streaming_gold.dim_customer"))
 
 current_count = spark.table("demo_streaming_gold.dim_customer").count()
 data_rows = (
-    spark.table("demo_streaming_gold.dim_customer").filter("customer_id > 0").count()
+    spark.table("demo_streaming_gold.dim_customer")
+    .filter("customer_id > 0 AND __is_current = true")
+    .count()
 )
 
 print(f"Total rows: {current_count}")
-print(f"Data rows: {data_rows}")
+print(f"Current data rows: {data_rows}")
 
 assert data_rows == 3, f"Expected 3 current data rows, got {data_rows}"
 print("✅ Full reload verified")

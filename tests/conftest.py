@@ -34,6 +34,8 @@ def _is_remote_spark_requested() -> bool:
     """Return True if Databricks Connect credentials are configured."""
     if os.environ.get("KIMBALL_TEST_TARGET", "").lower() == "local":
         return False
+    if os.environ.get("KIMBALL_TARGET", "").lower() == "local":
+        return False
     return bool(
         os.environ.get("DATABRICKS_HOST") and os.environ.get("DATABRICKS_TOKEN")
     )
@@ -57,7 +59,14 @@ def _create_databricks_runtime_spark_session() -> SparkSession:
 
 def _create_remote_spark_session() -> SparkSession:
     """Create a Spark Connect session against a Databricks cluster."""
-    from databricks.connect import DatabricksSession
+    try:
+        from databricks.connect import DatabricksSession
+    except ImportError as exc:
+        raise RuntimeError(
+            "databricks-connect is not installed. Install it to run tests with "
+            "DATABRICKS_HOST/DATABRICKS_TOKEN, or unset those variables and "
+            "set KIMBALL_TARGET=local to run locally."
+        ) from exc
 
     cluster_id = os.environ.get("DATABRICKS_CLUSTER_ID")
     builder = DatabricksSession.builder

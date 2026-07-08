@@ -335,7 +335,9 @@ class TableCreator:
                 get_spark().sql(alter_sql)
                 logger.info(f"Applied NOT NULL constraint to {key}")
             except Exception as e:
-                logger.error(f"Failed to apply NOT NULL to {key}: {e}")
+                logger.warning(
+                    f"Could not apply NOT NULL constraint to {key}: {e}"
+                )
 
         # Apply NOT NULL constraints for foreign keys (fact tables only)
         if config.get("table_type") == "fact":

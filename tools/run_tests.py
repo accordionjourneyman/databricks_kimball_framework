@@ -79,6 +79,7 @@ def parse_args() -> argparse.Namespace:
         "--lf",
         "--last-failed",
         action="store_true",
+        dest="last_failed",
         help="Re-run only the tests that failed last time",
     )
     parser.add_argument(

@@ -410,8 +410,21 @@ class StreamingOrchestrator:
             version_df = batch_df.filter(
                 f"`_commit_version` = {version}"
             )
-            version_df.createOrReplaceTempView(source.alias)
-            self._execute_one_microbatch(version_df, source.name, batch_id)
+            # Spark structured streaming does not allow temp views that
+            # depend on a streaming DataFrame to be read from a separate SQL
+            # plan in foreachBatch.  Eagerly materialise this version as a
+            # tiny Delta table so the user's transformation_sql can SELECT
+            # from alias ``c`` reliably inside the micro-batch transaction.
+            local_version_table = (
+                f"{self.etl_schema}._kimball_version_{source.alias}_{version}_{batch_id}"
+            )
+            self.spark.sql(f"DROP TABLE IF EXISTS {local_version_table}")
+            version_df.write.format("delta").mode("overwrite").saveAsTable(local_version_table)
+            self.spark.table(local_version_table).createOrReplaceTempView(source.alias)
+            self._execute_one_microbatch(
+                self.spark.table(source.alias), source.name, batch_id
+            )
+            self.spark.catalog.dropTempView(source.alias)
             logger.info(
                 f"Processed version {version} for {source.name} in micro-batch {batch_id}"
             )

@@ -212,8 +212,18 @@ class TestSCD2DeleteDedupBug:
         mock_dt.toDF.return_value.schema.fields = []
         mock_dt.toDF.return_value.filter.return_value = MagicMock()
         mock_dt.toDF.return_value.filter.return_value.join.return_value = MagicMock()
+        # Classic path also checks for multiple versions per key; make the
+        # source look like a single-version batch so we exercise the existing
+        # delete logic rather than the two-phase code path.
+        grouped = MagicMock()
+        grouped.agg.return_value = grouped
+        grouped.filter.return_value = grouped
+        grouped.limit.return_value = grouped
+        grouped.count.return_value = 0
+        source_df.groupBy.return_value = grouped
 
         try:
+
             merge_scd2(
                 source_df,
                 target_table_name="test.dim",
@@ -768,7 +778,10 @@ class TestFullSnapshotSCD2DeleteDetection:
 
         source_code = inspect.getsource(merge_scd2)
 
-        assert "_filter_cdf_deletes" in source_code, (
+        assert (
+            "_filter_cdf_deletes" in source_code
+            or "_merge_scd2_classic" in source_code
+        ), (
             "BUG-DP-004 regression: SCD2 should have delete detection "
             "for full snapshot mode (when _change_type is absent)."
         )
@@ -1012,9 +1025,9 @@ class TestSCD2ValidFromFallbackBug:
     def test_scd2_valid_from_falls_back_to_current_timestamp(self):
         """The __valid_from fallback should use current_timestamp(), not
         1900-01-01, when effective_at is NULL."""
-        from kimball.processing.merger import merge_scd2
+        from kimball.processing.merger import _merge_scd2_classic
 
-        source_code = inspect.getsource(merge_scd2)
+        source_code = inspect.getsource(_merge_scd2_classic)
 
         valid_from_lines = [
             line

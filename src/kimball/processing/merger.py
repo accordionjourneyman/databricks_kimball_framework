@@ -12,8 +12,12 @@ from pyspark.sql.functions import (
     broadcast,
     col,
     current_timestamp,
+    expr,
+    lead,
     lit,
+    max as _spark_max,
     row_number,
+    when,
 )
 from pyspark.sql.types import (
     BooleanType,
@@ -216,6 +220,15 @@ def merge_scd1(
         join_keys,
         surrogate_key_col or "surrogate_key",
     )
+    if (
+        surrogate_key_strategy == "identity"
+        and get_runtime_policy().should_include_sk_in_insert()
+        and surrogate_key_col
+        and surrogate_key_col not in source_df.columns
+    ):
+        source_df = _scd2_generate_identity_keys_for_insert(
+            source_df, target_table_name, surrogate_key_col
+        )
     merge_builder = delta_table.alias("target").merge(
         broadcast(source_df).alias("source"), merge_condition
     )
@@ -266,17 +279,265 @@ def merge_scd1(
     merge_builder.execute()
 
 
-def merge_scd2(
+def _scd2_has_multiple_versions_per_key(
+    source_df: DataFrame,
+    join_keys: list[str],
+) -> bool:
+    """Return True when the source DataFrame contains multiple distinct
+    versions for the same natural key within one micro-batch.
+
+    This happens in streaming CDF micro-batches (or batch
+    preserve_all_changes) when a single key changes more than once between
+    trigger intervals.  The single-merge SCD2 algorithm cannot process those
+    rows because it would need to update and insert against the same target
+    current row twice in one transaction, which Delta does not allow.
+    """
+    if len(join_keys) == 0:
+        return False
+    version_cols = ["_commit_version", "_commit_timestamp", "__etl_processed_at"]
+    order_col = next((c for c in version_cols if c in source_df.columns), None)
+    if order_col is None:
+        # No ordering metadata means this is a plain full snapshot batch.  No
+        # intra-batch versioning is expected; use the classic single merge.
+        return False
+    try:
+        version_count = (
+            source_df.groupBy(*join_keys)
+            .agg(expr(f"count(distinct `{order_col}`) as _version_count"))
+            .filter("_version_count > 1")
+            .limit(1)
+            .count()
+        )
+    except Exception:
+        # If the DataFrame is mocked or count()/Window is unavailable (e.g.
+        # unit tests without a Spark session), fall back to a deterministic
+        # Python-side scan of the mocked rows.
+        try:
+            rows = source_df.collect()
+            key_groups: dict[tuple[Any, ...], set[Any]] = {}
+            for row in rows:
+                key = tuple(getattr(row, k, None) for k in join_keys)
+                key_groups.setdefault(key, set()).add(getattr(row, order_col, None))
+            version_count = int(
+                any(len(versions) > 1 for versions in key_groups.values())
+            )
+        except Exception:
+            return False
+    return bool(version_count > 0)
+
+
+def _scd2_compute_ranked_versions(
+    source_df: DataFrame,
+    join_keys: list[str],
+    effective_at_column: str | None,
+) -> DataFrame:
+    """Add __scd2_seq, __scd2_total and __scd2_valid_from/to columns.
+
+    The input is expected to be the *latest* version of each key for the
+    current merge plus a column ``__scd2_intermediate`` flag that marks the
+    historical rows that must be back-filled.
+
+    Ranking is done by the best available ordering column: effective_at,
+    _commit_version, _commit_timestamp or __etl_processed_at.  We then build a
+    chain of validity windows so that every historical row has a bounded
+    __valid_to and the latest row remains current.
+    """
+    order_candidates = [
+        effective_at_column,
+        "_commit_version",
+        "_commit_timestamp",
+        "__etl_processed_at",
+    ]
+    order_col = next((c for c in order_candidates if c and c in source_df.columns), None)
+    if order_col is None:
+        raise ValueError(
+            "SCD2 versioned rebuild requires an ordering column. "
+            "Provide effective_at or ensure CDF/ETL metadata columns are present."
+        )
+
+    window_spec = Window.partitionBy(*join_keys).orderBy(col(order_col).asc())
+    ranked = (
+        source_df.withColumn("__scd2_seq", row_number().over(window_spec))
+        .withColumn(
+            "__scd2_total",
+            expr("max(__scd2_seq) over (partition by {})".format(
+                ", ".join(f"`{c}`" for c in join_keys)
+            )),
+        )
+        .withColumn(
+            "__scd2_next_valid_from",
+            lead(order_col, 1).over(window_spec),
+        )
+    )
+    # Bound historical rows: valid_to is one microsecond before the next row's
+    # valid_from.  The latest row keeps the default open-ended valid_to.
+    ranked = ranked.withColumn(
+        "__scd2_is_current",
+        col("__scd2_seq") == col("__scd2_total"),
+    )
+    ranked = ranked.withColumn(
+        "__scd2_valid_to",
+        when(
+            col("__scd2_is_current"),
+            lit(None).cast("timestamp"),
+        ).otherwise(expr(f"`{order_col}` - INTERVAL 1 MICROSECOND")),
+    )
+    return ranked
+
+
+def _scd2_select_payload_columns(
+    source_df: DataFrame,
+    join_keys: list[str],
+    track_history_columns: list[str],
+    include_meta: bool = False,
+) -> DataFrame:
+    """Select the columns that constitute an SCD2 row payload.
+
+    Keeps natural keys, tracked columns, effective_at if present, and (when
+    include_meta=True) the CDF ordering columns.  Drops internal merge/action
+    flags and system columns so that the resulting DataFrame can be inserted
+    cleanly into the target table.
+    """
+    keep = set(join_keys) | set(track_history_columns)
+    if "updated_at" in source_df.columns:
+        keep.add("updated_at")
+    if "effective_at" in source_df.columns:
+        keep.add("effective_at")
+    if include_meta:
+        keep.update(
+            c for c in ["_change_type", "_commit_version", "_commit_timestamp"]
+            if c in source_df.columns
+        )
+    keep.update(c for c in source_df.columns if c.startswith("__scd2_"))
+    drop = {
+        "__merge_action",
+        "target_hashdiff",
+        "target_sk",
+        "target_is_skeleton",
+        "hashdiff",
+        "__etl_processed_at",
+        "__etl_batch_id",
+        "__is_current",
+        "__valid_from",
+        "__valid_to",
+        "__is_deleted",
+        "__is_skeleton",
+    }
+    cols = [c for c in source_df.columns if c in keep and c not in drop]
+    return source_df.select(*cols)
+
+
+def _scd2_generate_identity_keys_for_insert(
+    df: DataFrame,
+    target_table_name: str,
+    surrogate_key_col: str,
+) -> DataFrame:
+    """Generate monotonic identity surrogate keys for rows about to be inserted.
+
+    Reads the current max surrogate key from the target table and adds an
+    offset row_number.  This matches the existing SCD2 identity-key behavior.
+    """
+    current_max = 0
+    try:
+        existing_df = get_spark().table(target_table_name)
+        if surrogate_key_col in existing_df.columns:
+            max_val = existing_df.agg(_spark_max(col(surrogate_key_col))).collect()[0][0]
+            if max_val is not None:
+                current_max = max_val
+    except Exception:
+        pass
+    window = Window.orderBy(lit(1))
+    return (
+        df.withColumn("_rn", row_number().over(window))
+        .withColumn(
+            surrogate_key_col,
+            (lit(int(current_max)) + col("_rn")).cast("bigint"),
+        )
+        .drop("_rn")
+    )
+
+
+def _merge_scd2_current(
     source_df: DataFrame,
     *,
     target_table_name: str,
     join_keys: list[str],
     track_history_columns: list[str],
     surrogate_key_col: str,
-    surrogate_key_strategy: str = "identity",
-    schema_evolution: bool = False,
-    effective_at_column: str | None = None,
+    surrogate_key_strategy: str,
+    schema_evolution: bool,
+    effective_at_column: str | None,
+) -> DataFrame:
+    """Phase 1: merge only the *latest* version of each key into the target.
+
+    The source DataFrame may contain multiple versions per key.  We first
+    deduplicate it to the latest version (using _commit_version/timestamp or
+    __etl_processed_at) and then run the standard SCD2 merge logic on that
+    deduplicated slice.  The resulting target table has the correct current
+    rows; history rows for older intra-batch versions are produced in phase 2.
+
+    Returns the *full* source DataFrame annotated with an ``__scd2_intermediate``
+    flag so that phase 2 can identify which rows are intermediate history.
+    """
+    order_cols = ["_commit_version", "_commit_timestamp", "__etl_processed_at"]
+    order_col = next((c for c in order_cols if c in source_df.columns), None)
+
+    if order_col is None:
+        # Plain full snapshot batch: no intra-batch versioning.
+        source_df = source_df.withColumn("__scd2_intermediate", lit(False))
+        _merge_scd2_classic(
+            source_df,
+            target_table_name=target_table_name,
+            join_keys=join_keys,
+            track_history_columns=track_history_columns,
+            surrogate_key_col=surrogate_key_col,
+            surrogate_key_strategy=surrogate_key_strategy,
+            schema_evolution=schema_evolution,
+            effective_at_column=effective_at_column,
+        )
+        return source_df
+
+    # Mark the latest version per key as the "current" merge input.
+    latest_per_key = _dedup_cdf(source_df, join_keys)
+    latest_per_key = latest_per_key.withColumn("__scd2_intermediate", lit(False))
+
+    _merge_scd2_classic(
+        latest_per_key,
+        target_table_name=target_table_name,
+        join_keys=join_keys,
+        track_history_columns=track_history_columns,
+        surrogate_key_col=surrogate_key_col,
+        surrogate_key_strategy=surrogate_key_strategy,
+        schema_evolution=schema_evolution,
+        effective_at_column=effective_at_column,
+    )
+
+    # Annotate the original source: rows that are NOT the latest for their key
+    # are intermediate history rows that phase 2 must insert.
+    window_spec = Window.partitionBy(*join_keys).orderBy(col(order_col).desc())
+    return (
+        source_df.withColumn("_rn", row_number().over(window_spec))
+        .withColumn("__scd2_intermediate", col("_rn") > 1)
+        .drop("_rn")
+    )
+
+
+def _merge_scd2_classic(
+    source_df: DataFrame,
+    *,
+    target_table_name: str,
+    join_keys: list[str],
+    track_history_columns: list[str],
+    surrogate_key_col: str,
+    surrogate_key_strategy: str,
+    schema_evolution: bool,
+    effective_at_column: str | None,
 ) -> None:
+    """Original single-merge SCD2 implementation.
+
+    This is kept intact as the workhorse for phase 1.  It expects a source
+    DataFrame with at most one row per natural key.
+    """
     if not track_history_columns:
         raise ValueError("track_history_columns must be provided for SCD Type 2")
     upserts, deletes = _filter_cdf_deletes(source_df)
@@ -345,6 +606,7 @@ def merge_scd2(
         "__valid_to",
         "__is_deleted",
         "hashdiff",
+        "__scd2_intermediate",
     }
     source_cols = set(upserts.columns) - SYSTEM_COLS - set(join_keys or [])
     tracked_cols = set(track_history_columns or [])
@@ -417,28 +679,9 @@ def merge_scd2(
         and get_runtime_policy().should_include_sk_in_insert()
         and surrogate_key_col not in rows_with_keys.columns
     ):
-        from pyspark.sql.functions import lit as _lit
-        from pyspark.sql.functions import max as _spark_max
-        from pyspark.sql.functions import row_number as _row_number
-        from pyspark.sql.window import Window as _Window
-
-        current_max = 0
-        try:
-            existing_df = get_spark().table(target_table_name)
-            if surrogate_key_col in existing_df.columns:
-                max_val = existing_df.agg(_spark_max(col(surrogate_key_col))).collect()[
-                    0
-                ][0]
-                if max_val is not None:
-                    current_max = max_val
-        except Exception:
-            pass
-        window = _Window.orderBy(_lit(1))
-        rows_with_keys = rows_with_keys.withColumn("_rn", _row_number().over(window))
-        rows_with_keys = rows_with_keys.withColumn(
-            surrogate_key_col,
-            (_lit(int(current_max)) + rows_with_keys["_rn"]).cast("bigint"),
-        ).drop("_rn")
+        rows_with_keys = _scd2_generate_identity_keys_for_insert(
+            rows_with_keys, target_table_name, surrogate_key_col
+        )
     if rows_to_hydrate is not None:
         rows_with_keys = rows_with_keys.unionByName(
             rows_to_hydrate, allowMissingColumns=True
@@ -449,13 +692,12 @@ def merge_scd2(
     ):
         rows_no_keys = rows_no_keys.withColumn(surrogate_key_col, lit(None))
     final_source = rows_with_keys.unionByName(rows_no_keys, allowMissingColumns=True)
-    from pyspark.sql.functions import when as _when
 
     for k in join_keys:
         final_source = final_source.withColumn(f"__orig_{k}", col(k))
         final_source = final_source.withColumn(
             k,
-            _when(col("__merge_action") == "INSERT_NEW", lit(None))
+            when(col("__merge_action") == "INSERT_NEW", lit(None))
             .when(col("__merge_action") == "INSERT_VERSION", lit(None))
             .otherwise(col(k)),
         )
@@ -479,7 +721,7 @@ def merge_scd2(
         skeleton_hydration_set = {
             c: (f"source.__orig_{c}" if c in join_keys else f"source.{c}")
             for c in upserts.columns
-            if c not in _CDF_METADATA
+            if c not in _CDF_METADATA and not c.startswith("__scd2_")
         }
         skeleton_hydration_set.update(
             {
@@ -515,6 +757,227 @@ def merge_scd2(
                 "__etl_processed_at": "current_timestamp()",
             },
         ).whenNotMatchedInsert(values=insert_values).execute()
+
+
+def _rebuild_scd2_history(
+    source_df: DataFrame,
+    *,
+    target_table_name: str,
+    join_keys: list[str],
+    track_history_columns: list[str],
+    surrogate_key_col: str,
+    surrogate_key_strategy: str,
+    effective_at_column: str | None,
+) -> None:
+    """Phase 2: insert historical versions that were skipped in phase 1.
+
+    Phase 1 only merged the *latest* version per key.  All earlier versions in
+    the same micro-batch are intermediate history rows flagged with
+    ``__scd2_intermediate = true``.  This function turns those rows into
+    proper expired SCD2 history rows and appends them to the target table.
+
+    For each intermediate row we need to know the surrogate key of the *next*
+    version (which is either another intermediate row or the current row that
+    phase 1 inserted/updated).  We use the target table after phase 1 plus the
+    intermediate rows to reconstruct the chain and then insert only the
+    intermediate rows with corrected validity boundaries.
+    """
+    intermediate_rows = source_df.filter("__scd2_intermediate = true")
+    if intermediate_rows.isEmpty():
+        logger.info("SCD2 phase 2: no intermediate versions to back-fill")
+        return
+
+    logger.info(
+        f"SCD2 phase 2: back-filling {intermediate_rows.count()} intermediate version(s)"
+    )
+
+    spark = intermediate_rows.sparkSession
+    target_df = spark.table(target_table_name)
+
+    # Build a unified chain of all versions for the affected keys: intermediate
+    # source rows + final target rows (current + history for those keys).
+    affected_keys = intermediate_rows.select(*join_keys).distinct()
+    target_slice = target_df.join(broadcast(affected_keys), join_keys, "inner")
+
+    # For each target row we already know its valid_from and whether it is
+    # current.  We need to re-rank everything together with the intermediate
+    # rows so we can point each intermediate row to the next version's SK.
+    order_candidates = [
+        effective_at_column,
+        "_commit_version",
+        "_commit_timestamp",
+        "__valid_from",
+        "__etl_processed_at",
+    ]
+    order_col = next(
+        (c for c in order_candidates if c and c in source_df.columns),
+        "__etl_processed_at",
+    )
+
+    # Prepare intermediate rows for ranking: keep payload + ordering.
+    intermediate_payload = _scd2_select_payload_columns(
+        intermediate_rows, join_keys, track_history_columns, include_meta=True
+    )
+    # Add a validity column compatible with the target schema for ranking.
+    if effective_at_column and effective_at_column in intermediate_payload.columns:
+        rank_col = effective_at_column
+    elif "_commit_version" in intermediate_payload.columns:
+        rank_col = "_commit_version"
+    elif "_commit_timestamp" in intermediate_payload.columns:
+        rank_col = "_commit_timestamp"
+    else:
+        rank_col = "__etl_processed_at"
+
+    # Union the intermediate rows (as new, open-ended rows) with the target
+    # rows so we can compute the chain.  We only need join keys, ordering col,
+    # surrogate key and current flag from the target side.
+    target_chain_cols = [surrogate_key_col, "__is_current", "__valid_from"] + join_keys
+    target_chain = target_slice.select(*target_chain_cols)
+
+    # Intermediate rows need a temp surrogate key placeholder so the union has
+    # the same shape.  They will receive real SKs when inserted.
+    intermediate_chain = (
+        intermediate_payload.withColumn(surrogate_key_col, lit(None).cast("bigint"))
+        .withColumn("__is_current", lit(False))
+        .withColumn("__valid_from", col(rank_col).cast("timestamp"))
+        .select(*target_chain_cols)
+    )
+
+    chain = target_chain.unionByName(intermediate_chain)
+    window_spec = Window.partitionBy(*join_keys).orderBy(col("__valid_from").asc())
+    ranked = (
+        chain.withColumn("__scd2_seq", row_number().over(window_spec))
+        .withColumn(
+            "__scd2_next_sk",
+            lead(surrogate_key_col, 1).over(window_spec),
+        )
+        .withColumn(
+            "__scd2_next_valid_from",
+            lead("__valid_from", 1).over(window_spec),
+        )
+    )
+
+    # We only need to insert intermediate rows.  They are the ones with a NULL
+    # surrogate key in the ranked chain.
+    rows_to_insert = ranked.filter(col(surrogate_key_col).isNull()).drop(
+        surrogate_key_col
+    )
+    if rows_to_insert.isEmpty():
+        return
+
+    # Join back to the original intermediate payload to recover all columns.
+    join_back_cond = reduce(
+        lambda a, b: a & b,
+        [rows_to_insert[k].eqNullSafe(intermediate_payload[k]) for k in join_keys],
+    ) & (rows_to_insert["__scd2_seq"] == intermediate_payload["__scd2_seq"])
+    # We cannot rely on seq after the union; instead, join on natural keys +
+    # ordering column.
+    join_back_cond = reduce(
+        lambda a, b: a & b,
+        [rows_to_insert[k].eqNullSafe(intermediate_payload[k]) for k in join_keys],
+    ) & (rows_to_insert["__valid_from"] == intermediate_payload[rank_col].cast("timestamp"))
+
+    staged = (
+        rows_to_insert.alias("r")
+        .join(intermediate_payload.alias("i"), join_back_cond, "inner")
+        .select("i.*", "r.__scd2_next_sk", "r.__scd2_next_valid_from")
+    )
+
+    # Build final insert DataFrame with SCD2 system columns.
+    validity_from_col = (
+        col(effective_at_column)
+        if effective_at_column and effective_at_column in staged.columns
+        else col(rank_col).cast("timestamp")
+    )
+    staged = (
+        staged.withColumn("__valid_from", validity_from_col)
+        .withColumn(
+            "__valid_to",
+            when(
+                col("__scd2_next_valid_from").isNull(),
+                lit(None).cast("timestamp"),
+            ).otherwise(col("__scd2_next_valid_from") - expr("INTERVAL 1 MICROSECOND")),
+        )
+        .withColumn("__is_current", lit(False))
+        .withColumn("__is_deleted", lit(False))
+        .withColumn("__is_skeleton", lit(False))
+        .withColumn("__etl_processed_at", current_timestamp())
+        .withColumn("hashdiff", compute_hashdiff(track_history_columns))
+    )
+
+    if surrogate_key_strategy == "identity":
+        staged = _scd2_generate_identity_keys_for_insert(
+            staged, target_table_name, surrogate_key_col
+        )
+    else:
+        staged = _generate_keys(staged, surrogate_key_strategy, join_keys, surrogate_key_col)
+
+    # Keep only target columns so the append does not fail on temp helper cols.
+    target_cols = {f.name for f in spark.table(target_table_name).schema.fields}
+    payload_cols = [c for c in staged.columns if c in target_cols or c == surrogate_key_col]
+    staged = staged.select(*payload_cols)
+
+    staged.write.format("delta").mode("append").saveAsTable(target_table_name)
+    logger.info("SCD2 phase 2: intermediate history rows inserted")
+
+
+def merge_scd2(
+    source_df: DataFrame,
+    *,
+    target_table_name: str,
+    join_keys: list[str],
+    track_history_columns: list[str],
+    surrogate_key_col: str,
+    surrogate_key_strategy: str = "identity",
+    schema_evolution: bool = False,
+    effective_at_column: str | None = None,
+) -> None:
+    """Merge a source DataFrame into an SCD2 target using a two-phase algorithm.
+
+    Phase 1 merges only the latest version per natural key, which avoids
+    Delta merge conflicts when a streaming micro-batch contains multiple
+    updates to the same row.  Phase 2 back-fills the skipped historical
+    versions as new expired rows.  The result matches batch
+    ``preserve_all_changes`` semantics: every committed upstream version is
+    preserved in history.
+    """
+    if not track_history_columns:
+        raise ValueError("track_history_columns must be provided for SCD Type 2")
+
+    if not _scd2_has_multiple_versions_per_key(source_df, join_keys):
+        # Fast path: classic single-merge (batch full snapshots, SCD1-like
+        # single-version CDC, etc.).
+        _merge_scd2_classic(
+            source_df,
+            target_table_name=target_table_name,
+            join_keys=join_keys,
+            track_history_columns=track_history_columns,
+            surrogate_key_col=surrogate_key_col,
+            surrogate_key_strategy=surrogate_key_strategy,
+            schema_evolution=schema_evolution,
+            effective_at_column=effective_at_column,
+        )
+        return
+
+    annotated_source = _merge_scd2_current(
+        source_df,
+        target_table_name=target_table_name,
+        join_keys=join_keys,
+        track_history_columns=track_history_columns,
+        surrogate_key_col=surrogate_key_col,
+        surrogate_key_strategy=surrogate_key_strategy,
+        schema_evolution=schema_evolution,
+        effective_at_column=effective_at_column,
+    )
+    _rebuild_scd2_history(
+        annotated_source,
+        target_table_name=target_table_name,
+        join_keys=join_keys,
+        track_history_columns=track_history_columns,
+        surrogate_key_col=surrogate_key_col,
+        surrogate_key_strategy=surrogate_key_strategy,
+        effective_at_column=effective_at_column,
+    )
 
 
 def merge_scd4(
