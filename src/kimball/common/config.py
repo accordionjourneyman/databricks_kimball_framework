@@ -116,6 +116,7 @@ class TableConfig(BaseModel):
     enable_lineage_truncation: bool = False
     preserve_all_changes: bool = Field(default=False)
     identity_bridge: IdentityBridgeConfig | None = None
+    grain_validation: Literal["error", "warn", "skip"] = "error"
 
     @model_validator(mode="before")
     @classmethod

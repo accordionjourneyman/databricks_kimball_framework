@@ -101,6 +101,7 @@ transformation_sql: |
   SELECT customer_id, first_name, last_name, email, address, updated_at, _change_type FROM c
 audit_columns: true
 preserve_all_changes: true
+grain_validation: skip
 """
 
 dim_product_yaml = """table_name: demo_streaming_gold.dim_product

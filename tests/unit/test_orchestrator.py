@@ -377,3 +377,34 @@ class TestFullReload:
 
         assert result["status"] == "SUCCESS"
         mock_reload.assert_called_once()
+
+
+class TestGrainValidation:
+    """grain_validation config controls whether the orchestrator checks
+    for duplicate natural keys before merging."""
+
+    def test_config_accepts_grain_validation_values(self):
+        from kimball.common.config import SourceConfig, TableConfig
+
+        for mode in ("error", "warn", "skip"):
+            cfg = TableConfig(
+                table_name="test.dim",
+                table_type="dimension",
+                scd_type=1,
+                keys={"surrogate_key": "sk", "natural_keys": ["id"]},
+                sources=[SourceConfig(name="src", alias="s")],
+                grain_validation=mode,
+            )
+            assert cfg.grain_validation == mode
+
+    def test_config_defaults_to_error(self):
+        from kimball.common.config import SourceConfig, TableConfig
+
+        cfg = TableConfig(
+            table_name="test.dim",
+            table_type="dimension",
+            scd_type=1,
+            keys={"surrogate_key": "sk", "natural_keys": ["id"]},
+            sources=[SourceConfig(name="src", alias="s")],
+        )
+        assert cfg.grain_validation == "error"

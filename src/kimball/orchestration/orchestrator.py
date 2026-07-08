@@ -940,23 +940,34 @@ class Orchestrator:
                         join_keys = self.config.natural_keys or []
 
                     if join_keys:
-                        grain_violations = (
-                            source_df.groupBy(*join_keys)
-                            .agg(spark_count("*").alias("__grain_count"))
-                            .filter("__grain_count > 1")
-                        )
-                        if len(grain_violations.limit(1).head(1)) > 0:
-                            sample_violations = grain_violations.limit(5).collect()
-                            violation_keys = [
-                                {k: row[k] for k in join_keys}
-                                for row in sample_violations
-                            ]
-                            raise ValueError(
-                                f"Grain violation in {self.config.table_name}: "
-                                f"Duplicate keys found for grain {join_keys}. "
-                                f"Sample violations: {violation_keys}. "
-                                "Fix upstream deduplication before loading."
+                        grain_mode = getattr(self.config, "grain_validation", "error")
+                        if grain_mode == "skip":
+                            logger.info(
+                                f"Grain validation skipped for {self.config.table_name} "
+                                "(grain_validation=skip)"
                             )
+                        else:
+                            grain_violations = (
+                                source_df.groupBy(*join_keys)
+                                .agg(spark_count("*").alias("__grain_count"))
+                                .filter("__grain_count > 1")
+                            )
+                            if len(grain_violations.limit(1).head(1)) > 0:
+                                sample_violations = grain_violations.limit(5).collect()
+                                violation_keys = [
+                                    {k: row[k] for k in join_keys}
+                                    for row in sample_violations
+                                ]
+                                msg = (
+                                    f"Grain violation in {self.config.table_name}: "
+                                    f"Duplicate keys found for grain {join_keys}. "
+                                    f"Sample violations: {violation_keys}. "
+                                    "Fix upstream deduplication before loading."
+                                )
+                                if grain_mode == "warn":
+                                    logger.warning(msg)
+                                else:
+                                    raise ValueError(msg)
 
                     _merger.merge(
                         target_table_name=self.config.table_name,
