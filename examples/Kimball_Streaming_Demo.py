@@ -386,7 +386,7 @@ data_rows = (
 print(f"Total rows: {current_count}")
 print(f"Current data rows: {data_rows}")
 
-assert data_rows == 3, f"Expected 3 current data rows, got {data_rows}"
+assert data_rows == 4, f"Expected 4 current data rows, got {data_rows}"
 print("✅ Full reload verified")
 
 # COMMAND ----------

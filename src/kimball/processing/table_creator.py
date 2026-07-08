@@ -425,7 +425,7 @@ class TableCreator:
                 get_spark().sql(pk_sql)
                 logger.info(f"Declared PRIMARY KEY({surrogate_key}) on {table_name}")
             except Exception as e:
-                logger.info(f"Could not declare PK on {surrogate_key}: {e}")
+                logger.warning(f"Could not declare PK on {surrogate_key}: {e}")
 
         # --- Primary key on natural keys (SCD1 dimensions only) ---
         # SCD2 tables have multiple rows per natural key (history), so a
@@ -447,7 +447,7 @@ class TableCreator:
                     f"Declared PRIMARY KEY({nk_cols}) on {table_name}"
                 )
             except Exception as e:
-                logger.info(f"Could not declare natural-key PK: {e}")
+                logger.warning(f"Could not declare natural-key PK: {e}")
 
         # --- Foreign keys (fact tables) ---
         foreign_keys = config.get("foreign_keys") or []
@@ -484,7 +484,7 @@ class TableCreator:
                     f"on {table_name}"
                 )
             except Exception as e:
-                logger.info(f"Could not declare FK on {fk_col}: {e}")
+                logger.warning(f"Could not declare FK on {fk_col}: {e}")
 
     def enable_schema_auto_merge(self) -> None:
         """
