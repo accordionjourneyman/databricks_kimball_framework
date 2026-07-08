@@ -388,6 +388,104 @@ class TableCreator:
                 except Exception as e:
                     logger.error(f"Failed to apply constraint {constraint_name}: {e}")
 
+        # Declare PRIMARY KEY and FOREIGN KEY constraints (Unity Catalog only).
+        # These are informational metadata — they help the CBO eliminate
+        # redundant aggregations but are not enforced at write time.
+        if config.get("declare_constraints", True):
+            self._declare_pk_fk_constraints(table_name, config)
+
+    def _declare_pk_fk_constraints(
+        self, table_name: str, config: dict[str, Any]
+    ) -> None:
+        """Issue PRIMARY KEY / FOREIGN KEY DDL on Databricks (Unity Catalog).
+
+        These constraints are informational only — UC does not enforce
+        uniqueness at write time, but the cost-based optimizer can use
+        them to skip redundant deduplication aggregations.
+
+        On non-Databricks runtimes (OSS Delta, local Docker) this is a
+        no-op because the DDL syntax is not supported.
+        """
+        policy = get_runtime_policy()
+        if not policy.is_databricks:
+            return
+
+        quoted = quote_table_name(table_name)
+        table_short = table_name.split(".")[-1]
+
+        # --- Primary key on surrogate key ---
+        surrogate_key = config.get("surrogate_key")
+        if surrogate_key and _is_valid_identifier(surrogate_key):
+            pk_name = f"pk_{table_short}_{surrogate_key}"
+            pk_sql = (
+                f"ALTER TABLE {quoted} "
+                f"ADD CONSTRAINT `{pk_name}` PRIMARY KEY (`{surrogate_key}`)"
+            )
+            try:
+                get_spark().sql(pk_sql)
+                logger.info(f"Declared PRIMARY KEY({surrogate_key}) on {table_name}")
+            except Exception as e:
+                logger.info(f"Could not declare PK on {surrogate_key}: {e}")
+
+        # --- Primary key on natural keys (SCD1 dimensions only) ---
+        # SCD2 tables have multiple rows per natural key (history), so a
+        # PK on natural_keys would be incorrect.
+        scd_type = config.get("scd_type", 1)
+        natural_keys = config.get("natural_keys") or []
+        if scd_type == 1 and natural_keys and all(
+            _is_valid_identifier(k) for k in natural_keys
+        ):
+            nk_name = f"nk_{table_short}_{'_'.join(natural_keys)}"
+            nk_cols = ", ".join(f"`{k}`" for k in natural_keys)
+            nk_sql = (
+                f"ALTER TABLE {quoted} "
+                f"ADD CONSTRAINT `{nk_name}` PRIMARY KEY ({nk_cols})"
+            )
+            try:
+                get_spark().sql(nk_sql)
+                logger.info(
+                    f"Declared PRIMARY KEY({nk_cols}) on {table_name}"
+                )
+            except Exception as e:
+                logger.info(f"Could not declare natural-key PK: {e}")
+
+        # --- Foreign keys (fact tables) ---
+        foreign_keys = config.get("foreign_keys") or []
+        for fk in foreign_keys:
+            fk_col = (
+                fk.get("column")
+                if isinstance(fk, dict)
+                else getattr(fk, "column", None)
+            )
+            fk_ref = (
+                fk.get("references")
+                if isinstance(fk, dict)
+                else getattr(fk, "references", None)
+            )
+            fk_dim_key = (
+                fk.get("dimension_key")
+                if isinstance(fk, dict)
+                else getattr(fk, "dimension_key", None)
+            )
+            if not fk_col or not fk_ref or not _is_valid_identifier(fk_col):
+                continue
+            ref_col = fk_dim_key or fk_col
+            fk_name = f"fk_{table_short}_{fk_col}"
+            ref_quoted = quote_table_name(fk_ref)
+            fk_sql = (
+                f"ALTER TABLE {quoted} "
+                f"ADD CONSTRAINT `{fk_name}` FOREIGN KEY (`{fk_col}`) "
+                f"REFERENCES {ref_quoted} (`{ref_col}`)"
+            )
+            try:
+                get_spark().sql(fk_sql)
+                logger.info(
+                    f"Declared FOREIGN KEY({fk_col} -> {fk_ref}.{ref_col}) "
+                    f"on {table_name}"
+                )
+            except Exception as e:
+                logger.info(f"Could not declare FK on {fk_col}: {e}")
+
     def enable_schema_auto_merge(self) -> None:
         """
         Enable schema auto-merge for the current session.

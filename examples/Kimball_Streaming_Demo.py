@@ -102,6 +102,7 @@ transformation_sql: |
 audit_columns: true
 preserve_all_changes: true
 grain_validation: skip
+declare_constraints: true
 """
 
 dim_product_yaml = """table_name: demo_streaming_gold.dim_product

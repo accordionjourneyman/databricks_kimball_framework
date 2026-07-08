@@ -117,6 +117,7 @@ class TableConfig(BaseModel):
     preserve_all_changes: bool = Field(default=False)
     identity_bridge: IdentityBridgeConfig | None = None
     grain_validation: Literal["error", "warn", "skip"] = "error"
+    declare_constraints: bool = True
 
     @model_validator(mode="before")
     @classmethod

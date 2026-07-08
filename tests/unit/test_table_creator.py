@@ -154,3 +154,127 @@ class TestEnableDeltaFeatures:
         sql = spark_mock.sql.call_args[0][0]
         assert "TBLPROPERTIES" in sql
         assert "delta.enableDeletionVectors" in sql
+
+
+class TestDeclareConstraints:
+    """PK/FK constraint DDL is emitted on Databricks, skipped elsewhere."""
+
+    def test_skips_on_non_databricks(self, spark_mock):
+        with (
+            patch(
+                "kimball.processing.table_creator.get_spark", return_value=spark_mock
+            ),
+            patch(
+                "kimball.processing.table_creator.get_runtime_policy"
+            ) as mock_policy,
+        ):
+            mock_policy.return_value.is_databricks = False
+            from kimball.processing.table_creator import TableCreator
+
+            tc = TableCreator()
+            tc._declare_pk_fk_constraints(
+                "gold.dim_customer",
+                {
+                    "surrogate_key": "customer_sk",
+                    "natural_keys": ["customer_id"],
+                    "scd_type": 1,
+                    "foreign_keys": [],
+                },
+            )
+        spark_mock.sql.assert_not_called()
+
+    def test_emits_pk_on_databricks(self, spark_mock):
+        with (
+            patch(
+                "kimball.processing.table_creator.get_spark", return_value=spark_mock
+            ),
+            patch(
+                "kimball.processing.table_creator.get_runtime_policy"
+            ) as mock_policy,
+        ):
+            mock_policy.return_value.is_databricks = True
+            from kimball.processing.table_creator import TableCreator
+
+            tc = TableCreator()
+            tc._declare_pk_fk_constraints(
+                "gold.dim_customer",
+                {
+                    "surrogate_key": "customer_sk",
+                    "natural_keys": ["customer_id"],
+                    "scd_type": 1,
+                    "foreign_keys": [],
+                },
+            )
+        sqls = [c[0][0] for c in spark_mock.sql.call_args_list]
+        assert any("PRIMARY KEY" in s and "customer_sk" in s for s in sqls)
+        assert any("PRIMARY KEY" in s and "customer_id" in s for s in sqls)
+
+    def test_skips_natural_key_pk_for_scd2(self, spark_mock):
+        with (
+            patch(
+                "kimball.processing.table_creator.get_spark", return_value=spark_mock
+            ),
+            patch(
+                "kimball.processing.table_creator.get_runtime_policy"
+            ) as mock_policy,
+        ):
+            mock_policy.return_value.is_databricks = True
+            from kimball.processing.table_creator import TableCreator
+
+            tc = TableCreator()
+            tc._declare_pk_fk_constraints(
+                "gold.dim_customer",
+                {
+                    "surrogate_key": "customer_sk",
+                    "natural_keys": ["customer_id"],
+                    "scd_type": 2,
+                    "foreign_keys": [],
+                },
+            )
+        sqls = [c[0][0] for c in spark_mock.sql.call_args_list]
+        assert any("PRIMARY KEY" in s and "customer_sk" in s for s in sqls)
+        assert not any("customer_id" in s and "PRIMARY KEY" in s for s in sqls)
+
+    def test_emits_fk_on_databricks(self, spark_mock):
+        with (
+            patch(
+                "kimball.processing.table_creator.get_spark", return_value=spark_mock
+            ),
+            patch(
+                "kimball.processing.table_creator.get_runtime_policy"
+            ) as mock_policy,
+        ):
+            mock_policy.return_value.is_databricks = True
+            from kimball.processing.table_creator import TableCreator
+
+            tc = TableCreator()
+            tc._declare_pk_fk_constraints(
+                "gold.fact_orders",
+                {
+                    "surrogate_key": "order_sk",
+                    "natural_keys": [],
+                    "scd_type": 1,
+                    "foreign_keys": [
+                        {
+                            "column": "customer_sk",
+                            "references": "gold.dim_customer",
+                            "dimension_key": "customer_sk",
+                        }
+                    ],
+                },
+            )
+        sqls = [c[0][0] for c in spark_mock.sql.call_args_list]
+        assert any("FOREIGN KEY" in s and "customer_sk" in s for s in sqls)
+        assert any("REFERENCES" in s and "dim_customer" in s for s in sqls)
+
+    def test_config_defaults_to_true(self):
+        from kimball.common.config import SourceConfig, TableConfig
+
+        cfg = TableConfig(
+            table_name="test.dim",
+            table_type="dimension",
+            scd_type=1,
+            keys={"surrogate_key": "sk", "natural_keys": ["id"]},
+            sources=[SourceConfig(name="src", alias="s")],
+        )
+        assert cfg.declare_constraints is True
