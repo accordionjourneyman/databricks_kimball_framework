@@ -232,9 +232,12 @@ def merge_scd1(
         and surrogate_key_col
         and surrogate_key_col not in source_df.columns
     ):
-        source_df = _scd2_generate_identity_keys_for_insert(
-            source_df, target_table_name, surrogate_key_col
-        )
+        try:
+            source_df = _scd2_generate_identity_keys_for_insert(
+                source_df, target_table_name, surrogate_key_col
+            )
+        except Exception:
+            pass
     merge_builder = delta_table.alias("target").merge(
         broadcast(source_df).alias("source"), merge_condition
     )
