@@ -15,9 +15,11 @@ from pyspark.sql.functions import (
     expr,
     lead,
     lit,
-    max as _spark_max,
     row_number,
     when,
+)
+from pyspark.sql.functions import (
+    max as _spark_max,
 )
 from pyspark.sql.types import (
     BooleanType,
@@ -47,6 +49,7 @@ except ImportError:
         from pyspark.sql.utils import AnalysisException as PYSPARK_EXCEPTION_BASE
     except ImportError:
         PYSPARK_EXCEPTION_BASE = Exception
+
 from kimball.common.runtime_policy import get_runtime_policy
 from kimball.common.spark_session import get_spark
 from kimball.common.utils import quote_table_name
@@ -806,21 +809,6 @@ def _rebuild_scd2_history(
     # source rows + final target rows (current + history for those keys).
     affected_keys = intermediate_rows.select(*join_keys).distinct()
     target_slice = target_df.join(broadcast(affected_keys), join_keys, "inner")
-
-    # For each target row we already know its valid_from and whether it is
-    # current.  We need to re-rank everything together with the intermediate
-    # rows so we can point each intermediate row to the next version's SK.
-    order_candidates = [
-        effective_at_column,
-        "_commit_version",
-        "_commit_timestamp",
-        "__valid_from",
-        "__etl_processed_at",
-    ]
-    order_col = next(
-        (c for c in order_candidates if c and c in source_df.columns),
-        "__etl_processed_at",
-    )
 
     # Prepare intermediate rows for ranking: keep payload + ordering.
     intermediate_payload = _scd2_select_payload_columns(

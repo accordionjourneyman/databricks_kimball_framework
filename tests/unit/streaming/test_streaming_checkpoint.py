@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from kimball.streaming.checkpoint import default_checkpoint_path
 
 
