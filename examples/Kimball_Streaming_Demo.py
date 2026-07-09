@@ -145,6 +145,19 @@ def ingest_silver(table_name, data, schema, merge_keys):
             .option("delta.enableChangeDataFeed", "true")
             .saveAsTable(full_table_name)
         )
+        # Declare PRIMARY KEY on the silver table so the CBO can
+        # skip redundant deduplication aggregations in downstream
+        # Kimball merge queries. Informational only (UC does not enforce).
+        pk_name = f"pk_{table_name}_{'_'.join(merge_keys)}"
+        pk_cols = ", ".join(f"`{k}`" for k in merge_keys)
+        try:
+            spark.sql(
+                f"ALTER TABLE {full_table_name} "
+                f"ADD CONSTRAINT `{pk_name}` PRIMARY KEY ({pk_cols})"
+            )
+            print(f"  Declared PRIMARY KEY({pk_cols}) on {full_table_name}")
+        except Exception as e:
+            print(f"  Could not declare PK on {full_table_name}: {e}")
     else:
         print(f"Merging into {full_table_name}...")
         delta_table = DeltaTable.forName(spark, full_table_name)
