@@ -102,6 +102,14 @@ def _create_local_spark_session() -> SparkSession:
                 "org.apache.spark.sql.delta.catalog.DeltaCatalog",
             )
         )
+        # Ensure the delta-spark JARs are on the classpath when running
+        # outside Databricks (e.g. GitHub Actions, local dev).
+        try:
+            from delta import configure_spark_with_delta_pip_session
+
+            builder = configure_spark_with_delta_pip_session(builder)
+        except ImportError:
+            pass  # delta-spark not installed — tests that need it will fail
     return (
         builder.config("spark.sql.ansi.enabled", "true")
         .config(
