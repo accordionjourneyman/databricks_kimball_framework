@@ -206,14 +206,17 @@ class TableCreator:
             natural_keys = config.get("natural_keys") or []
             if not natural_keys:
                 keys_config = config.get("keys") or {}
-                natural_keys = keys_config.get("natural_keys", []) if isinstance(
-                    keys_config, dict
-                ) else []
+                natural_keys = (
+                    keys_config.get("natural_keys", [])
+                    if isinstance(keys_config, dict)
+                    else []
+                )
             not_null_cols.update(natural_keys)
             if config.get("table_type") == "fact" and config.get("foreign_keys"):
                 for fk in config.get("foreign_keys") or []:
                     fk_col = (
-                        fk.get("column") if isinstance(fk, dict)
+                        fk.get("column")
+                        if isinstance(fk, dict)
                         else getattr(fk, "column", None)
                     )
                     if fk_col:
@@ -354,9 +357,7 @@ class TableCreator:
                 get_spark().sql(alter_sql)
                 logger.info(f"Applied NOT NULL constraint to {key}")
             except Exception as e:
-                logger.warning(
-                    f"Could not apply NOT NULL constraint to {key}: {e}"
-                )
+                logger.warning(f"Could not apply NOT NULL constraint to {key}: {e}")
 
         # Apply NOT NULL constraints for foreign keys (fact tables only)
         if config.get("table_type") == "fact":
@@ -451,8 +452,10 @@ class TableCreator:
         # PK on natural_keys would be incorrect.
         scd_type = config.get("scd_type", 1)
         natural_keys = config.get("natural_keys") or []
-        if scd_type == 1 and natural_keys and all(
-            _is_valid_identifier(k) for k in natural_keys
+        if (
+            scd_type == 1
+            and natural_keys
+            and all(_is_valid_identifier(k) for k in natural_keys)
         ):
             nk_name = f"nk_{table_short}_{'_'.join(natural_keys)}"
             nk_cols = ", ".join(f"`{k}`" for k in natural_keys)
@@ -462,9 +465,7 @@ class TableCreator:
             )
             try:
                 get_spark().sql(nk_sql)
-                logger.info(
-                    f"Declared PRIMARY KEY({nk_cols}) on {table_name}"
-                )
+                logger.info(f"Declared PRIMARY KEY({nk_cols}) on {table_name}")
             except Exception as e:
                 logger.warning(f"Could not declare natural-key PK: {e}")
 

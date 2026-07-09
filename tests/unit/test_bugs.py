@@ -223,7 +223,6 @@ class TestSCD2DeleteDedupBug:
         source_df.groupBy.return_value = grouped
 
         try:
-
             merge_scd2(
                 source_df,
                 target_table_name="test.dim",
@@ -779,8 +778,7 @@ class TestFullSnapshotSCD2DeleteDetection:
         source_code = inspect.getsource(merge_scd2)
 
         assert (
-            "_filter_cdf_deletes" in source_code
-            or "_merge_scd2_classic" in source_code
+            "_filter_cdf_deletes" in source_code or "_merge_scd2_classic" in source_code
         ), (
             "BUG-DP-004 regression: SCD2 should have delete detection "
             "for full snapshot mode (when _change_type is absent)."

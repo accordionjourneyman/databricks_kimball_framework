@@ -298,13 +298,9 @@ class StreamingOrchestrator:
             #    user's transformation_sql can SELECT against the alias reliably.
             #    Spark structured streaming does not allow temp views derived
             #    from a streaming DataFrame to be read from a separate SQL plan.
-            batch_table = (
-                f"{self.etl_schema}._kimball_batch_{source.alias}_{batch_id}"
-            )
+            batch_table = f"{self.etl_schema}._kimball_batch_{source.alias}_{batch_id}"
             self.spark.sql(f"DROP TABLE IF EXISTS {batch_table}")
-            batch_df.write.format("delta").mode("overwrite").saveAsTable(
-                batch_table
-            )
+            batch_df.write.format("delta").mode("overwrite").saveAsTable(batch_table)
             self.spark.table(batch_table).createOrReplaceTempView(source.alias)
             try:
                 if source.streaming and source.streaming.per_version:
@@ -369,13 +365,9 @@ class StreamingOrchestrator:
                 f"{self.etl_schema}._kimball_batch_{source.alias}_{batch_id}"
             )
             batch_table = self.spark.table(batch_table_name)
-            common_cols = [
-                c for c in source_df.columns if c in batch_table.columns
-            ]
+            common_cols = [c for c in source_df.columns if c in batch_table.columns]
             meta_df = batch_table.select(*(common_cols + cdf_meta_cols))
-            source_df = source_df.join(
-                broadcast(meta_df), common_cols, "left"
-            )
+            source_df = source_df.join(broadcast(meta_df), common_cols, "left")
 
         rows_read = source_df.count() if source_df.columns else 0
 
@@ -442,19 +434,17 @@ class StreamingOrchestrator:
             f"{source.name} in micro-batch {batch_id}"
         )
         for version in versions:
-            version_df = batch_df.filter(
-                f"`_commit_version` = {version}"
-            )
+            version_df = batch_df.filter(f"`_commit_version` = {version}")
             # Spark structured streaming does not allow temp views that
             # depend on a streaming DataFrame to be read from a separate SQL
             # plan in foreachBatch.  Eagerly materialise this version as a
             # tiny Delta table so the user's transformation_sql can SELECT
             # from alias ``c`` reliably inside the micro-batch transaction.
-            local_version_table = (
-                f"{self.etl_schema}._kimball_version_{source.alias}_{version}_{batch_id}"
-            )
+            local_version_table = f"{self.etl_schema}._kimball_version_{source.alias}_{version}_{batch_id}"
             self.spark.sql(f"DROP TABLE IF EXISTS {local_version_table}")
-            version_df.write.format("delta").mode("overwrite").saveAsTable(local_version_table)
+            version_df.write.format("delta").mode("overwrite").saveAsTable(
+                local_version_table
+            )
             self.spark.table(local_version_table).createOrReplaceTempView(source.alias)
             self._execute_one_microbatch(
                 self.spark.table(source.alias), source, batch_id

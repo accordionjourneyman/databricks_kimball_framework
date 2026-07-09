@@ -164,9 +164,7 @@ class TestDeclareConstraints:
             patch(
                 "kimball.processing.table_creator.get_spark", return_value=spark_mock
             ),
-            patch(
-                "kimball.processing.table_creator.get_runtime_policy"
-            ) as mock_policy,
+            patch("kimball.processing.table_creator.get_runtime_policy") as mock_policy,
         ):
             mock_policy.return_value.is_databricks = False
             from kimball.processing.table_creator import TableCreator
@@ -188,9 +186,7 @@ class TestDeclareConstraints:
             patch(
                 "kimball.processing.table_creator.get_spark", return_value=spark_mock
             ),
-            patch(
-                "kimball.processing.table_creator.get_runtime_policy"
-            ) as mock_policy,
+            patch("kimball.processing.table_creator.get_runtime_policy") as mock_policy,
         ):
             mock_policy.return_value.is_databricks = True
             from kimball.processing.table_creator import TableCreator
@@ -214,9 +210,7 @@ class TestDeclareConstraints:
             patch(
                 "kimball.processing.table_creator.get_spark", return_value=spark_mock
             ),
-            patch(
-                "kimball.processing.table_creator.get_runtime_policy"
-            ) as mock_policy,
+            patch("kimball.processing.table_creator.get_runtime_policy") as mock_policy,
         ):
             mock_policy.return_value.is_databricks = True
             from kimball.processing.table_creator import TableCreator
@@ -240,9 +234,7 @@ class TestDeclareConstraints:
             patch(
                 "kimball.processing.table_creator.get_spark", return_value=spark_mock
             ),
-            patch(
-                "kimball.processing.table_creator.get_runtime_policy"
-            ) as mock_policy,
+            patch("kimball.processing.table_creator.get_runtime_policy") as mock_policy,
         ):
             mock_policy.return_value.is_databricks = True
             from kimball.processing.table_creator import TableCreator

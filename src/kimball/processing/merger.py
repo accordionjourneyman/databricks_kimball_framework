@@ -260,17 +260,12 @@ def merge_scd1(
     update_map = {
         c: f"source.{c}"
         for c in source_df.columns
-        if c not in (surrogate_key_col, "_change_type")
-        and c not in _CDF_METADATA
+        if c not in (surrogate_key_col, "_change_type") and c not in _CDF_METADATA
     }
     update_map.update(
         {"__is_deleted": "false", "__etl_processed_at": "current_timestamp()"}
     )
-    insert_map = {
-        c: f"source.{c}"
-        for c in source_df.columns
-        if c not in _CDF_METADATA
-    }
+    insert_map = {c: f"source.{c}" for c in source_df.columns if c not in _CDF_METADATA}
     insert_map.update(
         {"__is_deleted": "false", "__etl_processed_at": "current_timestamp()"}
     )
@@ -359,7 +354,9 @@ def _scd2_compute_ranked_versions(
         "_commit_timestamp",
         "__etl_processed_at",
     ]
-    order_col = next((c for c in order_candidates if c and c in source_df.columns), None)
+    order_col = next(
+        (c for c in order_candidates if c and c in source_df.columns), None
+    )
     if order_col is None:
         raise ValueError(
             "SCD2 versioned rebuild requires an ordering column. "
@@ -371,9 +368,11 @@ def _scd2_compute_ranked_versions(
         source_df.withColumn("__scd2_seq", row_number().over(window_spec))
         .withColumn(
             "__scd2_total",
-            expr("max(__scd2_seq) over (partition by {})".format(
-                ", ".join(f"`{c}`" for c in join_keys)
-            )),
+            expr(
+                "max(__scd2_seq) over (partition by {})".format(
+                    ", ".join(f"`{c}`" for c in join_keys)
+                )
+            ),
         )
         .withColumn(
             "__scd2_next_valid_from",
@@ -416,7 +415,8 @@ def _scd2_select_payload_columns(
         keep.add("effective_at")
     if include_meta:
         keep.update(
-            c for c in ["_change_type", "_commit_version", "_commit_timestamp"]
+            c
+            for c in ["_change_type", "_commit_version", "_commit_timestamp"]
             if c in source_df.columns
         )
     keep.update(c for c in source_df.columns if c.startswith("__scd2_"))
@@ -452,7 +452,9 @@ def _scd2_generate_identity_keys_for_insert(
     try:
         existing_df = get_spark().table(target_table_name)
         if surrogate_key_col in existing_df.columns:
-            max_val = existing_df.agg(_spark_max(col(surrogate_key_col))).collect()[0][0]
+            max_val = existing_df.agg(_spark_max(col(surrogate_key_col))).collect()[0][
+                0
+            ]
             if max_val is not None:
                 current_max = max_val
     except Exception:
@@ -867,7 +869,10 @@ def _rebuild_scd2_history(
     join_back_cond = reduce(
         lambda a, b: a & b,
         [rows_to_insert[k].eqNullSafe(intermediate_payload[k]) for k in join_keys],
-    ) & (rows_to_insert["__valid_from"] == intermediate_payload[rank_col].cast("timestamp"))
+    ) & (
+        rows_to_insert["__valid_from"]
+        == intermediate_payload[rank_col].cast("timestamp")
+    )
 
     staged = (
         rows_to_insert.alias("r")
@@ -902,11 +907,15 @@ def _rebuild_scd2_history(
             staged, target_table_name, surrogate_key_col
         )
     else:
-        staged = _generate_keys(staged, surrogate_key_strategy, join_keys, surrogate_key_col)
+        staged = _generate_keys(
+            staged, surrogate_key_strategy, join_keys, surrogate_key_col
+        )
 
     # Keep only target columns so the append does not fail on temp helper cols.
     target_cols = {f.name for f in spark.table(target_table_name).schema.fields}
-    payload_cols = [c for c in staged.columns if c in target_cols or c == surrogate_key_col]
+    payload_cols = [
+        c for c in staged.columns if c in target_cols or c == surrogate_key_col
+    ]
     staged = staged.select(*payload_cols)
 
     staged.write.format("delta").mode("append").saveAsTable(target_table_name)
