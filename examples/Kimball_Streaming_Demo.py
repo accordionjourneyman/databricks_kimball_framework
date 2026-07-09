@@ -139,15 +139,24 @@ def ingest_silver(table_name, data, schema, merge_keys):
 
     if not spark.catalog.tableExists(full_table_name):
         print(f"Creating table {full_table_name}...")
-        (
-            df.write.format("delta")
-            .mode("overwrite")
-            .option("delta.enableChangeDataFeed", "true")
-            .saveAsTable(full_table_name)
-        )
-        # Declare PRIMARY KEY on the silver table so the CBO can
-        # skip redundant deduplication aggregations in downstream
-        # Kimball merge queries. Informational only (UC does not enforce).
+        # Create with explicit DDL so natural-key columns are NOT NULL,
+        # which is required for PRIMARY KEY constraints on UC.
+        not_null_cols = set(merge_keys)
+        ddl_cols = []
+        for field in df.schema.fields:
+            col_def = f"{field.name} {field.dataType.simpleString()}"
+            if field.name in not_null_cols or not field.nullable:
+                col_def += " NOT NULL"
+            ddl_cols.append(col_def)
+        spark.sql(f"""
+            CREATE TABLE {full_table_name} (
+                {', '.join(ddl_cols)}
+            ) USING DELTA
+            TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
+        """)
+        df.write.format("delta").mode("append").saveAsTable(full_table_name)
+        # Declare PRIMARY KEY so the CBO can skip redundant deduplication
+        # aggregations in downstream Kimball merge queries.
         pk_name = f"pk_{table_name}_{'_'.join(merge_keys)}"
         pk_cols = ", ".join(f"`{k}`" for k in merge_keys)
         try:

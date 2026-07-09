@@ -200,6 +200,25 @@ class TableCreator:
             "__merge_action",
         }
 
+        # Columns that should be NOT NULL based on config
+        not_null_cols: set[str] = set()
+        if config:
+            natural_keys = config.get("natural_keys") or []
+            if not natural_keys:
+                keys_config = config.get("keys") or {}
+                natural_keys = keys_config.get("natural_keys", []) if isinstance(
+                    keys_config, dict
+                ) else []
+            not_null_cols.update(natural_keys)
+            if config.get("table_type") == "fact" and config.get("foreign_keys"):
+                for fk in config.get("foreign_keys") or []:
+                    fk_col = (
+                        fk.get("column") if isinstance(fk, dict)
+                        else getattr(fk, "column", None)
+                    )
+                    if fk_col:
+                        not_null_cols.add(fk_col)
+
         for field in schema_df.schema.fields:
             col_name = field.name
 
@@ -212,7 +231,7 @@ class TableCreator:
                 col_def = policy.identity_column_def(col_name)
             else:
                 col_def = f"{col_name} {field.dataType.simpleString()}"
-                if not field.nullable:
+                if not field.nullable or col_name in not_null_cols:
                     col_def += " NOT NULL"
             columns.append(col_def)
 
