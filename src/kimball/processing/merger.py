@@ -534,6 +534,39 @@ def _merge_scd2_current(
     )
 
 
+def _scd2_is_noop(
+    upserts: DataFrame,
+    delta_table: DeltaTable,
+    join_keys: list[str],
+    surrogate_key_col: str,
+) -> bool:
+    """Return True when every source row matches a current target row
+    with the same hashdiff — i.e. the merge would be a no-op.
+
+    Uses a single left-anti join to find rows where either the key is
+    new (no target match) or the hashdiff differs.  If that set is
+    empty, the full merge can be skipped.
+    """
+    if "hashdiff" not in upserts.columns:
+        return False
+    target_df = delta_table.toDF().filter("__is_current = true")
+    # Only consider target columns we need for the comparison
+    target_cols = [
+        c for c in [surrogate_key_col, "hashdiff"] + join_keys if c in target_df.columns
+    ]
+    target_slice = target_df.select(*target_cols)
+    # Anti-join: source rows that DON'T have a matching (key + hashdiff) in target
+    join_cond = reduce(
+        lambda a, b: a & b,
+        [upserts[k].eqNullSafe(target_slice[k]) for k in join_keys],
+    ) & (upserts["hashdiff"] == target_slice["hashdiff"])
+    mismatched = upserts.join(target_slice, join_cond, "left_anti")
+    try:
+        return mismatched.limit(1).count() == 0
+    except Exception:
+        return False
+
+
 def _merge_scd2_classic(
     source_df: DataFrame,
     *,
@@ -610,6 +643,20 @@ def _merge_scd2_classic(
         f.name for f in delta_table.toDF().schema.fields
     ]
     upserts = upserts.withColumn("hashdiff", compute_hashdiff(track_history_columns))
+
+    # --- No-op short-circuit ---
+    # If the source hashdiffs all match the target's current hashdiffs,
+    # there is nothing to merge.  A single left-anti join is cheaper
+    # than the full merge (which does a left join, row classification,
+    # key generation, and the Delta write).
+    # Skip if we just processed deletes (target already changed).
+    deletes_processed = deletes is not None and not deletes.isEmpty()
+    if not deletes_processed:
+        if _scd2_is_noop(upserts, delta_table, join_keys, surrogate_key_col):
+            logger.info(
+                "SCD2 no-op: all source hashdiffs match target — skipping merge"
+            )
+            return
     SYSTEM_COLS = set(_CDF_METADATA) | {
         "__etl_processed_at",
         "__etl_batch_id",
