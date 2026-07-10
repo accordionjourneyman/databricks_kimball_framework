@@ -1,8 +1,7 @@
 from abc import ABC, abstractmethod
 
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import col, lit, row_number, xxhash64
-from pyspark.sql.window import Window
+from pyspark.sql.functions import col, lit, monotonically_increasing_id, xxhash64
 
 
 class KeyGenerator(ABC):
@@ -56,5 +55,5 @@ class SequenceKeyGenerator(KeyGenerator):
         )
         return df.withColumn(
             key_col_name,
-            row_number().over(Window.orderBy(lit(1))) + lit(existing_max_key),
+            monotonically_increasing_id() + lit(existing_max_key),
         )

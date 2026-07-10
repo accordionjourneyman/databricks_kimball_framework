@@ -462,14 +462,10 @@ def _scd2_generate_identity_keys_for_insert(
                 current_max = max_val
     except Exception:
         pass
-    window = Window.orderBy(lit(1))
-    return (
-        df.withColumn("_rn", row_number().over(window))
-        .withColumn(
-            surrogate_key_col,
-            (lit(int(current_max)) + col("_rn")).cast("bigint"),
-        )
-        .drop("_rn")
+    from pyspark.sql.functions import monotonically_increasing_id as _mid
+
+    return df.withColumn(
+        surrogate_key_col, (lit(int(current_max)) + _mid() + lit(1)).cast("bigint")
     )
 
 
