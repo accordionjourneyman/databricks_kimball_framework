@@ -72,18 +72,6 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "pyspark==${{ env.SPARK_VERSION }}" "delta-spark==${{ env.DELTA_VERSION }}" pyyaml jinja2 pydantic pytest
 
-      - name: Ensure Delta JARs on Spark classpath
-        run: |
-          SPARK_JARS_DIR=$(python -c "import pyspark, os; print(os.path.join(os.path.dirname(pyspark.__file__), 'jars'))")
-          echo "Spark jars dir: $SPARK_JARS_DIR"
-          # Delta 4.x targets Spark 4.0 / 4.1 and Scala 2.13
-          curl -fsSL -o "$SPARK_JARS_DIR/delta-spark_4.0_2.13-${{ env.DELTA_VERSION }}.jar" \
-            "https://repo1.maven.org/maven2/io/delta/delta-spark_4.0_2.13/${{ env.DELTA_VERSION }}/delta-spark_4.0_2.13-${{ env.DELTA_VERSION }}.jar"
-          curl -fsSL -o "$SPARK_JARS_DIR/delta-storage-${{ env.DELTA_VERSION }}.jar" \
-            "https://repo1.maven.org/maven2/io/delta/delta-storage/${{ env.DELTA_VERSION }}/delta-storage-${{ env.DELTA_VERSION }}.jar"
-          ls -la "$SPARK_JARS_DIR"/delta-*.jar
-          echo "Delta JARs installed to $SPARK_JARS_DIR"
-
       - name: Run benchmarks
         run: |
           export KIMBALL_ETL_SCHEMA=etl_control

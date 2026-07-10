@@ -52,7 +52,7 @@ def spark():
 
         from pyspark.sql import SparkSession
 
-        session = (
+        builder = (
             SparkSession.builder.appName("KimballBenchmark")
             .master("local[2]")
             .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
@@ -69,8 +69,16 @@ def spark():
                 "spark.sql.warehouse.dir",
                 tempfile.mkdtemp(prefix="spark-warehouse-bench-"),
             )
-            .getOrCreate()
         )
+        # Ensure the delta-spark JARs are on the classpath when running
+        # outside Databricks (e.g. GitHub Actions, local dev).
+        try:
+            from delta import configure_spark_with_delta_pip
+
+            builder = configure_spark_with_delta_pip(builder)
+        except ImportError:
+            pass  # delta-spark not installed — tests that need it will fail
+        session = builder.getOrCreate()
 
     if "databricks.sdk.runtime" in sys.modules:
         import types
