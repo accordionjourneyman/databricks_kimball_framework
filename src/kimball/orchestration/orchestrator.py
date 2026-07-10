@@ -359,10 +359,16 @@ class Orchestrator:
         )
 
     def _prepare_source_df_for_merge(self, transformed_df) -> DataFrame:
-        """Checkpoint and prune the transformed data before merge execution."""
-        logger.info("Creating DataFrame checkpoint for merge operation...")
+        """Prune the transformed data before merge execution.
 
+        Checkpointing is only performed when ``enable_lineage_truncation``
+        is enabled — it materialises the DataFrame to truncate the Spark
+        lineage, which is useful for preserve_all_changes mode where the
+        same source is iterated over multiple merges.  For the common
+        single-merge path it is an unnecessary extra Spark action.
+        """
         if getattr(self.config, "enable_lineage_truncation", False):
+            logger.info("Creating DataFrame checkpoint for merge operation...")
             try:
                 checkpoint_dir = self.spark.sparkContext.getCheckpointDir()
                 if checkpoint_dir:
@@ -386,10 +392,7 @@ class Orchestrator:
                 logger.info("Using local checkpoint (less reliable)")
                 checkpointed_df = transformed_df.localCheckpoint()
         else:
-            checkpointed_df = transformed_df.localCheckpoint()
-            logger.info(
-                "Using local checkpoint (materializes to executor heap - not free)"
-            )
+            checkpointed_df = transformed_df
 
         if self.spark.catalog.tableExists(self.config.table_name):
             target_schema = self.spark.table(self.config.table_name).schema
