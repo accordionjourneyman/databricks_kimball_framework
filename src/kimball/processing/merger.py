@@ -534,6 +534,51 @@ def _merge_scd2_current(
     )
 
 
+def _detect_missing_keys(
+    upserts: DataFrame,
+    current_target: DataFrame,
+    join_keys: list[str],
+) -> DataFrame | None:
+    """Find target current rows whose natural keys are missing from source.
+
+    Uses a cheap aggregate checksum comparison first: if the source and
+    target key sets have the same count and hash sum, there are no deletes
+    and we return None (skip the anti-join entirely).  If they differ, or
+    the comparison fails, fall back to the full left-anti join.
+
+    Returns None when no deletes are detected, otherwise a DataFrame of
+    target rows that need to be expired.
+    """
+    try:
+        from pyspark.sql.functions import count as _count
+        from pyspark.sql.functions import sum as _sum
+
+        src = upserts.select(*join_keys).distinct()
+        tgt = current_target.select(*join_keys).distinct()
+        src_ck = src.agg(
+            _count("*").alias("c"),
+            _sum(expr(f"xxhash64({', '.join(f'`{k}`' for k in join_keys)})")).alias(
+                "h"
+            ),
+        ).collect()[0]
+        tgt_ck = tgt.agg(
+            _count("*").alias("c"),
+            _sum(expr(f"xxhash64({', '.join(f'`{k}`' for k in join_keys)})")).alias(
+                "h"
+            ),
+        ).collect()[0]
+        if src_ck["c"] == tgt_ck["c"] and src_ck["h"] == tgt_ck["h"]:
+            logger.info(
+                "SCD2 delete detection: checksum match — no deletes, skipping anti-join"
+            )
+            return None
+    except Exception:
+        pass
+    return current_target.join(
+        upserts.select(*join_keys).distinct(), join_keys, "left_anti"
+    ).dropDuplicates(join_keys)
+
+
 def _scd2_is_noop(
     upserts: DataFrame,
     delta_table: DeltaTable,
@@ -613,10 +658,8 @@ def _merge_scd2_classic(
     else:
         delta_table = DeltaTable.forName(get_spark(), target_table_name)
         current_target = delta_table.toDF().filter("__is_current = true")
-        missing_in_source = current_target.join(
-            upserts.select(*join_keys).distinct(), join_keys, "left_anti"
-        ).dropDuplicates(join_keys)
-        if not missing_in_source.isEmpty():
+        missing_in_source = _detect_missing_keys(upserts, current_target, join_keys)
+        if missing_in_source is not None and not missing_in_source.isEmpty():
             missing_count = missing_in_source.count()
             logger.info(
                 f"SCD2 full CDC: Detected {missing_count} delete(s) via anti-join - expiring current versions"
