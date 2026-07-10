@@ -86,5 +86,10 @@ jobs:
             echo "No new results to commit"
           else
             git commit -m "benchmark-history: $(date -u +'%Y-%m-%d %H:%M:%S UTC') commit=${{ env.commit_sha }}"
+            # Fetch and rebase onto the remote benchmark-history branch
+            # so we don't reject on non-fast-forward when previous runs
+            # already pushed commits.
+            git fetch origin benchmark-history
+            git rebase origin/benchmark-history
             git push origin HEAD:refs/heads/benchmark-history
           fi
