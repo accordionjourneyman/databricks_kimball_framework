@@ -297,3 +297,117 @@ def _save_result(
     print(
         f"\n  [{scenario} @ {scale}] first={first_ms:.0f}ms  second={second_ms:.0f}ms"
     )
+
+
+class TestBenchmarkSCD2NoOp:
+    """SCD2 no-op: re-run with no source changes.
+
+    Measures the overhead of the change-detection machinery (hashdiff
+    compute, left join to target, target scan) when zero rows actually
+    change.  A well-optimised merge should skip the write entirely.
+    """
+
+    def test_scd2_noop(self, spark: SparkSession, bench_db: str, scale, tmp_path):
+        params = SCALE_TIERS[scale]
+        _generate_products(spark, params["products"], bench_db)
+
+        config_path = _write_config(
+            _make_config(bench_db, "_noop", scd_type=2), tmp_path
+        )
+
+        # Initial load
+        result = Orchestrator(config_path, spark=spark, etl_schema=bench_db).run()
+        assert result["status"] == "SUCCESS"
+
+        # Second run — no changes at all
+        start = time.time()
+        result2 = Orchestrator(config_path, spark=spark, etl_schema=bench_db).run()
+        noop_ms = (time.time() - start) * 1000
+
+        assert result2["status"] == "SUCCESS", f"No-op run failed: {result2}"
+
+        # Compare to a change run for context
+        spark.sql(f"""
+            UPDATE {bench_db}.products_src
+            SET price = price * 1.15
+            WHERE product_id < {params["n_changed"]}
+        """)
+        start = time.time()
+        result3 = Orchestrator(config_path, spark=spark, etl_schema=bench_db).run()
+        change_ms = (time.time() - start) * 1000
+        assert result3["status"] == "SUCCESS"
+
+        _save_result(
+            "scd2_noop",
+            scale,
+            noop_ms,
+            change_ms,
+            {**params, "noop_ms": noop_ms, "change_ms": change_ms},
+        )
+
+
+class TestBenchmarkSCD2MultiVersion:
+    """SCD2 two-phase merge: multiple versions per key in one batch.
+
+    Measures the overhead of the two-phase algorithm (phase 1 latest
+    merge + phase 2 history back-fill) vs a single-version classic merge
+    with the same total row count.
+    """
+
+    def test_scd2_multiversion(
+        self, spark: SparkSession, bench_db: str, scale, tmp_path
+    ):
+        params = SCALE_TIERS[scale]
+        _generate_products(spark, params["products"], bench_db)
+
+        config_path = _write_config(_make_config(bench_db, "_mv", scd_type=2), tmp_path)
+
+        # Initial load
+        result = Orchestrator(config_path, spark=spark, etl_schema=bench_db).run()
+        assert result["status"] == "SUCCESS"
+
+        # Apply N separate UPDATE transactions so the full-snapshot reload
+        # sees multiple versions per key (forces two-phase path).
+        n_versions = 3
+        for i in range(n_versions):
+            spark.sql(f"""
+                UPDATE {bench_db}.products_src
+                SET price = price * 1.{10 + i}
+                WHERE product_id < {params["n_changed"]}
+            """)
+
+        start = time.time()
+        result2 = Orchestrator(config_path, spark=spark, etl_schema=bench_db).run()
+        multiversion_ms = (time.time() - start) * 1000
+        assert result2["status"] == "SUCCESS", f"Multi-version run failed: {result2}"
+
+        # Compare to a single-change run with the same number of changed rows
+        _generate_products(spark, params["products"], bench_db)
+        config_path2 = _write_config(
+            _make_config(bench_db, "_sv", scd_type=2), tmp_path
+        )
+        result = Orchestrator(config_path2, spark=spark, etl_schema=bench_db).run()
+        assert result["status"] == "SUCCESS"
+
+        spark.sql(f"""
+            UPDATE {bench_db}.products_src
+            SET price = price * 1.15
+            WHERE product_id < {params["n_changed"]}
+        """)
+        start = time.time()
+        result3 = Orchestrator(config_path2, spark=spark, etl_schema=bench_db).run()
+        singleversion_ms = (time.time() - start) * 1000
+        assert result3["status"] == "SUCCESS"
+
+        _save_result(
+            "scd2_multiversion",
+            scale,
+            multiversion_ms,
+            singleversion_ms,
+            {
+                **params,
+                "n_versions": n_versions,
+                "multiversion_ms": multiversion_ms,
+                "singleversion_ms": singleversion_ms,
+            },
+        )
