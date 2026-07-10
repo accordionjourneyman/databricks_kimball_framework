@@ -411,3 +411,118 @@ class TestBenchmarkSCD2MultiVersion:
                 "singleversion_ms": singleversion_ms,
             },
         )
+
+
+class TestBenchmarkSCD1NoOp:
+    """SCD1 no-op: re-run with no source changes.
+
+    SCD1 has no hashdiff comparison — it always overwrites.  This
+    measures the bare overhead of the SCD1 merge (dedup, join,
+    overwrite) when nothing changed.
+    """
+
+    def test_scd1_noop(self, spark: SparkSession, bench_db: str, scale, tmp_path):
+        params = SCALE_TIERS[scale]
+        _generate_products(spark, params["products"], bench_db)
+
+        config_path = _write_config(
+            _make_config(bench_db, "_s1noop", scd_type=1), tmp_path
+        )
+
+        result = Orchestrator(config_path, spark=spark, etl_schema=bench_db).run()
+        assert result["status"] == "SUCCESS"
+
+        start = time.time()
+        result2 = Orchestrator(config_path, spark=spark, etl_schema=bench_db).run()
+        noop_ms = (time.time() - start) * 1000
+        assert result2["status"] == "SUCCESS"
+
+        spark.sql(f"""
+            UPDATE {bench_db}.products_src
+            SET price = price * 1.15
+            WHERE product_id < {params["n_changed"]}
+        """)
+        start = time.time()
+        result3 = Orchestrator(config_path, spark=spark, etl_schema=bench_db).run()
+        change_ms = (time.time() - start) * 1000
+        assert result3["status"] == "SUCCESS"
+
+        _save_result("scd1_noop", scale, noop_ms, change_ms, params)
+
+
+class TestBenchmarkWideTable:
+    """Wide table: 50+ columns to stress hashdiff and adaptive pruning.
+
+    The SCD2 hashdiff hashes all track_history_columns.  With 50
+    columns the hash compute is more expensive and the join carries
+    more data.  This benchmark isolates that cost vs the 10-column
+    baseline.
+    """
+
+    WIDE_COLS = [f"col_{i}" for i in range(50)]
+
+    def test_wide_scd2(self, spark: SparkSession, bench_db: str, scale, tmp_path):
+        params = SCALE_TIERS[scale]
+        n = params["products"]
+
+        spark.sql(f"DROP TABLE IF EXISTS {bench_db}.wide_src")
+        col_defs = ", ".join(f"col_{i} STRING" for i in range(50))
+        spark.sql(f"""
+            CREATE TABLE {bench_db}.wide_src (
+                product_id INT, {col_defs}
+            ) USING DELTA
+        """)
+
+        df = spark.range(n).select(
+            col("id").cast("int").alias("product_id"),
+            *[
+                concat(lit("v_"), col("id").cast("string"), lit(f"_{i}")).alias(
+                    f"col_{i}"
+                )
+                for i in range(50)
+            ],
+        )
+        df.write.format("delta").mode("overwrite").saveAsTable(f"{bench_db}.wide_src")
+
+        track_yaml = "[" + ", ".join(f"col_{i}" for i in range(50)) + "]"
+        config_yaml = f"""
+table_name: {bench_db}.dim_wide
+table_type: dimension
+scd_type: 2
+keys:
+  surrogate_key: product_sk
+  natural_keys: [product_id]
+surrogate_key_strategy: identity
+track_history_columns: {track_yaml}
+grain_validation: skip
+sources:
+  - name: {bench_db}.wide_src
+    alias: w
+    cdc_strategy: full
+transformation_sql: |
+  SELECT product_id, {", ".join(f"col_{i}" for i in range(50))} FROM w
+"""
+        config_path = _write_config(config_yaml, tmp_path)
+
+        start = time.time()
+        result = Orchestrator(config_path, spark=spark, etl_schema=bench_db).run()
+        first_ms = (time.time() - start) * 1000
+        assert result["status"] == "SUCCESS"
+
+        spark.sql(f"""
+            UPDATE {bench_db}.wide_src
+            SET col_0 = concat(col_0, '_changed')
+            WHERE product_id < {params["n_changed"]}
+        """)
+        start = time.time()
+        result2 = Orchestrator(config_path, spark=spark, etl_schema=bench_db).run()
+        second_ms = (time.time() - start) * 1000
+        assert result2["status"] == "SUCCESS"
+
+        _save_result(
+            "wide_scd2",
+            scale,
+            first_ms,
+            second_ms,
+            {**params, "n_columns": 50},
+        )

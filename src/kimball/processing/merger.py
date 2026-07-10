@@ -239,7 +239,7 @@ def merge_scd1(
         except Exception:
             pass
     merge_builder = delta_table.alias("target").merge(
-        broadcast(source_df).alias("source"), merge_condition
+        source_df.alias("source"), merge_condition
     )
     if "_change_type" in source_df.columns:
         if delete_strategy == "hard":
@@ -550,26 +550,12 @@ def _detect_missing_keys(
     target rows that need to be expired.
     """
     try:
-        from pyspark.sql.functions import count as _count
-        from pyspark.sql.functions import sum as _sum
-
-        src = upserts.select(*join_keys).distinct()
-        tgt = current_target.select(*join_keys).distinct()
-        src_ck = src.agg(
-            _count("*").alias("c"),
-            _sum(expr(f"xxhash64({', '.join(f'`{k}`' for k in join_keys)})")).alias(
-                "h"
-            ),
-        ).collect()[0]
-        tgt_ck = tgt.agg(
-            _count("*").alias("c"),
-            _sum(expr(f"xxhash64({', '.join(f'`{k}`' for k in join_keys)})")).alias(
-                "h"
-            ),
-        ).collect()[0]
-        if src_ck["c"] == tgt_ck["c"] and src_ck["h"] == tgt_ck["h"]:
+        src_count = upserts.select(*join_keys).distinct().count()
+        tgt_count = current_target.select(*join_keys).distinct().count()
+        if src_count == tgt_count:
             logger.info(
-                "SCD2 delete detection: checksum match — no deletes, skipping anti-join"
+                "SCD2 delete detection: key counts match "
+                f"({src_count} == {tgt_count}) — no deletes, skipping anti-join"
             )
             return None
     except Exception:
