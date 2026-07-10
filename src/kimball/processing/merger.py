@@ -219,6 +219,43 @@ def merge_scd1(
     source_df = _dedup_cdf(source_df, join_keys)
     merge_condition = _build_merge_condition(join_keys)
     delta_table = DeltaTable.forName(get_spark(), target_table_name)
+
+    # --- No-op short-circuit ---
+    # If no CDF deletes and source hashdiffs all match target, skip.
+    # Uses the same anti-join technique as SCD2.
+    if "_change_type" not in source_df.columns:
+        try:
+            target_df = delta_table.toDF()
+            data_cols = [
+                c
+                for c in source_df.columns
+                if c not in _CDF_METADATA
+                and not c.startswith("__")
+                and c != surrogate_key_col
+                and c in target_df.columns
+            ]
+            if data_cols:
+                source_hashed = source_df.withColumn(
+                    "_hash", compute_hashdiff(data_cols)
+                )
+                target_hashed = target_df.withColumn(
+                    "_hash", compute_hashdiff(data_cols)
+                )
+                mismatched = source_hashed.join(
+                    target_hashed.select(*join_keys, "_hash").withColumnRenamed(
+                        "_hash", "_tgt_hash"
+                    ),
+                    join_keys,
+                    "left",
+                ).filter(col("_tgt_hash").isNull() | (col("_hash") != col("_tgt_hash")))
+                if mismatched.limit(1).count() == 0:
+                    logger.info(
+                        "SCD1 no-op: all source hashes match target — skipping merge"
+                    )
+                    return
+        except Exception:
+            pass
+
     _apply_schema_evolution(target_table_name, schema_evolution, source_df)
     source_df = _generate_keys(
         source_df,
