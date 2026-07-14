@@ -337,7 +337,7 @@ def test_day1_pipeline(
         """
     ).collect()
     assert len(alice) == 1
-    assert alice[0].address == "123 Apple St, NY"
+    assert alice[0].address == "123 A**********"
 
 
 def test_day2_pipeline(
@@ -405,5 +405,5 @@ def test_day2_pipeline(
         """
     ).collect()
     assert len(links) == 2
-    assert links[0].linked_customer_address == "123 Apple St, NY"
-    assert links[1].linked_customer_address == "789 Cherry Ln, LA"
+    assert links[0].linked_customer_address == "123 A**********"
+    assert links[1].linked_customer_address == "789 C**********"

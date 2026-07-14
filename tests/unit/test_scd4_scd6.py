@@ -1,69 +1,47 @@
-"""
-Unit tests for SCD4 and SCD6 functional merge strategies.
-"""
+"""Unit tests for SCD4 and SCD6 functional merge strategies."""
 
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kimball.processing import merger as _merger
+from kimball.processing.dispatcher import merge
+from kimball.processing.scd4 import merge_scd4
+from kimball.processing.scd6 import merge_scd6
 
 
 class TestCreateMergeStrategy:
-    """Test the factory function with new SCD types."""
-
-    @patch("kimball.processing.merger.current_timestamp")
+    @patch("kimball.processing.dispatcher.current_timestamp")
     def test_create_scd4_requires_history_table(self, _mock_ts):
         with pytest.raises(ValueError, match="requires history_table"):
-            _merger.merge(
-                MagicMock(),
-                scd_type=4,
-                target_table_name="dim_product",
-                join_keys=["product_id"],
-            )
+            merge(MagicMock(), scd_type=4, target_table_name="dim_product", join_keys=["product_id"])
 
-    @patch("kimball.processing.merger.current_timestamp")
+    @patch("kimball.processing.dispatcher.current_timestamp")
     def test_create_scd6_requires_current_value_columns(self, _mock_ts):
         with pytest.raises(ValueError, match="requires current_value_columns"):
-            _merger.merge(
-                MagicMock(),
-                scd_type=6,
-                target_table_name="dim_customer",
-                join_keys=["customer_id"],
-            )
+            merge(MagicMock(), scd_type=6, target_table_name="dim_customer", join_keys=["customer_id"])
 
-    @patch("kimball.processing.merger.current_timestamp")
+    @patch("kimball.processing.dispatcher.current_timestamp")
     def test_create_scd4_returns_callable(self, _mock_ts):
-        with patch("kimball.processing.merger.merge_scd4") as mock_scd4:
-            _merger.merge(
-                MagicMock(),
-                scd_type=4,
-                target_table_name="dim_product",
-                join_keys=["product_id"],
-                history_table="dim_product_history",
-            )
+        with patch("kimball.processing.dispatcher.merge_scd4") as mock_scd4:
+            merge(MagicMock(), scd_type=4, target_table_name="dim_product",
+                  join_keys=["product_id"], history_table="dim_product_history")
             mock_scd4.assert_called_once()
 
-    @patch("kimball.processing.merger.current_timestamp")
+    @patch("kimball.processing.dispatcher.current_timestamp")
     def test_create_scd6_returns_callable(self, _mock_ts):
-        with patch("kimball.processing.merger.merge_scd6") as mock_scd6:
-            _merger.merge(
-                MagicMock(),
-                scd_type=6,
-                target_table_name="dim_customer",
-                join_keys=["customer_id"],
-                current_value_columns=["city", "status"],
-            )
+        with patch("kimball.processing.dispatcher.merge_scd6") as mock_scd6:
+            merge(MagicMock(), scd_type=6, target_table_name="dim_customer",
+                  join_keys=["customer_id"], current_value_columns=["city", "status"])
             mock_scd6.assert_called_once()
 
 
 class TestSCD4Function:
     def test_merge_scd4_calls_scd1_and_history(self):
         with (
-            patch("kimball.processing.merger.merge_scd1") as mock_scd1,
-            patch("kimball.processing.merger._merge_history") as mock_hist,
+            patch("kimball.processing.scd4.merge_scd1") as mock_scd1,
+            patch("kimball.processing.scd4._merge_history") as mock_hist,
         ):
-            _merger.merge_scd4(
+            merge_scd4(
                 MagicMock(),
                 target_table_name="dim_product",
                 history_table_name="dim_product_history",
@@ -83,15 +61,17 @@ class TestSCD6Function:
         mock_df.sparkSession = mock_spark
 
         with (
-            patch("kimball.processing.merger.DeltaTable") as mock_dt,
-            patch("kimball.processing.merger.broadcast", lambda x: x),
-            patch("kimball.processing.merger.compute_hashdiff", return_value="hash"),
-            patch("kimball.processing.merger.col", return_value=MagicMock()),
-            patch("kimball.processing.merger.lit", return_value=MagicMock()),
-            patch("pyspark.sql.functions.when", return_value=MagicMock()),
+            patch("kimball.processing.scd6.DeltaTable") as mock_dt,
+            patch("kimball.processing.scd6.filter_cdf_deletes", return_value=(mock_df, None)),
+            patch("kimball.processing.scd6.compute_hashdiff", return_value="hash"),
+            patch("kimball.processing.scd6.col", return_value=MagicMock()),
+            patch("kimball.processing.scd6.lit", return_value=MagicMock()),
+            patch("kimball.processing.scd6.when", return_value=MagicMock()),
+            patch("kimball.processing.scd6.HashKeyGenerator") as mock_gen,
         ):
+            mock_gen.return_value.generate_keys.return_value = mock_df
             mock_dt.forName.return_value = MagicMock()
-            _merger.merge_scd6(
+            merge_scd6(
                 mock_df,
                 target_table_name="dim_product",
                 join_keys=["product_id"],

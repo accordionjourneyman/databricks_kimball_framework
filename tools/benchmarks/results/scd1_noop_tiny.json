@@ -1,0 +1,15 @@
+{
+  "scenario": "scd1_noop",
+  "scale": "tiny",
+  "params": {
+    "products": 1000,
+    "n_changed": 300,
+    "n_deleted": 100,
+    "n_new": 100
+  },
+  "first_run_total_ms": 5291.478395462036,
+  "second_run_total_ms": 6844.856739044189,
+  "first_run_status": "SUCCESS",
+  "second_run_status": "SUCCESS",
+  "timestamp": "2026-07-10T18:10:55"
+}

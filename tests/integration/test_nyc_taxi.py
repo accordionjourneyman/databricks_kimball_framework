@@ -75,7 +75,6 @@ scd_type: 2
 keys:
   surrogate_key: zone_sk
   natural_keys: [location_id]
-surrogate_key_strategy: identity
 track_history_columns: [zone_name, borough]
 effective_at: update_timestamp
 sources:

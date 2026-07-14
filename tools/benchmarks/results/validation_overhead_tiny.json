@@ -7,9 +7,9 @@
     "n_deleted": 100,
     "n_new": 100
   },
-  "first_run_total_ms": 23919.110536575317,
-  "second_run_total_ms": 17418.144702911377,
+  "first_run_total_ms": 13952.80408859253,
+  "second_run_total_ms": 9694.653749465942,
   "first_run_status": "SUCCESS",
   "second_run_status": "SUCCESS",
-  "timestamp": "2026-07-05T19:57:46"
+  "timestamp": "2026-07-10T18:09:08"
 }

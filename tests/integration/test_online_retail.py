@@ -74,7 +74,6 @@ scd_type: 1
 keys:
   surrogate_key: product_sk
   natural_keys: [stock_code]
-surrogate_key_strategy: identity
 sources:
   - name: {test_db}.products
     alias: p
@@ -133,7 +132,6 @@ scd_type: 2
 keys:
   surrogate_key: customer_sk
   natural_keys: [customer_id]
-surrogate_key_strategy: identity
 track_history_columns: [country, segment]
 sources:
   - name: {test_db}.customers
@@ -199,7 +197,6 @@ scd_type: 2
 keys:
   surrogate_key: customer_sk
   natural_keys: [customer_id]
-surrogate_key_strategy: identity
 track_history_columns: [country]
 delete_strategy: soft
 sources:

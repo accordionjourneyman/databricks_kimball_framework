@@ -6,7 +6,6 @@ keys:
   natural_keys: [employee_id]
 
 # Use Identity Columns (requires Databricks Runtime with Identity Column support)
-surrogate_key_strategy: identity
 
 track_history_columns:
   - department

@@ -193,18 +193,15 @@ See [Streaming CDF](STREAMING.md) for full documentation.
 3. Generate skeleton rows for missing keys
 4. Append to dimension table
 
-### KeyGenerator (Abstract)
+### KeyGenerator
 
-**Responsibility:** Generate surrogate keys
+**Responsibility:** Generate deterministic surrogate keys
 
-**Implementations:**
+**Implementation:**
 
-- `IdentityKeyGenerator` - Uses Delta Identity Columns (**required for SCD2 dimensions**)
-- `HashKeyGenerator` - xxhash64 of natural keys (for junk dimensions only, NOT SCD2)
-- `SequenceKeyGenerator` - **Deprecated/blocked** - unsafe global sort
-
-> **Note:** SCD2 dimensions require `surrogate_key_strategy: identity` because hash-based
-> keys cannot track version history. The framework enforces this in config validation.
+- `HashKeyGenerator` - xxhash64 of natural keys (+ `__valid_from` for SCD2)
+  produces deterministic, distributed-safe BIGINT surrogate keys. Each SCD2
+  version gets a unique SK because the validity timestamp is included in the hash.
 
 ### Resilience Module (kimball.resilience)
 

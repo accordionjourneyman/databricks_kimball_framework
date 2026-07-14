@@ -4,7 +4,6 @@ scd_type: 2
 keys:
   surrogate_key: customer_sk
   natural_keys: [customer_id]
-surrogate_key_strategy: identity
 effective_at: updated_at
 track_history_columns:
   - first_name
@@ -29,3 +28,10 @@ transformation_sql: |
   FROM c
 audit_columns: true
 preserve_all_changes: true
+pii:
+  columns:
+    - column: email
+      strategy: hash
+    - column: address
+      strategy: mask
+      reveal_prefix: 5

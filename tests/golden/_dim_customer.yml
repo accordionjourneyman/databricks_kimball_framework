@@ -1,10 +1,9 @@
-table_name: kimball_golden_fa298550.dim_customer
+table_name: kimball_golden_f3cc8407.dim_customer
 table_type: dimension
 scd_type: 2
 keys:
   surrogate_key: customer_sk
   natural_keys: [customer_id]
-surrogate_key_strategy: identity
 effective_at: updated_at
 track_history_columns:
   - first_name
@@ -12,7 +11,7 @@ track_history_columns:
   - email
   - address
 sources:
-  - name: kimball_golden_raw_fa298550.customers
+  - name: kimball_golden_raw_f3cc8407.customers
     alias: c
     cdc_strategy: cdf
     starting_version: 0
@@ -29,3 +28,10 @@ transformation_sql: |
   FROM c
 audit_columns: true
 preserve_all_changes: true
+pii:
+  columns:
+    - column: email
+      strategy: hash
+    - column: address
+      strategy: mask
+      reveal_prefix: 5

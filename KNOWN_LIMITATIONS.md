@@ -28,8 +28,9 @@ This document outlines known limitations, design choices, and potential edge cas
 
 ## 3. Concurrency & Locking
 
-- **Single Writer Per Table:** The framework assumes a single active pipeline writer per target table. Concurrent pipelines writing to the _same_ target table are not supported and may result in partial rollbacks or conflicts.
+- **Single Writer Per Target Table:** The framework assumes a single active pipeline writer per target table. Concurrent pipelines writing to the _same_ target table are not supported and may result in partial rollbacks or conflicts.
   - _Workaround:_ Use Databricks Jobs concurrency control (max 1 run) for the specific pipeline job.
+- **Shared Control Table (etl_control):** Parallel pipelines writing to _different_ target tables share a single `etl_control` table. The framework retries `ConcurrentAppendException` on `etl_control` MERGEs with exponential backoff (5 attempts). This is tested and working.
 
 ## 4. Retry Mechanism
 
@@ -40,12 +41,11 @@ This document outlines known limitations, design choices, and potential edge cas
 
 - **SCD2:** Adding new columns to the source _without_ adding them to `track_history_columns` (if explicit tracking is on) will result in those columns being updated in place (SCD1 behavior) for existing rows. A warning is logged.
 
-## 6. Sequence Key Generation (Blocked)
+## 6. Surrogate Key Generation
 
-- **Issue:** The `SequenceKeyGenerator` (using `Window.orderBy(lit(1))`) forces a global sort on a single executor, causing OOM errors on large datasets.
-- **Status:** This strategy is now **BLOCKED** by default.
-- **Mitigation:** Use `surrogate_key_strategy: identity` (Delta Identity Columns) or `hash`.
-- **Override:** Can be force-enabled via `KIMBALL_ALLOW_UNSAFE_SEQUENCE_KEY=1` (Not Recommended).
+- **Implementation:** All surrogate keys are generated via `xxhash64(natural_keys)` (SCD1/SCD4/SCD6) or `xxhash64(natural_keys + version_column)` (SCD2). This is deterministic, distributed-safe, and idempotent.
+- **Collision Risk:** `xxhash64` produces a 64-bit signed BIGINT. Birthday-paradox collisions become statistically significant above ~4 billion distinct values per table. For most dimension tables this is negligible. A full reload self-heals any collision by re-deriving all keys.
+- **Negative values:** `xxhash64` produces signed BIGINTs, so roughly half of all keys are negative. This is expected and does not affect correctness.
 
 ## 7. Idempotency Contracts
 
@@ -84,13 +84,15 @@ the following limitations compared to the batch path:
 
 | Feature | Batch | Streaming |
 |---------|-------|-----------|
-| Target table creation | ✅ Auto-creates + seeds defaults | ❌ Must exist (run batch once first) |
-| Schema evolution | ✅ Supported | ❌ Not implemented |
-| Fingerprint caching | ✅ Supported | ❌ Not implemented |
-| FK validation | ✅ Supported | ❌ Not implemented |
+| Target table creation | ✅ Auto-creates + seeds defaults | ✅ Auto-creates on first micro-batch |
+| Schema evolution | ✅ Supported | ✅ Supported (passed to merger) |
+| Fingerprint caching | ✅ Supported | ✅ Saved after each micro-batch |
+| FK validation | ✅ Supported | ✅ Supported (pre-merge gate) |
 | Adaptive column pruning | ✅ Supported | ❌ Not implemented |
-| Grain violation checks | ✅ Supported | ❌ Not implemented |
+| Grain violation checks | ✅ Supported | ✅ Supported |
 | Zombie batch recovery | ✅ Supported | ❌ Not implemented |
+| Per-version SCD2 history | ✅ `preserve_all_changes` | ✅ `streaming.per_version: true` |
+| PII masking | ✅ Supported | ✅ Supported |
 | Multi-source pipelines | ✅ Single run | ✅ One query per CDF source |
 | `transformation_sql` | ✅ `spark.sql()` | ✅ `spark.sql()` inside `foreachBatch` |
 

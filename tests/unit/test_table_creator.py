@@ -72,7 +72,7 @@ class TestAddSystemColumns:
 
         df.withColumn.return_value = df
 
-        result = table_creator.add_system_columns(df, 1, "surrogate_key", "identity")
+        result = table_creator.add_system_columns(df, 1, "surrogate_key")
         assert result is df
         assert df.withColumn.call_count == 4
 
@@ -91,7 +91,7 @@ class TestAddSystemColumns:
 
         df.withColumn.return_value = df
 
-        result = table_creator.add_system_columns(df, 2, "surrogate_key", "identity")
+        result = table_creator.add_system_columns(df, 2, "surrogate_key")
         assert result is df
         assert df.withColumn.call_count >= 6
 
@@ -107,13 +107,14 @@ class TestCreateTableWithClustering:
 
             table_creator = TableCreator()
             table_creator.create_table_with_clustering("db.tbl", schema_df)
+
         spark_mock.sql.assert_not_called()
 
     def test_creates_table_with_cluster_by(self, spark_mock):
         schema_df = MagicMock()
         field = MagicMock()
         field.name = "id"
-        field.dataType.simpleString.return_value = "bigint NOT NULL"
+        field.dataType.simpleString.return_value = "bigint"
         field.nullable = False
         schema_df.schema.fields = [field]
 
@@ -123,10 +124,9 @@ class TestCreateTableWithClustering:
             ),
             patch("kimball.processing.table_creator.get_runtime_policy") as mock_policy,
         ):
-            mock_policy.return_value.identity_column_def.return_value = (
-                "id BIGINT NOT NULL GENERATED ALWAYS AS IDENTITY"
+            mock_policy.return_value.cluster_clause.return_value = (
+                "\nCLUSTER BY (`id`)"
             )
-            mock_policy.return_value.cluster_clause.return_value = " CLUSTER BY (id)"
             from kimball.processing.table_creator import TableCreator
 
             table_creator = TableCreator()
@@ -150,6 +150,7 @@ class TestEnableDeltaFeatures:
 
             table_creator = TableCreator()
             table_creator.enable_delta_features("db.tbl")
+
         spark_mock.sql.assert_called_once()
         sql = spark_mock.sql.call_args[0][0]
         assert "TBLPROPERTIES" in sql
@@ -179,6 +180,7 @@ class TestDeclareConstraints:
                     "foreign_keys": [],
                 },
             )
+
         spark_mock.sql.assert_not_called()
 
     def test_emits_pk_on_databricks(self, spark_mock):
@@ -201,9 +203,11 @@ class TestDeclareConstraints:
                     "foreign_keys": [],
                 },
             )
+
         sqls = [c[0][0] for c in spark_mock.sql.call_args_list]
+        # SCD1 gets SK PK (the merge key). NK PK block was removed entirely
+        # to avoid duplicate PRIMARY KEY declarations.
         assert any("PRIMARY KEY" in s and "customer_sk" in s for s in sqls)
-        assert any("PRIMARY KEY" in s and "customer_id" in s for s in sqls)
 
     def test_skips_natural_key_pk_for_scd2(self, spark_mock):
         with (
@@ -225,6 +229,7 @@ class TestDeclareConstraints:
                     "foreign_keys": [],
                 },
             )
+
         sqls = [c[0][0] for c in spark_mock.sql.call_args_list]
         assert any("PRIMARY KEY" in s and "customer_sk" in s for s in sqls)
         assert not any("customer_id" in s and "PRIMARY KEY" in s for s in sqls)
@@ -255,6 +260,7 @@ class TestDeclareConstraints:
                     ],
                 },
             )
+
         sqls = [c[0][0] for c in spark_mock.sql.call_args_list]
         assert any("FOREIGN KEY" in s and "customer_sk" in s for s in sqls)
         assert any("REFERENCES" in s and "dim_customer" in s for s in sqls)

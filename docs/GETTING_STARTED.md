@@ -65,7 +65,6 @@ keys:
   surrogate_key: customer_sk
   natural_keys: [customer_id]
 
-surrogate_key_strategy: identity  # SCD2 requires identity strategy
 track_history_columns: [first_name, last_name, email, address]
 
 sources:

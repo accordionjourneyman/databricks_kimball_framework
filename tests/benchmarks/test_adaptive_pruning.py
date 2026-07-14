@@ -74,7 +74,6 @@ scd_type: 2
 keys:
   surrogate_key: product_sk
   natural_keys: [product_id]
-surrogate_key_strategy: identity
 track_history_columns: [name, price, category_id, brand, color, size, weight_g, in_stock, launch_date, rating]
 schema_evolution: {se}
 sources:

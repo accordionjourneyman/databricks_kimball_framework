@@ -19,14 +19,9 @@ keys:
   surrogate_key: customer_sk
   natural_keys: [customer_id]  # Can be composite: [region, customer_id]
 
-# Optional: Surrogate key generation strategy (default: identity)
-# WARNING: SCD2 dimensions MUST use 'identity' - hash is INVALID for SCD2!
-# Hash SK breaks when dimension rows get new versions (hash changes on any column change).
-# Options:
-#   - identity: Auto-incrementing ID (required for SCD2, recommended for most dimensions)
-#   - hash: Deterministic hash of natural keys (SCD1/junk dimensions ONLY)
-#   - sequence: Named sequence (legacy compatibility)
-surrogate_key_strategy: identity
+# Surrogate keys are generated via xxhash64(natural_keys) — deterministic and distributed-safe.
+# For SCD2, __valid_from is included in the hash so each version gets a unique SK.
+# No configuration needed — the framework handles this automatically.
 
 # Required for SCD2: Columns that trigger new versions
 track_history_columns:
@@ -49,7 +44,6 @@ early_arriving_facts:
     fact_join_key: customer_id
     dimension_join_key: customer_id
     surrogate_key_col: customer_sk
-    surrogate_key_strategy: identity  # Use identity for dimension surrogates
 
 # Required: Source tables
 sources:
@@ -105,7 +99,11 @@ Slowly Changing Dimension type (dimensions only).
 - `1` - Overwrite changes (no history)
 - `2` - Track full history with versioning
 
-> [!WARNING] > **SCD2 Intra-Batch Limitation**: When multiple changes for the same natural key occur within a single batch (between watermarks), only the latest version is preserved. Earlier intermediate changes are collapsed. For complete history, ensure batch intervals are smaller than your change frequency.
+> [!NOTE]
+> **SCD2 Multi-Version Batches**: When multiple changes for the same natural key
+> occur within a single batch, the framework preserves ALL versions using a
+> two-phase algorithm (phase 1 merges the latest version, phase 2 back-fills
+> intermediate history rows). Set `preserve_all_changes: true` to enable this.
 
 ### keys.surrogate_key
 
@@ -127,17 +125,12 @@ natural_keys: [customer_id]
 natural_keys: [region_id, customer_id]
 ```
 
-### surrogate_key_strategy
+### Surrogate Keys
 
-Method for generating surrogate keys.
-
-**Options:**
-
-| Strategy   | Description                 | Use Case                              |
-| ---------- | --------------------------- | ------------------------------------- |
-| `identity` | Databricks Identity Columns | New tables, best performance          |
-| `hash`     | xxhash64 of natural keys    | Idempotency, distributed systems      |
-| `sequence` | Row number + max key        | Legacy compatibility (use cautiously) |
+Surrogate keys are generated via `xxhash64(natural_keys)` — deterministic and
+distributed-safe.  For SCD2, `__valid_from` is included in the hash so each
+historical version gets a unique SK.  No configuration is needed; the framework
+handles this automatically.
 
 ### track_history_columns
 
@@ -268,12 +261,12 @@ sources:
 **When NOT to use streaming:**
 
 - One-off backfills or historical loads (use batch)
-- Schema changes are frequent (streaming does not evolve the target schema)
-- You need FK validation or fingerprint caching (not yet implemented in streaming)
+- You need zombie batch recovery (not implemented in streaming)
+- You need adaptive column pruning (not implemented in streaming)
 
-> **Target table must exist:** The streaming orchestrator does not create
-> the target table or seed default rows. Run the batch `Orchestrator` once
-> to create it, then switch to `StreamingOrchestrator` for subsequent runs.
+> **Target table auto-created:** The streaming orchestrator creates the
+> target table and seeds default rows on the first micro-batch if it
+> doesn't exist. No need to run batch first.
 > See [Streaming CDF](STREAMING.md) for full documentation.
 
 ### transformation_sql
@@ -330,7 +323,6 @@ Configuration for handling facts that arrive before dimension data.
 - `fact_join_key` - Column in fact source
 - `dimension_join_key` - Column in dimension
 - `surrogate_key_col` - Dimension's surrogate key column
-- `surrogate_key_strategy` - How to generate skeleton keys
 
 **Example:**
 
@@ -340,8 +332,82 @@ early_arriving_facts:
     fact_join_key: employee_id
     dimension_join_key: employee_id
     surrogate_key_col: employee_sk
-    surrogate_key_strategy: identity  # Use identity for dimension surrogates
 ```
+
+## PII Masking
+
+The framework supports configurable, per-column PII masking declared
+directly in the YAML config.  Masking is applied **after**
+`transformation_sql` and **before** validation and merge, so sensitive
+data never lands in the target Delta table.
+
+### Configuration
+
+```yaml
+pii:
+  columns:
+    - column: email
+      strategy: hash              # sha256(value + column_name), irreversible
+    - column: address
+      strategy: mask              # replace with "**********"
+      reveal_prefix: 5            # keep first 5 chars: "12345**********"
+      mask_char: "*"              # default
+    - column: ssn
+      strategy: null              # set to NULL
+    - column: phone
+      strategy: drop              # remove column entirely
+```
+
+### Strategies
+
+| Strategy | What it does | Reversible? | Use case |
+|----------|-------------|-------------|----------|
+| `hash` | `xxhash64(cast(col as string), col_name)` — 64-bit irreversible hash | No | Pseudonymization. Same input always produces the same hash, so hashed columns can be used for joins and equality checks. Uses xxhash64 (~1.8x faster than SHA-256). |
+| `mask` | Replace value with `mask_char * 10`, optionally reveal first N chars | No | Partial visibility (e.g., `"12345**********"` for address). Useful when some characters are needed for analytics (ZIP code, area code). |
+| `null` | Set column to `NULL` | No | Column retained for schema compatibility but value removed. |
+| `drop` | Remove column from DataFrame entirely | No | Data minimization — downstream consumers never see the column. |
+
+### Fields
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `column` | Yes | — | Column name in the transformed DataFrame |
+| `strategy` | No | `mask` | One of `hash`, `mask`, `null`, `drop` |
+| `reveal_prefix` | No | `0` | Number of leading characters to keep (only used by `mask`) |
+| `mask_char` | No | `"*"` | Character to use for masking (only used by `mask`) |
+
+### Runtime behavior
+
+**Local Spark / OSS Delta:**
+- `apply_pii_masking()` runs in the orchestrator after `transformation_sql`
+  and before FK fill, validation, and merge.
+- PII values are transformed in-flight; the Delta table only ever stores
+  masked/hashed values.
+
+**Databricks (Unity Catalog):**
+- In addition to transform-time masking, `TableCreator._apply_pii_masks`
+  emits `ALTER TABLE ... ALTER COLUMN ... SET MASK (...)` DDL on table
+  creation. This enforces role-based read-time masking via Unity Catalog,
+  so even users with `SELECT` access see masked values unless they have
+  the `MASK` exemption (via `UNMASK` privilege).
+- The transform-time masking still runs, so the table stores already-masked
+  data. The Delta MASK provides an additional layer for any columns that
+  might be added later without PII config.
+
+### Interaction with other features
+
+- **Fingerprint:** PII config is included in the config fingerprint hash,
+  so changing PII strategies invalidates the validation-skip cache.
+- **SCD2 history:** If a PII column is in `track_history_columns`, the
+  hashed/masked value is what gets versioned. Changing the PII strategy
+  will produce a new SCD2 version for every row (since the hashdiff changes).
+  To avoid this, consider removing PII columns from `track_history_columns`.
+- **FK validation:** If a PII column is also a FK column, hashing it will
+  break FK validation (the dimension's SK won't match the fact's hashed FK).
+  Do not hash FK columns.
+- **Schema evolution:** If `drop` strategy is used, the column is removed
+  from the DataFrame but the target table schema is not altered. Use
+  `schema_evolution: true` if you want the column dropped from the table too.
 
 ## Standard Columns
 
@@ -386,10 +452,10 @@ config_yaml = config_template.render(env="prod")
 
 See `examples/configs/` for:
 
-- `dim_customer.yml` - SCD2 with hash keys
-- `dim_employee_scd2_identity.yml` - SCD2 with identity columns
+- `dim_customer.yml` - SCD2 dimension
 - `dim_product.yml` - SCD1 dimension
 - `fact_sales.yml` - Fact with early arriving facts
+- `tests/golden/dim_customer.yml` - SCD2 with PII masking (email: hash, address: mask)
 
 ## Performance Features (Feature Flags)
 
@@ -399,4 +465,3 @@ The following environment variables control performance optimizations and valida
 | ----------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `KIMBALL_ENABLE_DEV_CHECKS`         | `0` (Disabled) | **Strict Mode**. Enables expensive data quality counts (validation) and pre-merge grain checks (merger). Recommended for Dev/Test only.                       |
 | `KIMBALL_ENABLE_INLINE_OPTIMIZE`    | `0` (Disabled) | Enables `OPTIMIZE` command immediately after every merge. Not recommended for high-frequency or streaming jobs (adds latency). Use async maintenance instead. |
-| `KIMBALL_ALLOW_UNSAFE_SEQUENCE_KEY` | `0` (Blocked)  | **Dangerous**. Overrides the blockage of `SequenceKeyGenerator`. Setting this to `1` may cause OOM errors on large datasets due to global sort.               |

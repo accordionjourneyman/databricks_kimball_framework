@@ -7,7 +7,6 @@ keys:
 
 # New configuration for surrogate key strategy
 # SCD2 requires identity strategy; hash violates Kimball principles for versioned dimensions
-surrogate_key_strategy: identity  # Options: identity, hash (SCD1 only), sequence
 
 # Columns that trigger a new SCD2 version when changed
 track_history_columns: 

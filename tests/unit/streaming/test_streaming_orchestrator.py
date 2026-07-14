@@ -6,8 +6,24 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kimball.common.config import SourceConfig, StreamingSourceConfig, TableConfig
+from kimball.common.config import (
+    ForeignKeyConfig,
+    PIIColumnConfig,
+    PIIPolicy,
+    SourceConfig,
+    StreamingSourceConfig,
+    TableConfig,
+)
 from kimball.streaming.orchestrator import StreamingOrchestrator
+
+from pyspark.sql.types import StringType
+
+
+@pytest.fixture(autouse=True)
+def _patch_spark_fns():
+    """Patch Spark functions that require an active SparkContext."""
+    with patch("kimball.streaming.services.microbatch.spark_count", return_value=MagicMock()):
+        yield
 
 
 def _make_config(streaming_enabled: bool) -> TableConfig:
@@ -210,11 +226,9 @@ class TestPerVersionForeachBatch:
             orch._execute_microbatch_per_version(batch_df, cfg.sources[0], 7)
 
         assert calls == ["silver.customers"] * 3
-        # Verify filter called for versions 1, 2, 3 in order
-        assert batch_df.filter.call_count == 3
-        assert batch_df.filter.call_args_list[0][0][0] == "`_commit_version` = 1"
-        assert batch_df.filter.call_args_list[1][0][0] == "`_commit_version` = 2"
-        assert batch_df.filter.call_args_list[2][0][0] == "`_commit_version` = 3"
+        # Verify the method reads from the batch_table (already materialised
+        # in _foreach) rather than writing its own temp table.
+        assert spark.table.call_count == 3  # one per version
 
     def test_per_version_falls_back_when_no_commit_version(self) -> None:
         spark = MagicMock()
@@ -275,3 +289,119 @@ class TestPerVersionForeachBatch:
             batch_df.filter.return_value, cfg.sources[0], 42
         )
         mock_per_version.assert_not_called()
+
+
+# ===================================================================
+# Streaming feature parity tests (PII, FK validation, grain, target creation)
+# ===================================================================
+
+class TestStreamingPIIMasking:
+    def test_pii_masking_applied_in_microbatch(self):
+        cfg = _make_config(True)
+        cfg.transformation_sql = "SELECT customer_id, email FROM c"
+        cfg.pii = PIIPolicy(columns=[PIIColumnConfig(column="email", strategy="hash")])
+        spark = MagicMock()
+        spark.catalog.tableExists.return_value = True
+        orch = StreamingOrchestrator(cfg, spark=spark)
+
+        source_df = MagicMock()
+        source_df.columns = ["customer_id", "email"]
+        source_df.withColumn.return_value = source_df
+        source_df.join.return_value = source_df
+        with patch.object(spark, "sql", return_value=source_df):
+            with patch("kimball.processing.merger.merge"):
+                with patch("kimball.streaming.services.microbatch.StreamingMicroBatchProcessor.ensure_target_table"):
+                    with patch("kimball.streaming.services.microbatch.apply_pii_masking", return_value=source_df) as mock_pii:
+                        orch._execute_one_microbatch(
+                            MagicMock(columns=["customer_id", "email"]),
+                            cfg.sources[0],
+                            1,
+                        )
+        mock_pii.assert_called_once()
+
+
+class TestStreamingFKValidation:
+    def test_fk_validation_runs_for_fact(self):
+        src = SourceConfig(
+            name="silver.orders",
+            alias="oi",
+            cdc_strategy="cdf",
+            primary_keys=["order_id"],
+        )
+        cfg = TableConfig(
+            table_name="gold.fact_sales",
+            table_type="fact",
+            merge_keys=["order_id"],
+            sources=[src],
+            foreign_keys=[ForeignKeyConfig(column="customer_sk", references="gold.dim_customer")],
+        )
+        spark = MagicMock()
+        spark.catalog.tableExists.return_value = True
+        orch = StreamingOrchestrator(cfg, spark=spark)
+
+        source_df = MagicMock()
+        source_df.columns = ["order_id", "customer_sk"]
+        with patch.object(spark, "sql", return_value=source_df):
+            with patch("kimball.processing.merger.merge"):
+                with patch("kimball.streaming.services.microbatch.StreamingMicroBatchProcessor.ensure_target_table"):
+                    with patch("kimball.streaming.services.microbatch.DataQualityValidator") as mock_val_cls:
+                        mock_val = mock_val_cls.return_value
+                        mock_report = MagicMock()
+                        mock_report.results = []
+                        mock_val.validate_fact_fk_integrity.return_value = mock_report
+                        orch._execute_one_microbatch(
+                            MagicMock(columns=["order_id"]), cfg.sources[0], 1
+                        )
+        mock_val.validate_fact_fk_integrity.assert_called_once()
+
+
+class TestStreamingGrainValidation:
+    def test_grain_violation_raises(self):
+        cfg = _make_config(True)
+        cfg.transformation_sql = "SELECT customer_id FROM c"
+        spark = MagicMock()
+        spark.catalog.tableExists.return_value = True
+        orch = StreamingOrchestrator(cfg, spark=spark)
+
+        source_df = MagicMock()
+        source_df.columns = ["customer_id"]
+        source_df.join.return_value = source_df
+        groupby_result = MagicMock()
+        agg_result = MagicMock()
+        filter_result = MagicMock()
+        limit_result = MagicMock()
+        limit_result.head.return_value = [{"__grain_count": 2}]
+        limit_result.__len__ = lambda self: 1
+        filter_result.limit.return_value = limit_result
+        agg_result.filter.return_value = filter_result
+        groupby_result.agg.return_value = agg_result
+        source_df.groupBy.return_value = groupby_result
+
+        with patch.object(spark, "sql", return_value=source_df):
+            with patch("kimball.processing.merger.merge"):
+                with patch("kimball.streaming.services.microbatch.StreamingMicroBatchProcessor.ensure_target_table"):
+                    with pytest.raises(ValueError, match="Grain violation"):
+                        orch._execute_one_microbatch(
+                            MagicMock(columns=["customer_id"]), cfg.sources[0], 1
+                        )
+
+
+class TestStreamingTargetCreation:
+    def test_creates_table_when_missing(self):
+        cfg = _make_config(True)
+        cfg.transformation_sql = "SELECT customer_id FROM c"
+        spark = MagicMock()
+        spark.catalog.tableExists.return_value = False
+        orch = StreamingOrchestrator(cfg, spark=spark)
+
+        source_df = MagicMock()
+        source_df.columns = ["customer_id"]
+        source_df.limit.return_value = source_df
+        with patch.object(spark, "sql", return_value=source_df):
+            with patch("kimball.streaming.services.microbatch.TableCreator") as mock_tc_cls:
+                mock_tc = mock_tc_cls.return_value
+                mock_tc.add_system_columns.return_value = source_df
+                with patch("kimball.processing.merger.ensure_scd2_defaults"):
+                    processor = orch._get_processor()
+                    processor.ensure_target_table(source_df)
+        mock_tc.create_table_with_clustering.assert_called_once()

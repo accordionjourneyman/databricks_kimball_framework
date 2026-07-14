@@ -169,7 +169,6 @@ scd_type: 2
 keys:
   surrogate_key: seller_sk
   natural_keys: [seller_id]
-surrogate_key_strategy: identity
 track_history_columns: [seller_city, seller_state]
 sources:
   - name: {test_db}.sellers
@@ -293,7 +292,6 @@ scd_type: 2
 keys:
   surrogate_key: product_sk
   natural_keys: [product_id]
-surrogate_key_strategy: identity
 track_history_columns: [product_category, product_weight_g]
 sources:
   - name: {test_db}.products

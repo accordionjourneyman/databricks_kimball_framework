@@ -26,12 +26,10 @@ early_arriving_facts:
     fact_join_key: customer_id
     dimension_join_key: customer_id
     surrogate_key_col: customer_sk
-    surrogate_key_strategy: hash
   - dimension_table: {{ env }}_gold.dim_employee
     fact_join_key: employee_id
     dimension_join_key: employee_id
     surrogate_key_col: employee_sk
-    surrogate_key_strategy: identity
 
 # Liquid Clustering for optimal fact table queries
 # Cluster by primary foreign keys and date for best query performance

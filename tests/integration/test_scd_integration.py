@@ -86,7 +86,6 @@ scd_type: 1
 keys:
   surrogate_key: customer_sk
   natural_keys: [customer_id]
-surrogate_key_strategy: identity
 delete_strategy: hard
 sources:
   - name: {test_db}.customers_src
@@ -171,7 +170,6 @@ scd_type: 2
 keys:
   surrogate_key: product_sk
   natural_keys: [product_id]
-surrogate_key_strategy: identity
 track_history_columns: [name, price]
 sources:
   - name: {test_db}.products_src
@@ -205,17 +203,14 @@ transformation_sql: |
         all_rows = (
             spark.table(f"{test_db}.dim_product")
             .filter("product_id = 100")
-            .orderBy("product_sk")
             .collect()
         )
 
         # Should have 2 rows: old (expired) + new (current)
         assert len(all_rows) == 2
-        old_row = all_rows[0]
-        new_row = all_rows[1]
-        assert not old_row["__is_current"]
+        old_row = [r for r in all_rows if not r["__is_current"]][0]
+        new_row = [r for r in all_rows if r["__is_current"]][0]
         assert old_row["price"] == 9.99
-        assert new_row["__is_current"]
         assert new_row["price"] == 14.99
         # SKs should be different (new version gets new SK)
         assert old_row["product_sk"] != new_row["product_sk"]
@@ -248,7 +243,6 @@ scd_type: 2
 keys:
   surrogate_key: customer_sk
   natural_keys: [customer_id]
-surrogate_key_strategy: identity
 track_history_columns: [name]
 sources:
   - name: {test_db}.customers_del_src
@@ -329,7 +323,6 @@ scd_type: 2
 keys:
   surrogate_key: entity_sk
   natural_keys: [entity_id]
-surrogate_key_strategy: identity
 track_history_columns: [val_a]
 sources:
   - name: {test_db}.evolve_src
@@ -358,7 +351,6 @@ scd_type: 2
 keys:
   surrogate_key: entity_sk
   natural_keys: [entity_id]
-surrogate_key_strategy: identity
 track_history_columns: [val_a, val_b]
 schema_evolution: true
 sources:

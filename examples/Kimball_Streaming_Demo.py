@@ -78,7 +78,6 @@ scd_type: 2
 keys:
   surrogate_key: customer_sk
   natural_keys: [customer_id]
-surrogate_key_strategy: identity
 effective_at: updated_at
 track_history_columns:
   - first_name
@@ -111,7 +110,6 @@ scd_type: 1
 keys:
   surrogate_key: product_sk
   natural_keys: [product_id]
-surrogate_key_strategy: identity
 sources:
   - name: demo_streaming_silver.products
     alias: p

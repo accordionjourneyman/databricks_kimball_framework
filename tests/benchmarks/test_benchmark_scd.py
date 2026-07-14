@@ -119,7 +119,6 @@ scd_type: {scd_type}
 keys:
   surrogate_key: product_sk
   natural_keys: [product_id]
-surrogate_key_strategy: identity
 track_history_columns: {track_yaml}
 sources:
   - name: {db}.products_src
@@ -492,7 +491,6 @@ scd_type: 2
 keys:
   surrogate_key: product_sk
   natural_keys: [product_id]
-surrogate_key_strategy: identity
 track_history_columns: {track_yaml}
 grain_validation: skip
 sources:

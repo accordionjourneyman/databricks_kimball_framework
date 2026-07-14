@@ -78,6 +78,37 @@ class ForeignKeyConfig(BaseModel):
     default_value: int = Field(default=-1)
 
 
+class PIIColumnConfig(BaseModel):
+    """Per-column PII masking declaration.
+
+    See CONFIGURATION.md > PII Masking for full documentation.
+    """
+
+    column: str
+    strategy: Literal["hash", "mask", "null", "drop"] = "mask"
+    reveal_prefix: int = Field(default=0, ge=0)
+    mask_char: str = Field(default="*", max_length=1)
+
+
+class PIIPolicy(BaseModel):
+    """Container for PII column policies declared in the ``pii`` YAML block.
+
+    Applied by ``orchestrator._transform_and_validate`` after
+    ``transformation_sql`` and before validation/merge.  On Databricks,
+    ``TableCreator._apply_pii_masks`` also emits Delta ``MASK`` clauses
+    for role-based read-time enforcement.
+    """
+    columns: list[PIIColumnConfig] = Field(default_factory=list)
+
+    @property
+    def column_map(self) -> dict[str, PIIColumnConfig]:
+        return {c.column: c for c in self.columns}
+
+    @property
+    def drop_columns(self) -> list[str]:
+        return [c.column for c in self.columns if c.strategy == "drop"]
+
+
 class TestDefinition(BaseModel):
     column: str
     tests: list[str | dict[str, Any]] = Field(default_factory=list)
@@ -105,7 +136,6 @@ class TableConfig(BaseModel):
     current_value_columns: list[str] | None = Field(default=None)
     effective_at: str | None = Field(default=None)
     default_rows: dict[str, Any] | None = None
-    surrogate_key_strategy: Literal["identity", "hash", "sequence"] = "identity"
     schema_evolution: bool = False
     early_arriving_facts: list[dict[str, str]] | None = None
     cluster_by: list[str] | None = None
@@ -118,6 +148,7 @@ class TableConfig(BaseModel):
     identity_bridge: IdentityBridgeConfig | None = None
     grain_validation: Literal["error", "warn", "skip"] = "error"
     declare_constraints: bool = True
+    pii: PIIPolicy | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -137,8 +168,6 @@ class TableConfig(BaseModel):
                 raise ValueError("Dimensions require keys.surrogate_key")
             if not self.natural_keys:
                 raise ValueError("Dimensions require keys.natural_keys")
-            if self.scd_type == 2 and self.surrogate_key_strategy == "hash":
-                raise ValueError("SCD Type 2 cannot use 'hash' surrogate key strategy.")
         if self.scd_type == 4 and not self.history_table:
             raise ValueError("SCD Type 4 requires 'history_table' to be specified.")
         if self.scd_type == 6 and not self.current_value_columns:
@@ -271,12 +300,30 @@ class ConfigLoader:
             "natural_keys": sorted(config.natural_keys),
             "track_history_columns": sorted(config.track_history_columns or []),
             "surrogate_key": config.surrogate_key,
-            "surrogate_key_strategy": config.surrogate_key_strategy,
             "transformation_sql": sql_text or config.transformation_sql or "",
             "tests": [
                 {"column": t.column, "tests": t.tests, "severity": t.severity}
                 for t in (config.tests or [])
             ],
+            "foreign_keys": sorted(
+                [
+                    {"column": fk.column, "references": fk.references, "dimension_key": fk.dimension_key}
+                    for fk in (config.foreign_keys or [])
+                ],
+                key=lambda x: x["column"],
+            ),
+            "delete_strategy": config.delete_strategy,
+            "schema_evolution": config.schema_evolution,
+            "effective_at": config.effective_at,
+            "merge_keys": sorted(config.merge_keys or []),
+            "current_value_columns": sorted(config.current_value_columns or []),
+            "pii": sorted(
+                [
+                    {"column": p.column, "strategy": p.strategy}
+                    for p in (config.pii.columns if config.pii else [])
+                ],
+                key=lambda x: x["column"],
+            ),
         }
         encoded = yaml.safe_dump(fingerprint_input, sort_keys=True).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()[:16]

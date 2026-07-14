@@ -4,7 +4,6 @@ scd_type: 1
 keys:
   surrogate_key: customer_sk
   natural_keys: [customer_id]
-surrogate_key_strategy: identity
 identity_bridge:
   table: {{ db }}.customer_bridge
   join_on: customer_id

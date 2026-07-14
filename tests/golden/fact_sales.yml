@@ -54,4 +54,3 @@ early_arriving_facts:
     fact_join_key: customer_id
     dimension_join_key: customer_id
     surrogate_key_col: customer_sk
-    surrogate_key_strategy: identity

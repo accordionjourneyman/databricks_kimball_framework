@@ -21,8 +21,8 @@ class SkeletonGenerator:
         fact_join_key: str,
         dim_join_key: str,
         surrogate_key_col: str,
-        surrogate_key_strategy: str,
         batch_id: str | None = None,
+        effective_at_column: str | None = None,
     ) -> None:
         if not self.spark.catalog.tableExists(dim_table_name):
             logger.info(
@@ -62,19 +62,12 @@ class SkeletonGenerator:
             if field.name not in existing and field.name != surrogate_key_col:
                 exprs.append(lit(None).cast(field.dataType).alias(field.name))
         skeletons = skeletons.select(*exprs)
-        if surrogate_key_strategy == "hash":
-            from kimball.processing.key_generator import HashKeyGenerator
+        from kimball.processing.key_generator import HashKeyGenerator
 
-            skeletons = HashKeyGenerator([dim_join_key]).generate_keys(
-                skeletons, surrogate_key_col
-            )
+        skeletons = HashKeyGenerator(
+            [dim_join_key], version_column=effective_at_column
+        ).generate_keys(skeletons, surrogate_key_col)
         cols = [f.name for f in dim_df.schema.fields]
-        if (
-            surrogate_key_strategy == "identity"
-            and surrogate_key_col in skeletons.columns
-        ):
-            skeletons = skeletons.drop(surrogate_key_col)
-            cols = [c for c in cols if c != surrogate_key_col]
         dim_table.alias("target").merge(
             skeletons.select(*cols).alias("source"),
             f"target.{dim_join_key} <=> source.{dim_join_key}",

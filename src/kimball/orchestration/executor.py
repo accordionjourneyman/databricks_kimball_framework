@@ -207,8 +207,11 @@ class PipelineExecutor:
                     logger.info(
                         f"\n⚠ Failure detected in {result.table_name}. Cancelling remaining..."
                     )
+                    cancelled = 0
                     for f in future_to_pipeline:
-                        f.cancel()
+                        if f.cancel():
+                            cancelled += 1
+                    logger.info(f"Cancelled {cancelled} unstarted pipelines")
                     break
         return results
 

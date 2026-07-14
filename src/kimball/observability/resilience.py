@@ -145,8 +145,8 @@ class QueryMetricsCollector:
         total_time = 0
         operation_count = 0
         for m in self.metrics:
-            total_time += m.get("duration_ms", 0)
             if m.get("operation") != "total_pipeline":
+                total_time += m.get("duration_ms", 0)
                 operation_count += 1
 
         return {

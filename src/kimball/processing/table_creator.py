@@ -46,7 +46,6 @@ class TableCreator:
         df: DataFrame,
         scd_type: int,
         surrogate_key: str | None,
-        surrogate_key_strategy: str,
         current_value_columns: list[str] | None = None,
     ) -> DataFrame:
         """
@@ -70,7 +69,7 @@ class TableCreator:
             result_df = result_df.withColumn(
                 "__valid_to", lit(None).cast(TimestampType())
             )
-            result_df = result_df.withColumn("hashdiff", lit(None).cast(StringType()))
+            result_df = result_df.withColumn("hashdiff", lit(None).cast(LongType()))
             result_df = result_df.withColumn(
                 "__is_skeleton", lit(False)
             )  # For skeleton hydration
@@ -85,18 +84,11 @@ class TableCreator:
                         f"current_{col_name}", lit(None).cast(col_type)
                     )
 
-        # Add surrogate key column according to strategy
+        # Add surrogate key column (always LongType for xxhash64)
         if surrogate_key:
-            if surrogate_key_strategy in ("identity", "sequence"):
-                # numeric surrogate key
-                result_df = result_df.withColumn(
-                    surrogate_key, lit(None).cast(LongType())
-                )
-            else:
-                # default to string for hash or unknown strategies
-                result_df = result_df.withColumn(
-                    surrogate_key, lit(None).cast(StringType())
-                )
+            result_df = result_df.withColumn(
+                surrogate_key, lit(None).cast(LongType())
+            )
 
         return result_df
 
@@ -150,7 +142,6 @@ class TableCreator:
         cluster_by: list[str] | None = None,
         partition_by: list[str] | None = None,
         surrogate_key_col: str | None = None,
-        surrogate_key_strategy: str | None = None,
     ) -> None:
         """
         Creates a Delta table with optional Liquid Clustering.
@@ -162,7 +153,6 @@ class TableCreator:
             cluster_by: Columns for Liquid Clustering (deprecated, use config)
             partition_by: Columns for partitioning (optional, usually not needed with clustering)
             surrogate_key_col: Name of the surrogate key column (if any)
-            surrogate_key_strategy: Strategy for SK generation ('identity', 'hash', 'sequence')
         """
         if get_spark().catalog.tableExists(table_name):
             logger.info(f"Table {table_name} already exists. Skipping creation.")
@@ -229,13 +219,9 @@ class TableCreator:
             if col_name in CDF_METADATA:
                 continue
 
-            # Check if this is the surrogate key column with identity strategy
-            if col_name == surrogate_key_col and surrogate_key_strategy == "identity":
-                col_def = policy.identity_column_def(col_name)
-            else:
-                col_def = f"{col_name} {field.dataType.simpleString()}"
-                if not field.nullable or col_name in not_null_cols:
-                    col_def += " NOT NULL"
+            col_def = f"{col_name} {field.dataType.simpleString()}"
+            if not field.nullable or col_name in not_null_cols:
+                col_def += " NOT NULL"
             columns.append(col_def)
 
         columns_sql = ",\n  ".join(columns)
@@ -255,10 +241,6 @@ class TableCreator:
         # Enable Change Data Feed by default
         create_sql += "\nTBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"
 
-        if surrogate_key_col and surrogate_key_strategy == "identity":
-            logger.info(
-                f"  - Surrogate key '{surrogate_key_col}' using IDENTITY column"
-            )
         if cluster_by:
             logger.info(f"  - Liquid Clustering on {cluster_by}")
         get_spark().sql(create_sql)
@@ -290,7 +272,7 @@ class TableCreator:
 
         # Apply basic Delta constraints after table creation
         self.apply_basic_constraints(
-            table_name, surrogate_key_col, schema_df, surrogate_key_strategy
+            table_name, surrogate_key_col, schema_df
         )
 
         # Apply additional constraints from config
@@ -302,7 +284,6 @@ class TableCreator:
         table_name: str,
         surrogate_key_col: str | None = None,
         schema_df: DataFrame | None = None,
-        surrogate_key_strategy: str = "identity",
     ) -> None:
         """
         Apply basic Delta constraints using ALTER TABLE statements.
@@ -311,14 +292,10 @@ class TableCreator:
             table_name: Full table name
             surrogate_key_col: Name of the surrogate key column
             schema_df: DataFrame with schema information
-            surrogate_key_strategy: Strategy for SK generation
         """
         quoted_table_name = quote_table_name(table_name)
-        # Only add NOT NULL CHECK for non-identity strategies.
-        # Identity columns auto-generate values; the CHECK would reject
-        # rows where the SK is omitted from the insert (which is correct
-        # for identity columns).
-        if surrogate_key_col and surrogate_key_strategy != "identity":
+        # Hash SKs are always populated by the framework, so enforce NOT NULL.
+        if surrogate_key_col:
             alter_sql = f"ALTER TABLE {quoted_table_name} ADD CONSTRAINT sk_not_null CHECK (`{surrogate_key_col}` IS NOT NULL)"
             try:
                 get_spark().sql(alter_sql)
@@ -414,6 +391,10 @@ class TableCreator:
         if config.get("declare_constraints", True):
             self._declare_pk_fk_constraints(table_name, config)
 
+        pii_config = config.get("pii")
+        if pii_config:
+            self._apply_pii_masks(table_name, pii_config)
+
     def _declare_pk_fk_constraints(
         self, table_name: str, config: dict[str, Any]
     ) -> None:
@@ -433,7 +414,12 @@ class TableCreator:
         quoted = quote_table_name(table_name)
         table_short = table_name.split(".")[-1]
 
-        # --- Primary key on surrogate key ---
+        # --- Primary key on surrogate key (all SCD types) ---
+        # The SK is the merge key for all SCD types, so it always gets
+        # the PRIMARY KEY constraint.  SCD2+ tables have multiple rows
+        # per natural key (history), so a PK on natural_keys would be
+        # incorrect; SCD1 tables already get a unique index on NKs via
+        # the SK PK since the SK is derived deterministically from them.
         surrogate_key = config.get("surrogate_key")
         if surrogate_key and _is_valid_identifier(surrogate_key):
             pk_name = f"pk_{table_short}_{surrogate_key}"
@@ -446,28 +432,6 @@ class TableCreator:
                 logger.info(f"Declared PRIMARY KEY({surrogate_key}) on {table_name}")
             except Exception as e:
                 logger.warning(f"Could not declare PK on {surrogate_key}: {e}")
-
-        # --- Primary key on natural keys (SCD1 dimensions only) ---
-        # SCD2 tables have multiple rows per natural key (history), so a
-        # PK on natural_keys would be incorrect.
-        scd_type = config.get("scd_type", 1)
-        natural_keys = config.get("natural_keys") or []
-        if (
-            scd_type == 1
-            and natural_keys
-            and all(_is_valid_identifier(k) for k in natural_keys)
-        ):
-            nk_name = f"nk_{table_short}_{'_'.join(natural_keys)}"
-            nk_cols = ", ".join(f"`{k}`" for k in natural_keys)
-            nk_sql = (
-                f"ALTER TABLE {quoted} "
-                f"ADD CONSTRAINT `{nk_name}` PRIMARY KEY ({nk_cols})"
-            )
-            try:
-                get_spark().sql(nk_sql)
-                logger.info(f"Declared PRIMARY KEY({nk_cols}) on {table_name}")
-            except Exception as e:
-                logger.warning(f"Could not declare natural-key PK: {e}")
 
         # --- Foreign keys (fact tables) ---
         foreign_keys = config.get("foreign_keys") or []
@@ -506,10 +470,41 @@ class TableCreator:
             except Exception as e:
                 logger.warning(f"Could not declare FK on {fk_col}: {e}")
 
+    def _apply_pii_masks(self, table_name: str, pii_config: dict[str, Any]) -> None:
+        policy = get_runtime_policy()
+        if not policy.is_databricks:
+            return
+        quoted = quote_table_name(table_name)
+        columns = pii_config.get("columns", []) if isinstance(pii_config, dict) else pii_config
+        for col_cfg in columns:
+            if isinstance(col_cfg, dict):
+                col_name = col_cfg.get("column")
+                strategy = col_cfg.get("strategy", "mask")
+            else:
+                col_name = getattr(col_cfg, "column", None)
+                strategy = getattr(col_cfg, "strategy", "mask")
+            if not col_name or not _is_valid_identifier(col_name):
+                continue
+            if strategy == "drop":
+                continue
+            if strategy == "null":
+                mask_expr = "NULL"
+            elif strategy == "hash":
+                mask_expr = f"xxhash64(cast(`{col_name}` as string), '{col_name}')"
+            elif strategy == "mask":
+                mask_char = col_cfg.get("mask_char", "*") if isinstance(col_cfg, dict) else getattr(col_cfg, "mask_char", "*")
+                mask_expr = f"'{mask_char * 10}'"
+            else:
+                continue
+            try:
+                get_spark().sql(
+                    f"ALTER TABLE {quoted} ALTER COLUMN `{col_name}` SET MASK ({mask_expr})"
+                )
+                logger.info(f"Applied MASK({strategy}) to {col_name} on {table_name}")
+            except Exception as e:
+                logger.warning(f"Could not apply MASK to {col_name}: {e}")
+
     def enable_schema_auto_merge(self) -> None:
-        """
-        Enable schema auto-merge for the current session.
-        """
         get_spark().conf.set(SPARK_CONF_AUTO_MERGE, "true")
         logger.info("Enabled schema auto-merge for current session")
 

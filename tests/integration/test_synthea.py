@@ -75,7 +75,6 @@ scd_type: 2
 keys:
   surrogate_key: patient_sk
   natural_keys: [patient_id]
-surrogate_key_strategy: identity
 track_history_columns: [city, state, marital_status]
 sources:
   - name: {test_db}.patients
@@ -161,7 +160,6 @@ scd_type: 1
 keys:
   surrogate_key: patient_sk
   natural_keys: [patient_id]
-surrogate_key_strategy: identity
 sources:
   - name: {test_db}.patients
     alias: p
@@ -251,7 +249,6 @@ scd_type: 1
 keys:
   surrogate_key: provider_sk
   natural_keys: [provider_id]
-surrogate_key_strategy: identity
 sources:
   - name: {test_db}.providers
     alias: pr

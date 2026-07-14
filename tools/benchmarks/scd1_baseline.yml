@@ -4,7 +4,6 @@ scd_type: 1
 keys:
   surrogate_key: product_sk
   natural_keys: [product_id]
-surrogate_key_strategy: identity
 sources:
   - name: {{ db }}.products_src
     alias: p

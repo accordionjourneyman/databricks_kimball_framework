@@ -1,13 +1,13 @@
 {
   "scenario": "validation_state_aware",
   "scale": "tiny",
-  "first_ms": 24074.724674224854,
-  "second_ms": 17268.60213279724,
+  "first_ms": 15414.126634597778,
+  "second_ms": 12864.284992218018,
   "params": {
     "products": 5000,
     "n_changed": 1500,
     "n_deleted": 500,
     "n_new": 500
   },
-  "timestamp": "2026-07-05T19:59:13"
+  "timestamp": "2026-07-10T18:12:20"
 }

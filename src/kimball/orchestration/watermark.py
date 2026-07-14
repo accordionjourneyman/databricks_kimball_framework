@@ -3,13 +3,15 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import time
 import uuid
 from datetime import datetime
 from typing import Any, TypedDict, cast
 
 from delta.tables import DeltaTable
 from pyspark.sql import Column, SparkSession
-from pyspark.sql.functions import col
+from pyspark.sql import functions as F
+from pyspark.sql.functions import col, current_timestamp
 from pyspark.sql.types import (
     LongType,
     StringType,
@@ -99,23 +101,27 @@ class ETLControlManager:
         if self.spark.catalog.tableExists(self.fq_table):
             self._migrate_schema()
             return
-        self.spark.sql(f"""
-            CREATE TABLE IF NOT EXISTS {self.fq_table} (
-                target_table STRING NOT NULL,
-                source_table STRING NOT NULL,
-                last_processed_version LONG,
-                batch_id STRING,
-                batch_started_at TIMESTAMP,
-                batch_completed_at TIMESTAMP,
-                batch_status STRING,
-                rows_read LONG,
-                rows_written LONG,
-                error_message STRING,
-                updated_at TIMESTAMP NOT NULL,
-                config_fingerprint STRING,
-                source_schema_fingerprint STRING
-            ) USING DELTA PARTITIONED BY (target_table, source_table)
-        """)
+        try:
+            self.spark.sql(f"""
+                CREATE TABLE IF NOT EXISTS {self.fq_table} (
+                    target_table STRING NOT NULL,
+                    source_table STRING NOT NULL,
+                    last_processed_version LONG,
+                    batch_id STRING,
+                    batch_started_at TIMESTAMP,
+                    batch_completed_at TIMESTAMP,
+                    batch_status STRING,
+                    rows_read LONG,
+                    rows_written LONG,
+                    error_message STRING,
+                    updated_at TIMESTAMP NOT NULL,
+                    config_fingerprint STRING,
+                    source_schema_fingerprint STRING
+                ) USING DELTA PARTITIONED BY (target_table, source_table)
+            """)
+        except Exception as exc:
+            if not self.spark.catalog.tableExists(self.fq_table):
+                raise
 
     def _migrate_schema(self) -> None:
         existing = {
@@ -191,13 +197,13 @@ class ETLControlManager:
         return batch_id
 
     def batch_start_all(
-        self, target_table: str, source_tables: list[str]
+        self, target_table: str, source_tables: list[str], run_batch_id: str | None = None
     ) -> dict[str, str]:
         timestamp = datetime.now()
         records = []
         batch_ids = {}
         for source in source_tables:
-            batch_id = str(uuid.uuid4())
+            batch_id = run_batch_id or str(uuid.uuid4())
             batch_ids[source] = batch_id
             records.append(
                 {
@@ -275,13 +281,14 @@ class ETLControlManager:
             "error_message": row["error_message"],
         }
 
-    def get_running_batches(self, target_table: str) -> list[dict[str, str]]:
+    def get_running_batches(self, target_table: str, ttl_minutes: int = 60) -> list[dict[str, str]]:
         try:
             rows = (
                 self.spark.table(self.fq_table)
                 .filter(
                     (col("target_table") == target_table)
                     & (col("batch_status") == "RUNNING")
+                    & (col("batch_started_at") > (current_timestamp() - F.expr(f"INTERVAL {ttl_minutes} MINUTES")))
                 )
                 .select("batch_id", "source_table")
                 .collect()
@@ -362,10 +369,14 @@ class ETLControlManager:
 
         Used by ``full_reload`` to force the next run to start from scratch.
         """
-        condition = f"target_table = '{target_table}'"
+        from kimball.common.utils import quote_table_name
+
+        safe_target = target_table.replace("'", "''")
+        condition = f"target_table = '{safe_target}'"
         if source_table is not None:
-            condition += f" AND source_table = '{source_table}'"
-        self.spark.sql(f"DELETE FROM {self.fq_table} WHERE {condition}")
+            safe_source = source_table.replace("'", "''")
+            condition += f" AND source_table = '{safe_source}'"
+        self.spark.sql(f"DELETE FROM {quote_table_name(self.fq_table)} WHERE {condition}")
 
     def _upsert_control_record(
         self, target_table: str, source_table: str, updates: ETLControlRecord
@@ -393,23 +404,46 @@ class ETLControlManager:
             normalized.append(item)
         update_df = self.spark.createDataFrame(normalized, schema=self._UPDATE_SCHEMA)
         update_set = {"updated_at": "u.updated_at"}
+        schema_field_names = {field.name for field in self._UPDATE_SCHEMA.fields}
         all_update_keys: set[str] = set()
         for record in records:
             all_update_keys.update(record.keys())
         for key in all_update_keys:
             if (
                 key not in {"target_table", "source_table", "updated_at"}
+                and key in schema_field_names
                 and key in update_df.columns
             ):
                 update_set[key] = f"u.{key}"
         insert_values = {
             field.name: f"u.{field.name}" for field in self._UPDATE_SCHEMA.fields
         }
-        delta_table.alias("w").merge(
-            update_df.alias("u"),
-            "w.target_table = u.target_table AND w.source_table = u.source_table",
-        ).whenMatchedUpdate(
-            set=cast(dict[str, str | Column], update_set)
-        ).whenNotMatchedInsert(
-            values=cast(dict[str, str | Column], insert_values)
-        ).execute()
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                delta_table.alias("w").merge(
+                    update_df.alias("u"),
+                    "w.target_table = u.target_table AND w.source_table = u.source_table",
+                ).whenMatchedUpdate(
+                    set=cast(dict[str, str | Column], update_set)
+                ).whenNotMatchedInsert(
+                    values=cast(dict[str, str | Column], insert_values)
+                ).execute()
+                return
+            except Exception as exc:
+                exc_str = str(exc)
+                is_concurrent = (
+                    "ConcurrentAppend" in exc_str
+                    or "ProtocolChanged" in exc_str
+                    or "DELTA_CONCURRENT" in exc_str
+                )
+                if is_concurrent and attempt < max_retries - 1:
+                    logger.warning(
+                        "etl_control MERGE conflict (attempt %d/%d), retrying",
+                        attempt + 1,
+                        max_retries,
+                    )
+                    time.sleep(0.5 * (attempt + 1))
+                    delta_table = DeltaTable.forName(self.spark, self.fq_table)
+                    continue
+                raise

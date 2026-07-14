@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from delta.tables import DeltaTable
+from pyspark.errors import AnalysisException
 
 from kimball.common.spark_session import get_spark
 from kimball.common.utils import quote_table_name
@@ -37,8 +38,8 @@ class TransactionManager:
             if not history:
                 return -1  # Empty table, arguably version 0 or -1
             return int(history[0]["version"])
-        except Exception:
-            # If table doesn't exist or not a delta table
+        except AnalysisException:
+            # Table doesn't exist or isn't a Delta table
             return -1
 
     def _rollback(self, table_name: str, version: int) -> None:

@@ -240,7 +240,6 @@ class TestGenerateSkeletons:
             "dimension_table": "dim_customer",
             "dimension_join_key": "customer_sk",
             "surrogate_key_col": "customer_sk",
-            "surrogate_key_strategy": "identity",
         }
         orchestrator.config.early_arriving_facts = [eaf]
         mock_df = MagicMock()
@@ -254,8 +253,8 @@ class TestGenerateSkeletons:
             fact_join_key="fk_customer",
             dim_join_key="customer_sk",
             surrogate_key_col="customer_sk",
-            surrogate_key_strategy="identity",
             batch_id="batch-1",
+            effective_at_column=orchestrator.config.effective_at,
         )
 
 

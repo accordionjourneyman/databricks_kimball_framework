@@ -85,7 +85,6 @@ scd_type: 1
 keys:
   surrogate_key: customer_sk
   natural_keys: [customer_id]
-surrogate_key_strategy: identity
 delete_strategy: hard
 sources:
   - name: {test_db}.customers_src
@@ -122,7 +121,6 @@ scd_type: 1
 keys:
   surrogate_key: customer_sk
   natural_keys: [customer_id]
-surrogate_key_strategy: identity
 delete_strategy: hard
 sources:
   - name: {test_db}.customers_src
@@ -195,7 +193,6 @@ scd_type: 1
 keys:
   surrogate_key: product_sk
   natural_keys: [product_id]
-surrogate_key_strategy: identity
 delete_strategy: hard
 sources:
   - name: {test_db}.products_src
@@ -222,7 +219,6 @@ scd_type: 1
 keys:
   surrogate_key: product_sk
   natural_keys: [product_id]
-surrogate_key_strategy: identity
 delete_strategy: hard
 sources:
   - name: {test_db}.products_src
@@ -274,7 +270,6 @@ scd_type: 1
 keys:
   surrogate_key: sk
   natural_keys: [id]
-surrogate_key_strategy: identity
 delete_strategy: hard
 sources:
   - name: {test_db}.no_stream_src
@@ -332,7 +327,6 @@ scd_type: 2
 keys:
   surrogate_key: customer_sk
   natural_keys: [customer_id]
-surrogate_key_strategy: identity
 effective_at: updated_at
 track_history_columns:
   - address
@@ -366,7 +360,6 @@ scd_type: 2
 keys:
   surrogate_key: customer_sk
   natural_keys: [customer_id]
-surrogate_key_strategy: identity
 effective_at: updated_at
 track_history_columns:
   - address

@@ -143,18 +143,38 @@ def test_get_batch_status_returns_current_state(mock_col, manager, spark_mock):
     assert status["rows_written"] == 50
 
 
+@patch("kimball.orchestration.watermark.F")
+@patch("kimball.orchestration.watermark.current_timestamp")
 @patch("kimball.orchestration.watermark.col")
 def test_get_running_batches_filters_only_running_records(
-    mock_col, manager, spark_mock
+    mock_col, mock_cts, mock_F, manager, spark_mock
 ):
-    spark_mock.table.return_value.filter.return_value.select.return_value.collect.return_value = [
+    cts_result = MagicMock()
+    cts_result.__sub__ = MagicMock(return_value=cts_result)
+    mock_cts.return_value = cts_result
+    mock_F.expr.return_value = MagicMock()
+
+    col_result = MagicMock()
+    col_result.__eq__ = MagicMock(return_value=col_result)
+    col_result.__gt__ = MagicMock(return_value=col_result)
+    col_result.__and__ = MagicMock(return_value=col_result)
+    mock_col.return_value = col_result
+
+    table_mock = MagicMock()
+    table_mock.filter.return_value = table_mock
+    table_mock.select.return_value = table_mock
+    table_mock.collect.return_value = [
         Row(batch_id="batch-1", source_table="source_a"),
         Row(batch_id=None, source_table="source_b"),
     ]
+    spark_mock.table.return_value = table_mock
 
-    assert manager.get_running_batches("target") == [
-        {"batch_id": "batch-1", "source_table": "source_a"}
-    ]
+    result = manager.get_running_batches("target")
+
+    assert len(result) == 1
+    assert result[0] == {"batch_id": "batch-1", "source_table": "source_a"}
+    spark_mock.table.return_value.filter.assert_called_once()
+    spark_mock.table.return_value.select.assert_called_once_with("batch_id", "source_table")
 
 
 @patch("kimball.orchestration.watermark.DeltaTable.forName")

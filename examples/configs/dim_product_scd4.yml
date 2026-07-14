@@ -25,7 +25,6 @@ track_history_columns: ["*"]
 effective_at: updated_at
 
 # Surrogate key strategy
-surrogate_key_strategy: identity
 
 sources:
   - name: silver.products

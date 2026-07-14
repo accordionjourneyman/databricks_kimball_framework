@@ -102,7 +102,7 @@ def analyze_dependencies(
             for src in config.sources:
                 if src.name in known_dimensions:
                     dims.add(src.name)
-                elif "dim" in src.name.lower():
+                elif src.name.lower().startswith("dim_") or src.name.lower().endswith("_dim"):
                     dims.add(src.name)
 
             matrix_data[config.table_name] = dims

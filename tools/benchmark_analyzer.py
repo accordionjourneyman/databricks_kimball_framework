@@ -271,7 +271,7 @@ def generate_recommendations(findings: list[str], results: list[dict]) -> list[s
         if "Window operations" in f:
             recs.append(
                 "row_number() OVER (ORDER BY 1) is a single-partition operation. "
-                "Consider replacing with monotonically_increasing_id() or "
+                "Consider replacing with a hash-based approach or "
                 "pre-fetching max SK via a scalar subquery."
             )
         if "super-linear" in f:

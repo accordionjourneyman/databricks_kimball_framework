@@ -47,6 +47,7 @@ RUN pip install --no-cache-dir \
     jinja2 \
     pydantic \
     pytest \
+    pytest-benchmark \
     ruff
 
 # Download Delta Lake JARs at build time so they're available offline at runtime.

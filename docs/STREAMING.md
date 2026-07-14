@@ -147,28 +147,19 @@ may collapse multiple upstream changes into one SCD2 interval.
 
 ## Limitations
 
-1. **Target table must exist** — streaming does not create tables or seed
-   default rows. Run batch once first.
-
-2. **No schema evolution** — the streaming path does not alter the target
-   table schema. Use batch for schema changes.
-
-3. **No fingerprint caching** — the streaming path does not compute or
-   check config fingerprints. Every micro-batch runs the full merge.
-
-4. **No FK validation** — foreign key checks are not performed in the
-   streaming path. Validate FK constraints in a separate batch pipeline.
-
-5. **No adaptive pruning** — column pruning is not applied. All source
+1. **No adaptive pruning** — column pruning is not applied. All source
    columns are passed through to the merger.
 
-6. **Single source per query** — each CDF source gets its own streaming
+2. **No zombie batch recovery** — streaming does not track zombie batches
+   for rollback. Use batch mode for crash-sensitive pipelines.
+
+3. **Single source per query** — each CDF source gets its own streaming
    query. Multi-source pipelines start one query per CDF source.
 
-7. **Checkpoint state is not portable** — checkpoint directories are tied
+4. **Checkpoint state is not portable** — checkpoint directories are tied
    to the Spark application. Moving or copying them may cause corruption.
 
-8. **`available_now` trigger processes all available data then stops** —
+5. **`available_now` trigger processes all available data then stops** —
    this is the recommended trigger for most use cases. Use
    `processing_time` only when you need continuous ingestion.
 
