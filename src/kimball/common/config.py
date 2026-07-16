@@ -4,6 +4,7 @@ from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError, model_validator
+from pyspark.errors import PySparkException
 
 
 class StreamingSourceConfig(BaseModel):
@@ -58,7 +59,7 @@ class SourceConfig(BaseModel):
     format: str = "delta"
     options: dict[str, str] = Field(default_factory=dict)
     join_on: str | None = None
-    cdc_strategy: Literal["cdf", "full", "timestamp"] = "cdf"
+    cdc_strategy: Literal["cdf", "full", "timestamp", "append"] = "cdf"
     primary_keys: list[str] | None = Field(default=None)
     starting_version: int = Field(default=0, ge=0)
     streaming: StreamingSourceConfig | None = Field(default=None)
@@ -149,6 +150,7 @@ class TableConfig(BaseModel):
     grain_validation: Literal["error", "warn", "skip"] = "error"
     declare_constraints: bool = True
     pii: PIIPolicy | None = None
+    append_only: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -168,6 +170,17 @@ class TableConfig(BaseModel):
                 raise ValueError("Dimensions require keys.surrogate_key")
             if not self.natural_keys:
                 raise ValueError("Dimensions require keys.natural_keys")
+        if self.table_type == "fact" and not self.merge_keys:
+            raise ValueError("fact tables require merge_keys")
+        if self.append_only and self.table_type != "fact":
+            raise ValueError("append_only is only valid for fact tables")
+        if any(s.cdc_strategy == "append" for s in self.sources) and not self.append_only:
+            raise ValueError("cdc_strategy='append' requires append_only=true for the target table")
+        if self.scd_type == 2 and not self.effective_at:
+            raise ValueError(
+                "SCD Type 2 requires 'effective_at' for idempotent history tracking. "
+                "Specify the business-time column (e.g. 'updated_at') in the YAML config."
+            )
         if self.scd_type == 4 and not self.history_table:
             raise ValueError("SCD Type 4 requires 'history_table' to be specified.")
         if self.scd_type == 6 and not self.current_value_columns:
@@ -224,7 +237,7 @@ class ConfigLoader:
             try:
                 self._explain_dry_run(config, spark)
                 return []
-            except Exception as e:
+            except PySparkException as e:
                 issues.append(f"SQL dry-run failed: {e}")
                 return issues
 
@@ -273,7 +286,7 @@ class ConfigLoader:
                         f"CREATE OR REPLACE TEMP VIEW {source.alias} AS SELECT * FROM {view_name}"
                     )
                     views.append(source.alias)
-            except Exception:
+            except PySparkException:
                 pass
         try:
             spark.sql(f"EXPLAIN {config.transformation_sql}").collect()
@@ -281,7 +294,7 @@ class ConfigLoader:
             for v in set(views):
                 try:
                     spark.catalog.dropTempView(v)
-                except Exception:
+                except PySparkException:
                     pass
 
     def compute_fingerprint(

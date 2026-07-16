@@ -1,0 +1,4 @@
+event_id,event_type,event_time,payload
+9001,click,2025-01-15T10:00:00,page=home
+9002,purchase,2025-01-15T10:05:00,item=123
+9003,signup,2025-01-15T10:10:00,plan=pro

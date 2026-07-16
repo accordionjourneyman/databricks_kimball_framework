@@ -121,8 +121,8 @@ class TestBugDoubleFKValidation:
 
         config = TableConfig(
             table_name="test_fact", table_type="fact", scd_type=1,
+            merge_keys=["id"],
             sources=[SourceConfig(name="src", alias="src")],
-            natural_keys=["id"],
             foreign_keys=[ForeignKeyConfig(column="dim_id", references="dim_table", dimension_key="dim_id")],
             # No tests defined
         )

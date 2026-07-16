@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Any, TypedDict, cast
 
 from delta.tables import DeltaTable
+from pyspark.errors import PySparkException
 from pyspark.sql import Column, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.functions import col, current_timestamp
@@ -39,7 +40,7 @@ def compute_source_schema_fingerprint(
         fields = spark.read.format("delta").table(source_name).schema.fields
         schema_repr = ",".join(f"{f.name}:{f.dataType.simpleString()}" for f in fields)
         return hashlib.sha256(schema_repr.encode("utf-8")).hexdigest()[:16]
-    except Exception:
+    except PySparkException:
         return None
 
 
@@ -91,9 +92,9 @@ class ETLControlManager:
     @property
     def spark(self) -> SparkSession:
         if self._spark is None:
-            from databricks.sdk.runtime import spark
+            from kimball.common.spark_session import get_spark
 
-            self._spark = spark
+            self._spark = get_spark()
         return self._spark
 
     def _ensure_table_exists(self) -> None:
@@ -119,7 +120,7 @@ class ETLControlManager:
                     source_schema_fingerprint STRING
                 ) USING DELTA PARTITIONED BY (target_table, source_table)
             """)
-        except Exception as exc:
+        except PySparkException as exc:
             if not self.spark.catalog.tableExists(self.fq_table):
                 raise
 
@@ -147,7 +148,7 @@ class ETLControlManager:
                     self.spark.sql(
                         f"ALTER TABLE {self.fq_table} ADD COLUMN {col_name} {col_type}"
                     )
-                except Exception:
+                except PySparkException:
                     pass  # Column may already exist from concurrent migration
 
     def get_watermark(self, target_table: str, source_table: str) -> int | None:
@@ -298,7 +299,7 @@ class ETLControlManager:
                 for r in rows
                 if r["batch_id"]
             ]
-        except Exception:
+        except PySparkException:
             return []
 
     _UPDATE_SCHEMA = StructType(
@@ -430,7 +431,7 @@ class ETLControlManager:
                     values=cast(dict[str, str | Column], insert_values)
                 ).execute()
                 return
-            except Exception as exc:
+            except PySparkException as exc:
                 exc_str = str(exc)
                 is_concurrent = (
                     "ConcurrentAppend" in exc_str

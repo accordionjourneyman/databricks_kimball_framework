@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import decimal
 import logging
+from datetime import date, datetime
 from typing import Any
 
 from delta.tables import DeltaTable
@@ -15,6 +17,44 @@ from kimball.common.constants import (
 from kimball.common.spark_session import get_spark
 
 logger = logging.getLogger(__name__)
+
+
+def _to_iso(value: Any) -> Any:
+    """Convert datetime/date values to ISO strings for Databricks Connect compatibility.
+
+    Spark Connect serializes Python datetime/date values client-side before
+    sending them to the server.  Some Python/datetime combinations raise
+    ``OSError: [Errno 22] Invalid argument`` during that serialization.
+    Passing ISO strings and letting Spark parse them via the schema is
+    safer and works on both local and remote Spark.
+    """
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
+    return value
+
+
+def _sql_literal(value: Any) -> str:
+    """Render a Python value as a SQL literal for INSERT VALUES.
+
+    Handles strings (single-quote escaped), numbers, booleans, None,
+    and datetime/date via ISO rendering.  Used by ``seed_default_rows``
+    to bypass Databricks Connect's broken ``createDataFrame`` for
+    timestamp columns.
+    """
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, decimal.Decimal):
+        return str(value)
+    iso = _to_iso(value)
+    if isinstance(iso, str):
+        return "'" + iso.replace("'", "''") + "'"
+    return str(iso)
 
 
 def seed_default_rows(
@@ -53,8 +93,7 @@ def seed_default_rows(
                     elif isinstance(dt, (IntegerType, LongType, ShortType)):
                         row[cn] = -1
                     elif isinstance(dt, DecimalType):
-                        from decimal import Decimal
-                        row[cn] = Decimal("-1.0")
+                        row[cn] = decimal.Decimal("-1.0")
                     elif isinstance(dt, (DoubleType, FloatType)):
                         row[cn] = -1.0
                     elif isinstance(dt, BooleanType):
@@ -73,8 +112,7 @@ def seed_default_rows(
                     elif "int" in ds or "long" in ds or "short" in ds:
                         row[cn] = -1
                     elif "decimal" in ds:
-                        from decimal import Decimal
-                        row[cn] = Decimal("-1.0")
+                        row[cn] = decimal.Decimal("-1.0")
                     elif "double" in ds or "float" in ds:
                         row[cn] = -1.0
                     elif "timestamp" in ds:
@@ -86,10 +124,20 @@ def seed_default_rows(
         rows_to_insert.append(row)
     if rows_to_insert:
         logger.info(f"Seeding {len(rows_to_insert)} default rows into {target_table_name}...")
-        df = spark.createDataFrame(rows_to_insert, schema)
-        delta_table.alias("target").merge(
-            df.alias("source"), f"target.{surrogate_key} = source.{surrogate_key}"
-        ).whenNotMatchedInsertAll().execute()
+        # Use Delta MERGE with a temp view to avoid createDataFrame
+        # on Databricks Connect (which fails for timestamp columns).
+        col_names = [surrogate_key] + [
+            f.name for f in schema.fields if f.name != surrogate_key
+        ]
+        for row in rows_to_insert:
+            values = ", ".join(_sql_literal(row.get(c)) for c in col_names)
+            col_list = ", ".join(f"`{c}`" for c in col_names)
+            insert_sql = (
+                f"INSERT INTO {target_table_name} ({col_list}) "
+                f"SELECT {values} WHERE NOT EXISTS "
+                f"(SELECT 1 FROM {target_table_name} WHERE `{surrogate_key}` = {_sql_literal(row[surrogate_key])})"
+            )
+            spark.sql(insert_sql)
 
 
 def ensure_scd2_defaults(

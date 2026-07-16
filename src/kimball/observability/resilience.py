@@ -108,15 +108,7 @@ class QueryMetricsCollector:
 
             # Add DataFrame metrics if available
             if df is not None and isinstance(df, DataFrame):
-                try:
-                    # Try to get some basic metrics from the logical plan
-                    # Note: accessing _jdf or plan might still be internal,
-                    # but checking type existence is safer.
-                    # Ideally we would check df.explain(mode="cost") but that prints to stdout.
-                    # For now just flag that we have a valid DF.
-                    metric["has_logical_plan"] = True
-                except Exception:
-                    metric["has_logical_plan"] = False
+                metric["has_logical_plan"] = True
 
             # Add any additional metrics passed
             metric.update(kwargs)

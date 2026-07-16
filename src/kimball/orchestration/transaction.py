@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from delta.tables import DeltaTable
-from pyspark.errors import AnalysisException
+from pyspark.errors import AnalysisException, PySparkException
 
 from kimball.common.spark_session import get_spark
 from kimball.common.utils import quote_table_name
@@ -31,7 +31,11 @@ class TransactionManager:
         self.spark = spark_session or get_spark()
 
     def _get_table_version(self, table_name: str) -> int:
-        """Get the current committed version of a Delta table."""
+        """Get the current committed version of a Delta table.
+
+        Returns ``-1`` when the table does not exist or is not a Delta table.
+        Callers should treat ``-1`` as a sentinel meaning "no version available".
+        """
         try:
             # Optimize: Get version from history(1) instead of full history
             history = DeltaTable.forName(self.spark, table_name).history(1).collect()
@@ -52,9 +56,9 @@ class TransactionManager:
                 f"RESTORE TABLE {quote_table_name(table_name)} TO VERSION AS OF {version}"
             )
             logger.info(f"ROLLBACK COMPLETE: {table_name} restored to {version}.")
-        except Exception as e:
+        except PySparkException as e:
             logger.info(f"CRITICAL: Failed to rollback {table_name}: {e}")
-            raise e
+            raise
 
     def recover_zombies(self, table_name: str, batch_id: str) -> bool:
         """
@@ -108,7 +112,7 @@ class TransactionManager:
             self._rollback(table_name, restore_version)
             return True
 
-        except Exception as e:
+        except (PySparkException, AnalysisException) as e:
             logger.warning(f"ZOMBIE RECOVERY FAILED: {e}")
             return False
 
@@ -134,7 +138,7 @@ class TransactionManager:
             self.spark.conf.set(
                 "spark.databricks.delta.commitInfo.userMetadata", str(batch_id)
             )
-        except Exception:
+        except PySparkException:
             logger.info(
                 "WARNING: Could not set commit info metadata (likely Serverless restriction). Proceeding without commit tagging."
             )
@@ -169,5 +173,5 @@ class TransactionManager:
             # Always clear metadata to avoid polluting future commits
             try:
                 self.spark.conf.unset("spark.databricks.delta.commitInfo.userMetadata")
-            except Exception:
+            except PySparkException:
                 pass

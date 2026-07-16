@@ -51,6 +51,7 @@ def merge(
     history_table: str | None = None,
     current_value_columns: list[str] | None = None,
     max_retries: int = 3,
+    append_only: bool = False,
 ) -> None:
     enriched_df = source_df.withColumn("__etl_processed_at", current_timestamp())
     if batch_id:
@@ -60,7 +61,7 @@ def merge(
         def merge_fn(df: DataFrame) -> None:
             merge_scd1(df, target_table_name=target_table_name, join_keys=join_keys,
                        delete_strategy=delete_strategy, schema_evolution=schema_evolution,
-                       surrogate_key_col=surrogate_key_col)
+                       surrogate_key_col=surrogate_key_col, append_only=append_only)
     elif scd_type == 2:
         def merge_fn(df: DataFrame) -> None:
             merge_scd2(df, target_table_name=target_table_name, join_keys=join_keys,

@@ -28,10 +28,23 @@ def merge_scd1(
     delete_strategy: str = "hard",
     schema_evolution: bool = False,
     surrogate_key_col: str | None = None,
+    append_only: bool = False,
 ) -> None:
     if not join_keys:
         raise ValueError("join_keys must be provided for SCD1 MERGE.")
     source_df = dedup_cdf(source_df, join_keys)
+    if source_df.isEmpty():
+        logger.info("SCD1 no-op: dedup produced zero rows — skipping merge")
+        return
+    if append_only:
+        logger.info("SCD1 append-only: inserting rows without MERGE")
+        from pyspark.sql.functions import lit
+        if "__is_deleted" not in source_df.columns:
+            source_df = source_df.withColumn("__is_deleted", lit(False))
+        if "__etl_processed_at" not in source_df.columns:
+            source_df = source_df.withColumn("__etl_processed_at", current_timestamp())
+        source_df.write.format("delta").mode("append").saveAsTable(target_table_name)
+        return
     merge_condition = build_merge_condition(join_keys)
     delta_table = DeltaTable.forName(get_spark(), target_table_name)
 

@@ -69,7 +69,7 @@ def apply_schema_evolution(table_name: str, enabled: bool, source_df: DataFrame 
         get_spark().sql(
             f"ALTER TABLE {quote_table_name(table_name)} SET TBLPROPERTIES ('delta.schema.autoMerge.enabled' = 'true')"
         )
-    except Exception as e:
+    except PYSPARK_EXCEPTION_BASE as e:
         logger.warning(f"Could not enable schema auto-merge for {table_name}: {e}")
     if source_df is None:
         return
@@ -88,7 +88,7 @@ def apply_schema_evolution(table_name: str, enabled: bool, source_df: DataFrame 
                 f"ALTER TABLE {quote_table_name(table_name)} ADD COLUMNS ({cols_sql})"
             )
             logger.info(f"Schema evolution: added {len(new_cols)} column(s) to {table_name}")
-    except Exception as e:
+    except PYSPARK_EXCEPTION_BASE as e:
         logger.warning(f"Schema evolution check failed for {table_name}: {e}")
 
 
@@ -119,12 +119,13 @@ def get_validity_col(
 ) -> tuple[str, str]:
     if effective_at_column and effective_at_column in source_df.columns:
         return f"source.{effective_at_column}", f"business time ({effective_at_column})"
-    import warnings
-    warnings.warn(
-        f"SCD2 table {target_table_name} using processing time for history. "
-        "Configure 'effective_at' in YAML for correct business time semantics.",
-        UserWarning, stacklevel=3,
-    )
+    # This should never trigger — config validation enforces effective_at for SCD2.
+    # But get_validity_col may be called with None from older code paths.
+    if effective_at_column and effective_at_column not in source_df.columns:
+        raise ValueError(
+            f"effective_at column '{effective_at_column}' not found in source columns: {source_df.columns}"
+        )
+    # Last-resort fallback: use __etl_processed_at (processing time, not idempotent)
     return "source.__etl_processed_at", "processing time (__etl_processed_at)"
 
 
@@ -133,7 +134,7 @@ def build_expire_set(validity_col: str) -> dict[str, str]:
 
 
 def get_current_df(table_or_df) -> DataFrame:
-    if isinstance(table_or_df, DeltaTable):
+    if hasattr(table_or_df, "toDF"):
         return table_or_df.toDF().filter("__is_current = true")
     return table_or_df.filter("__is_current = true")
 

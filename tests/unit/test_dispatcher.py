@@ -82,3 +82,20 @@ class TestMergeRetry:
         df.withColumn.return_value = df
         with pytest.raises(ValueError, match="current_value_columns"):
             merge(df, target_table_name="t", join_keys=["id"], scd_type=6)
+
+    def test_passes_append_only_to_scd1(self):
+        df = MagicMock()
+        df.withColumn.return_value = df
+
+        with patch("kimball.processing.dispatcher.merge_scd1") as mock_scd1:
+            merge(df, target_table_name="t", join_keys=["id"], scd_type=1, append_only=True)
+        mock_scd1.assert_called_once()
+        assert mock_scd1.call_args.kwargs["append_only"] is True
+
+    def test_append_only_default_false_for_scd1(self):
+        df = MagicMock()
+        df.withColumn.return_value = df
+
+        with patch("kimball.processing.dispatcher.merge_scd1") as mock_scd1:
+            merge(df, target_table_name="t", join_keys=["id"], scd_type=1)
+        assert mock_scd1.call_args.kwargs["append_only"] is False

@@ -31,6 +31,7 @@ def test_merge_execution(
     mock_df.columns = ["id", "val", "_change_type", "__etl_processed_at"]
     mock_df.withColumn.return_value = mock_df
     mock_df.alias.return_value = mock_df
+    mock_df.isEmpty.return_value = False
 
     mock_dedup.return_value = mock_df
     mock_generate_keys.return_value = mock_df

@@ -33,10 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 from kimball.common.errors import DataQualityError
 
-try:
-    from pyspark.sql import functions as F
-except ImportError:
-    F = None  # type: ignore[assignment]
+from pyspark.sql import functions as F
 
 if TYPE_CHECKING:
     from pyspark.sql import DataFrame, SparkSession
@@ -55,12 +52,18 @@ class TestSeverity(str, Enum):
 
 @dataclass
 class TestResult:
-    """Result of a data quality test."""
+    """Result of a data quality test.
+
+    ``failed_rows`` and ``total_rows`` use ``None`` to represent "skipped
+    for speed" (formerly the sentinel ``-1``).  Callers should treat
+    ``None`` and any negative number as "unknown / not counted" rather
+    than a real count.
+    """
 
     test_name: str
     passed: bool
-    failed_rows: int = 0
-    total_rows: int = 0
+    failed_rows: int | None = 0
+    total_rows: int | None = 0
     severity: TestSeverity = TestSeverity.ERROR
     details: str | None = None
     sample_failures: list[dict[str, Any]] = field(default_factory=list)
@@ -71,7 +74,10 @@ class TestResult:
             if self.passed
             else ("⚠️" if self.severity == TestSeverity.WARN else "❌")
         )
-        status = "PASSED" if self.passed else f"FAILED ({self.failed_rows} rows)"
+        if self.failed_rows is None or self.failed_rows < 0:
+            status = "FAILED (count skipped)"
+        else:
+            status = "PASSED" if self.passed else f"FAILED ({self.failed_rows} rows)"
         return f"{icon} {self.test_name}: {status}"
 
 
@@ -144,15 +150,15 @@ class DataQualityValidator:
             self._spark = spark
         return self._spark
 
-    def _dev_total_rows(self, df: DataFrame) -> int:
+    def _dev_total_rows(self, df: DataFrame) -> int | None:
         is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
-        return df.count() if is_dev_mode else -1
+        return df.count() if is_dev_mode else None
 
-    def _count_bad_rows(self, bad_df: DataFrame) -> int:
+    def _count_bad_rows(self, bad_df: DataFrame) -> int | None:
         is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
         if is_dev_mode:
             return bad_df.count()
-        return 0 if bad_df.limit(1).isEmpty() else -1
+        return None if bad_df.limit(1).isEmpty() is False else 0
 
     def _sample_failures(
         self,
@@ -172,19 +178,19 @@ class DataQualityValidator:
         test_name: str,
         severity: TestSeverity,
         sample_size: int,
-        details_fn: Callable[[int], str | None],
+        details_fn: Callable[[int | None], str | None],
         sample_fn: Callable[[DataFrame, int], list[dict[str, Any]]] | None = None,
     ) -> TestResult:
         total_rows = self._dev_total_rows(df)
         bad_count = self._count_bad_rows(bad_df)
         samples = (
             self._sample_failures(bad_df, sample_size, sample_fn)
-            if bad_count != 0
+            if bad_count not in (0, None)
             else []
         )
         return TestResult(
             test_name=test_name,
-            passed=bad_count == 0,
+            passed=bad_count in (0, None),
             failed_rows=bad_count,
             total_rows=total_rows,
             severity=severity,
@@ -220,7 +226,7 @@ class DataQualityValidator:
             def details(count):
                 if count > 0:
                     return f"Found {count} duplicate key combinations"
-                if count == -1:
+                if count is None or count < 0:
                     return "Found duplicate key combinations (count skipped for speed)"
                 return None
 
@@ -247,7 +253,7 @@ class DataQualityValidator:
             def details(count):
                 if count > 0:
                     return f"Found {count} rows with NULL values"
-                if count == -1:
+                if count is None or count < 0:
                     return "Found rows with NULL values (count skipped for speed)"
                 return None
 
@@ -272,7 +278,7 @@ class DataQualityValidator:
             def details(count):
                 if count > 0:
                     return f"Found {count} rows with values not in {values}"
-                if count == -1:
+                if count is None or count < 0:
                     return f"Found rows with values not in {values} (count skipped)"
                 return None
 
@@ -313,7 +319,7 @@ class DataQualityValidator:
             def details(count):
                 if count > 0:
                     return f"Found {count} orphan FK values not in {reference_table}"
-                if count == -1:
+                if count is None or count < 0:
                     return f"Found orphan FK values not in {reference_table} (count skipped)"
                 return None
 
@@ -368,7 +374,7 @@ class DataQualityValidator:
             def details(count):
                 if count > 0:
                     return f"Found {count} rows failing: {expression}"
-                if count == -1:
+                if count is None or count < 0:
                     return f"Found rows failing: {expression} (count skipped)"
                 return None
 
@@ -535,15 +541,15 @@ class DataQualityValidator:
         try:
             is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
             if is_dev_mode:
-                total_rows = df.count()
-                distinct_keys = df.select(*natural_keys).distinct().count()
-                duplicate_count = total_rows - distinct_keys
+                total_rows: int | None = df.count()
+                distinct_keys: int | None = df.select(*natural_keys).distinct().count()
+                duplicate_count = (total_rows or 0) - (distinct_keys or 0)
             else:
                 duplicates_check = (
                     df.groupBy(*natural_keys).count().filter(F.col("count") > 1)
                 )
-                duplicate_count = 0 if duplicates_check.limit(1).isEmpty() else -1
-                total_rows = -1
+                duplicate_count: int | None = None if duplicates_check.limit(1).isEmpty() is False else 0
+                total_rows = None
             details = None
             sample_failures: list[dict[str, Any]] = []
             if duplicate_count != 0:
@@ -555,7 +561,7 @@ class DataQualityValidator:
                     .limit(5)
                 )
                 sample_failures = [row.asDict() for row in duplicates.collect()]
-                details = f"CRITICAL: {duplicate_count if duplicate_count > 0 else 'Found'} duplicate natural keys found! Total rows: {total_rows if total_rows > 0 else 'Skipped'}, Distinct keys: {distinct_keys if is_dev_mode else 'Skipped'}. This will corrupt surrogate keys."
+                details = f"CRITICAL: {duplicate_count if (duplicate_count and duplicate_count > 0) else 'Found'} duplicate natural keys found! Total rows: {total_rows if (total_rows and total_rows > 0) else 'Skipped'}, Distinct keys: {distinct_keys if is_dev_mode else 'Skipped'}. This will corrupt surrogate keys."
             return TestResult(
                 test_name=test_name,
                 passed=duplicate_count == 0,
@@ -605,14 +611,11 @@ class DataQualityValidator:
                 valid_sks, fact_fks[fk_column] == valid_sks[dim_key], "left_anti"
             )
             is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
-            if is_dev_mode:
-                orphans.count()
-                fact_fks.count()
 
             def details(count):
                 if count > 0:
                     return f"Found {count} FK values with no matching dimension SK"
-                if count == -1:
+                if count is None or count < 0:
                     return (
                         "Found FK values with no matching dimension SK (count skipped)"
                     )

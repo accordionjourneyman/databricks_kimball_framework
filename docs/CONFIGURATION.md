@@ -105,6 +105,65 @@ Slowly Changing Dimension type (dimensions only).
 > two-phase algorithm (phase 1 merges the latest version, phase 2 back-fills
 > intermediate history rows). Set `preserve_all_changes: true` to enable this.
 
+### merge_keys (facts only)
+
+**Required for fact tables.** List of "degenerate dimension" columns that
+uniquely identify a fact row and serve as the MERGE condition. Facts do not
+have surrogate keys (per Kimball design) — `merge_keys` is the equivalent of
+`keys.natural_keys` for dimensions.
+
+```yaml
+table_type: fact
+merge_keys: [order_item_id]         # single key
+# or
+merge_keys: [order_id, line_number] # composite key
+```
+
+Validation: a `ValueError` is raised at config load time if `table_type: fact`
+without `merge_keys`.
+
+### append_only (facts only)
+
+When `true`, the fact table is populated with pure `INSERT INTO` instead of
+`MERGE`. Use this for immutable event logs, append-only time-series, or any
+source where rows are never updated or deleted. The framework skips the
+expensive `MERGE` (match/upsert) and just appends new rows.
+
+```yaml
+table_type: fact
+merge_keys: [order_item_id]
+append_only: true
+```
+
+Validation:
+
+- `append_only: true` requires `table_type: fact` (rejected on dimensions).
+- Combine with a source using `cdc_strategy: append` for end-to-end
+  incremental append without dedup overhead.
+
+### cdc_strategy: append
+
+The `append` strategy is a CDF read that drops `_change_type`,
+`_commit_version`, and `_commit_timestamp` from the loaded DataFrame so the
+downstream merge does not attempt dedup or delete handling. It is intended
+to be combined with `append_only: true` on the fact table for pure
+incremental append.
+
+```yaml
+sources:
+  - name: silver.events
+    alias: e
+    cdc_strategy: append
+    primary_keys: [event_id]
+
+table_type: fact
+merge_keys: [event_id]
+append_only: true
+```
+
+Validation: `cdc_strategy: append` requires `append_only: true` on the
+target table.
+
 ### keys.surrogate_key
 
 Name of the surrogate key column.
@@ -185,10 +244,14 @@ How to read source data.
 
 **Options:**
 
-| Strategy | Description                    | When to Use                    |
-| -------- | ------------------------------ | ------------------------------ |
-| `cdf`    | Change Data Feed (incremental) | Large tables, frequent updates |
-| `full`   | Full table snapshot            | Small dimensions, fact lookups |
+| Strategy | Description | When to Use |
+| -------- | ----------- | ----------- |
+| `cdf` | Change Data Feed (incremental) | Large tables, frequent updates |
+| `full` | Full table snapshot | Small dimensions, fact lookups |
+| `append` | CDF incremental, drop CDF metadata | Immutable event logs (`append_only: true` only) |
+
+See the `append` section under "append_only" above for details on the
+`append` strategy.
 
 ### primary_keys
 

@@ -21,9 +21,13 @@ if os.path.exists(_dotenv_path):
 
 
 # Mock databricks.sdk.runtime to allow local testing without credentials.
-# Always mock it: the real SDK tries to authenticate at import time, which fails
-# outside Databricks. The mock is replaced with a real remote session when
-# integration tests run against Databricks Connect.
+# Import the real databricks package first so sys.modules["databricks"]
+# points to the real package, not a synthetic one created by the mock.
+# Then only mock the sdk.runtime submodule (which is not importable
+# outside Databricks runtime).
+import databricks  # noqa: F401, E402
+from unittest.mock import MagicMock
+
 mock_db_sdk = MagicMock()
 mock_db_sdk.spark = MagicMock()
 mock_db_sdk.dbutils = MagicMock()
@@ -72,6 +76,8 @@ def _create_remote_spark_session() -> SparkSession:
     builder = DatabricksSession.builder
     if cluster_id:
         builder = builder.clusterId(cluster_id)
+    else:
+        builder = builder.serverless()
 
     return builder.getOrCreate()
 
@@ -145,6 +151,12 @@ def spark():
     # so application code that imports `spark` from there uses the right session.
     if "databricks.sdk.runtime" in sys.modules:
         cast(Any, sys.modules["databricks.sdk.runtime"]).spark = spark
+
+    # Also register it with spark_session.set_active_spark so get_spark()
+    # returns the same instance even when the runtime mock is bypassed.
+    from kimball.common.spark_session import set_active_spark
+
+    set_active_spark(spark)
 
     yield spark
 

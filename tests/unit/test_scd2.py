@@ -37,7 +37,7 @@ class TestHasMultipleVersionsPerKey:
 
     def test_uses_effective_at_column_for_version_detection(self):
         df = MagicMock()
-        df.columns = ["customer_id", "updated_at"]
+        df.columns = ["customer_id", "_commit_version"]
         grouped = MagicMock()
         grouped.agg.return_value = grouped
         grouped.filter.return_value = grouped
@@ -45,7 +45,7 @@ class TestHasMultipleVersionsPerKey:
         grouped.count.return_value = 1
         df.groupBy.return_value = grouped
 
-        assert _has_multiple_versions_per_key(df, ["customer_id"], effective_at_column="updated_at") is True
+        assert _has_multiple_versions_per_key(df, ["customer_id"]) is True
 
 
 class TestSelectPayloadColumns:
@@ -138,14 +138,12 @@ class TestMergeScd2Dispatch:
             )
         mock_classic.assert_called_once()
 
-    def test_multi_version_takes_two_phase(self):
+    def test_multi_version_takes_single_pass(self):
         df = MagicMock()
         df.columns = ["customer_id", "name", "_change_type", "_commit_version"]
         df.withColumn.return_value = df
         with patch("kimball.processing.scd2._has_multiple_versions_per_key", return_value=True), \
-             patch("kimball.processing.scd2._merge_current") as mock_current, \
-             patch("kimball.processing.scd2._rebuild_history") as mock_rebuild:
-            mock_current.return_value = df
+             patch("kimball.processing.scd2._merge_single_pass") as mock_sp:
             merge_scd2(
                 df,
                 target_table_name="dim",
@@ -153,5 +151,4 @@ class TestMergeScd2Dispatch:
                 track_history_columns=["name"],
                 surrogate_key_col="sk",
             )
-        mock_current.assert_called_once()
-        mock_rebuild.assert_called_once()
+        mock_sp.assert_called_once()

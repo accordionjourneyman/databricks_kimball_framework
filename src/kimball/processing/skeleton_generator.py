@@ -9,10 +9,17 @@ logger = logging.getLogger(__name__)
 
 class SkeletonGenerator:
     def __init__(self, spark_session: SparkSession | None = None) -> None:
-        self.spark = (
-            spark_session
-            or __import__("databricks.sdk.runtime", fromlist=["spark"]).spark
-        )
+        if spark_session is not None:
+            self.spark = spark_session
+            return
+        from kimball.common.spark_session import get_spark
+
+        try:
+            self.spark = get_spark()
+        except (ImportError, AttributeError, RuntimeError):
+            self.spark = (
+                __import__("databricks.sdk.runtime", fromlist=["spark"]).spark
+            )
 
     def generate_skeletons(
         self,

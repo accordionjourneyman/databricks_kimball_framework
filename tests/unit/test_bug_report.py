@@ -212,9 +212,8 @@ class TestBugSCD2TimeMixing:
         assert "order_date" in result_col
         assert "business time" in desc
 
-        result_col2, desc2 = get_validity_col("missing_col", mock_source_df, "test_target")
-        assert "__etl_processed_at" in result_col2
-        assert "processing time" in desc2
+        with pytest.raises(ValueError, match="effective_at column 'missing_col' not found"):
+            get_validity_col("missing_col", mock_source_df, "test_target")
 
 
 # ===================================================================
@@ -232,8 +231,8 @@ class TestBugDoubleFKValidation:
             table_name="test_fact",
             table_type="fact",
             scd_type=1,
+            merge_keys=["id"],
             sources=[SourceConfig(name="src", alias="src")],
-            natural_keys=["id"],
             foreign_keys=[
                 ForeignKeyConfig(column="dim_id", references="dim_table", dimension_key="dim_id")
             ],
@@ -397,13 +396,15 @@ class TestBugConfigFingerprintIncomplete:
         loader = ConfigLoader()
         base = TableConfig(
             table_name="t", table_type="fact", scd_type=1,
-            sources=[SourceConfig(name="s", alias="s")], natural_keys=["id"],
+            merge_keys=["id"],
+            sources=[SourceConfig(name="s", alias="s")],
             foreign_keys=[ForeignKeyConfig(column="dim_a", references="dim_a_table")],
             tests=[TestDefinition(column="id", tests=["not_null"])],
         )
         modified = TableConfig(
             table_name="t", table_type="fact", scd_type=1,
-            sources=[SourceConfig(name="s", alias="s")], natural_keys=["id"],
+            merge_keys=["id"],
+            sources=[SourceConfig(name="s", alias="s")],
             foreign_keys=[
                 ForeignKeyConfig(column="dim_a", references="dim_a_table"),
                 ForeignKeyConfig(column="dim_b", references="dim_b_table"),
@@ -437,13 +438,13 @@ class TestBugConfigFingerprintIncomplete:
 
         loader = ConfigLoader()
         a = TableConfig(
-            table_name="t", table_type="dimension", scd_type=2, surrogate_key="sk",
+            table_name="t", table_type="dimension", scd_type=2, surrogate_key="sk", effective_at="updated_at",
             sources=[SourceConfig(name="s", alias="s")], natural_keys=["id"],
             schema_evolution=False, track_history_columns=["val"],
             tests=[TestDefinition(column="id", tests=["not_null"])],
         )
         b = TableConfig(
-            table_name="t", table_type="dimension", scd_type=2, surrogate_key="sk",
+            table_name="t", table_type="dimension", scd_type=2, surrogate_key="sk", effective_at="updated_at",
             sources=[SourceConfig(name="s", alias="s")], natural_keys=["id"],
             schema_evolution=True, track_history_columns=["val"],
             tests=[TestDefinition(column="id", tests=["not_null"])],
@@ -467,7 +468,7 @@ class TestBugPreserveAllChangesEarlyReturn:
         src_b = SourceConfig(name="src_b", alias="src_b", cdc_strategy="cdf")
 
         config = TableConfig(
-            table_name="test_target", table_type="dimension", scd_type=2,
+            table_name="test_target", table_type="dimension", scd_type=2, effective_at="updated_at",
             surrogate_key="sk", sources=[src_a, src_b],
             natural_keys=["id"], track_history_columns=["val"],
         )
@@ -645,6 +646,7 @@ class TestBugStreamingPerVersionMaterialization:
         orch.config = MagicMock()
         orch.config.table_name = "test_target"
         orch.config.scd_type = 2
+        orch.config.effective_at = "updated_at"
         orch.config.natural_keys = ["id"]
         orch.config.track_history_columns = ["val"]
         orch.config.surrogate_key = "surrogate_key"
@@ -743,7 +745,7 @@ class TestBugReDeriveVersions:
         from kimball.common.config import TableConfig, SourceConfig
 
         config = TableConfig(
-            table_name="t", table_type="dimension", scd_type=2, surrogate_key="sk",
+            table_name="t", table_type="dimension", scd_type=2, surrogate_key="sk", effective_at="updated_at",
             sources=[SourceConfig(name="s1", alias="s1", cdc_strategy="cdf")],
             natural_keys=["id"], track_history_columns=["val"],
         )
@@ -774,8 +776,8 @@ class TestBugBusMatrixSubstring:
 
         fact_config = TableConfig(
             table_name="fact_orders", table_type="fact", scd_type=1,
+            merge_keys=["order_id"],
             sources=[SourceConfig(name="stg_customer_dim_phone", alias="stg_customer_dim_phone")],
-            natural_keys=["order_id"],
             foreign_keys=[ForeignKeyConfig(column="customer_id", references="dim_customer")],
         )
 
@@ -789,8 +791,8 @@ class TestBugBusMatrixSubstring:
 
         fact_config = TableConfig(
             table_name="fact_orders", table_type="fact", scd_type=1,
+            merge_keys=["order_id"],
             sources=[SourceConfig(name="dim_customer", alias="dim_customer")],
-            natural_keys=["order_id"],
             foreign_keys=[ForeignKeyConfig(column="customer_id", references="dim_customer")],
         )
 
@@ -850,7 +852,7 @@ class TestBugSkeletonColumnCollision:
         from kimball.common.config import TableConfig, SourceConfig
 
         config = TableConfig(
-            table_name="test_target", table_type="dimension", scd_type=2,
+            table_name="test_target", table_type="dimension", scd_type=2, effective_at="updated_at",
             surrogate_key="sk", sources=[], natural_keys=["id"],
             track_history_columns=["val"],
             early_arriving_facts=[{

@@ -38,6 +38,7 @@ def _make_config(streaming_enabled: bool) -> TableConfig:
         table_name="gold.dim_customer",
         table_type="dimension",
         scd_type=2,
+        effective_at="updated_at",
         keys={"surrogate_key": "customer_sk", "natural_keys": ["customer_id"]},
         surrogate_key="customer_sk",
         sources=[src],

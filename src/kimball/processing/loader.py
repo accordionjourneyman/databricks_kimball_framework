@@ -13,9 +13,9 @@ class DataLoader:
     @property
     def spark(self) -> SparkSession:
         if self._spark is None:
-            from databricks.sdk.runtime import spark
+            from kimball.common.spark_session import get_spark
 
-            self._spark = spark
+            self._spark = get_spark()
         return self._spark
 
     def load_full_snapshot(

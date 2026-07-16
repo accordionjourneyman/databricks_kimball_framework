@@ -1,0 +1,21 @@
+table_name: workspace.kimball_golden_52e074a2.fact_events
+table_type: fact
+merge_keys: [event_id]
+append_only: true
+
+sources:
+  - name: workspace.kimball_golden_raw_52e074a2.events
+    alias: e
+    cdc_strategy: append
+    starting_version: 0
+    primary_keys: [event_id]
+
+transformation_sql: |
+  SELECT
+    e.event_id,
+    e.event_type,
+    e.event_time,
+    e.payload
+  FROM e
+
+audit_columns: true

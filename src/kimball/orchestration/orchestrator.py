@@ -17,6 +17,7 @@ import uuid
 import warnings
 from typing import Any
 
+from pyspark.errors import AnalysisException, PySparkException
 from pyspark.sql import SparkSession
 
 from kimball.common.config import ConfigLoader, TableConfig
@@ -106,8 +107,10 @@ class Orchestrator:
             logger.info(f"Setting Spark checkpoint directory to: {checkpoint_root}")
             self.spark.sparkContext.setCheckpointDir(checkpoint_root)
 
-        self.etl_control = etl_control or ETLControlManager(etl_schema=etl_schema)
-        self.loader = loader or DataLoader()
+        self.etl_control = etl_control or ETLControlManager(
+            etl_schema=etl_schema, spark_session=spark
+        )
+        self.loader = loader or DataLoader(spark_session=spark)
         self.transaction_manager = transaction_manager or TransactionManager(self.spark)
 
         self.metrics_collector = (
@@ -123,6 +126,9 @@ class Orchestrator:
         )
 
         self._source_loader = SourceLoader()
+        if skeleton_generator is None:
+            from kimball.processing.skeleton_generator import SkeletonGenerator
+            skeleton_generator = SkeletonGenerator(spark_session=spark)
         self._skeleton_manager = SkeletonManager(skeleton_generator)
         self._transform_validator = TransformValidator()
         self._merge_executor = MergeExecutor(table_creator)
@@ -238,7 +244,7 @@ class Orchestrator:
                 f"{self.runtime_options.skew_threshold_mb}MB",
             )
             spark.conf.set(SPARK_CONF_SKEW_FACTOR, str(self.runtime_options.skew_factor))
-        except Exception as e:
+        except (PySparkException, AnalysisException) as e:
             logger.debug(f"Could not set Spark configs: {e}")
 
     def _make_context(self, batch_id: str = "") -> PipelineContext:
@@ -400,7 +406,7 @@ class Orchestrator:
             for source in self.config.sources:
                 try:
                     self.etl_control.batch_fail(self.config.table_name, source.name, error_msg)
-                except Exception as batch_err:
+                except PySparkException as batch_err:
                     logger.debug(f"Could not mark batch as failed: {batch_err}")
             raise e
 
@@ -408,14 +414,14 @@ class Orchestrator:
             for _name, df in active_dfs.items():
                 try:
                     df.unpersist(blocking=False)
-                except Exception:
-                    pass
+                except (PySparkException, OSError, AttributeError):
+                    pass  # Cleanup must never mask the original error
             active_dfs.clear()
             for source in self.config.sources:
                 try:
                     self.spark.catalog.dropTempView(source.alias)
-                except Exception:
-                    pass
+                except (PySparkException, OSError, AttributeError):
+                    pass  # Cleanup must never mask the original error
 
     def run_with_retry(
         self, max_retries: int = 3, backoff_seconds: int = 30

@@ -151,6 +151,7 @@ class TestFingerprintBench:
             natural_keys=["id"],
             sources=[],
             scd_type=2,
+            effective_at="updated_at",
             track_history_columns=["name", "value"],
             transformation_sql="SELECT id, name, value FROM source",
         )
@@ -166,6 +167,7 @@ class TestFingerprintBench:
             natural_keys=["id"],
             sources=[],
             scd_type=2,
+            effective_at="updated_at",
             track_history_columns=["name", "value"],
             transformation_sql="SELECT id, name, value FROM source",
             tests=[

@@ -213,6 +213,7 @@ class TestBugStreamingPerVersionWrongCDFTable:
         orch.config = MagicMock()
         orch.config.table_name = "test_target"
         orch.config.scd_type = 2
+        orch.config.effective_at = "updated_at"
         orch.config.natural_keys = ["id"]
         orch.config.track_history_columns = ["val"]
         orch.config.surrogate_key = "surrogate_key"
@@ -335,8 +336,8 @@ class TestBugDoubleFKValidation:
             table_name="test_fact",
             table_type="fact",
             scd_type=1,
+            merge_keys=["id"],
             sources=[SourceConfig(name="src", alias="src")],
-            natural_keys=["id"],
             foreign_keys=[
                 ForeignKeyConfig(
                     column="dim_id", references="dim_table", dimension_key="dim_id"

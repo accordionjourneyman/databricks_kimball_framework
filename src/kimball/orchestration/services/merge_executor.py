@@ -97,9 +97,6 @@ class MergeExecutor:
             except PYSPARK_EXCEPTION_BASE as e:
                 logger.info(f"Checkpoint failed, using local: {e}")
                 checkpointed_df = transformed_df.localCheckpoint()
-            except Exception as e:
-                logger.info(f"Unexpected checkpoint error, using local: {e}")
-                checkpointed_df = transformed_df.localCheckpoint()
         else:
             checkpointed_df = transformed_df
 
@@ -170,9 +167,9 @@ class MergeExecutor:
                         f"ADD COLUMNS ({col_name} {src_type.simpleString()})"
                     )
                     logger.info(f"Added column {col_name} ({src_type.simpleString()}) to target")
-                except Exception as e:
+                except PYSPARK_EXCEPTION_BASE as e:
                     logger.warning(f"Could not add column {col_name}: {e}")
-        except Exception as e:
+        except PYSPARK_EXCEPTION_BASE as e:
             logger.warning(f"Schema evolution failed: {e}")
 
     def validate_grain(self, ctx: PipelineContext, source_df: DataFrame, join_keys: list[str]) -> None:
@@ -181,6 +178,13 @@ class MergeExecutor:
         grain_mode = getattr(ctx.config, "grain_validation", "error")
         if grain_mode == "skip":
             logger.info(f"Grain validation skipped for {ctx.config.table_name} (grain_validation=skip)")
+            return
+        append_only = getattr(ctx.config, "append_only", False)
+        if append_only is True:
+            logger.info(
+                f"Grain validation skipped for {ctx.config.table_name} (append_only=true; "
+                "duplicates expected in the source batch)"
+            )
             return
         grain_violations = (
             source_df.groupBy(*join_keys)
@@ -217,6 +221,7 @@ class MergeExecutor:
             effective_at_column=ctx.config.effective_at,
             history_table=ctx.config.history_table,
             current_value_columns=ctx.config.current_value_columns,
+            append_only=ctx.config.append_only,
         )
 
         if ctx.config.optimize_after_merge:

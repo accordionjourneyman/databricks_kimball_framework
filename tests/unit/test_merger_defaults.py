@@ -12,7 +12,6 @@ def test_ensure_scd2_defaults_includes_history_fields_and_system_defaults(
 ):
     spark = MagicMock()
     spark.catalog.tableExists.return_value = True
-    spark.createDataFrame.return_value = MagicMock()
     mock_get_spark.return_value = spark
     mock_dt = MagicMock()
     mock_dt_cls.forName.return_value = mock_dt
@@ -26,7 +25,11 @@ def test_ensure_scd2_defaults_includes_history_fields_and_system_defaults(
     ])
 
     ensure_scd2_defaults("dim_test", schema, "surrogate_key")
-    assert mock_dt.alias.return_value.merge.call_args is not None
+    assert spark.sql.call_count == 3
+    first_sql = spark.sql.call_args_list[0].args[0]
+    assert "INSERT INTO dim_test" in first_sql
+    assert "__is_current" in first_sql
+    assert "__valid_from" in first_sql
 
 
 @patch("kimball.processing.defaults.DeltaTable")
@@ -36,7 +39,6 @@ def test_ensure_scd1_defaults_preserves_non_history_system_defaults(
 ):
     spark = MagicMock()
     spark.catalog.tableExists.return_value = True
-    spark.createDataFrame.return_value = MagicMock()
     mock_get_spark.return_value = spark
     mock_dt = MagicMock()
     mock_dt_cls.forName.return_value = mock_dt
@@ -48,4 +50,6 @@ def test_ensure_scd1_defaults_preserves_non_history_system_defaults(
     ])
 
     ensure_scd1_defaults("dim_test", schema, "surrogate_key")
-    assert mock_dt.alias.return_value.merge.call_args is not None
+    assert spark.sql.call_count == 3
+    first_sql = spark.sql.call_args_list[0].args[0]
+    assert "INSERT INTO dim_test" in first_sql

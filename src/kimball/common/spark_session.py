@@ -4,13 +4,26 @@ This module provides a function to get the SparkSession lazily,
 allowing the Kimball framework to be imported outside of Databricks
 (e.g., for testing, type checking, or documentation generation).
 """
-
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import os
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
+
+_active_spark: Optional["SparkSession"] = None
+
+
+def set_active_spark(spark: "SparkSession") -> None:
+    """Register an active SparkSession to be returned by ``get_spark()``.
+
+    Used by the Databricks Connect test harness to inject a remote
+    session that ``get_spark()`` will pick up without going through
+    ``databricks.sdk.runtime``.
+    """
+    global _active_spark
+    _active_spark = spark
 
 
 def get_spark() -> SparkSession:
@@ -25,6 +38,8 @@ def get_spark() -> SparkSession:
     Raises:
         RuntimeError: If no SparkSession can be obtained.
     """
+    if _active_spark is not None:
+        return _active_spark
     try:
         # Try Databricks runtime first
         from databricks.sdk.runtime import spark
@@ -35,8 +50,9 @@ def get_spark() -> SparkSession:
         from pyspark.sql import SparkSession
 
         return SparkSession.builder.getOrCreate()
-    except Exception as e:
-        # Databricks SDK installed but not in Databricks runtime
+    except (AttributeError, RuntimeError) as e:
+        # Databricks SDK installed but not in Databricks runtime, or the
+        # `spark` attribute is None in a mocked sdk.runtime.
         try:
             from pyspark.sql import SparkSession
 

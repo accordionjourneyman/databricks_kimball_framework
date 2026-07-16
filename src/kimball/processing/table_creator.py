@@ -4,6 +4,7 @@ import logging
 import re
 from typing import Any
 
+from pyspark.errors import PySparkException
 from pyspark.sql import DataFrame
 
 from kimball.common.constants import SPARK_CONF_AUTO_MERGE
@@ -131,7 +132,7 @@ class TableCreator:
         # Enable Delta optimizations
         try:
             self.enable_delta_features(table_name)
-        except Exception:
+        except PySparkException:
             pass  # Serverless limitation
 
     def create_table_with_clustering(
@@ -250,7 +251,7 @@ class TableCreator:
         # Phase 1 optimization: Batch TBLPROPERTIES into single ALTER TABLE
         try:
             self.enable_delta_features(table_name)
-        except Exception as e:
+        except PySparkException as e:
             error_str = str(e).lower()
             # Serverless/edition limitations - suppress verbose output
             if any(
@@ -300,7 +301,7 @@ class TableCreator:
             try:
                 get_spark().sql(alter_sql)
                 logger.info("Applied surrogate key NOT NULL constraint")
-            except Exception as e:
+            except PySparkException as e:
                 logger.info(f"Warning: Could not apply surrogate key constraint: {e}")
 
         # Apply is_current boolean constraint for SCD2 tables
@@ -309,7 +310,7 @@ class TableCreator:
             try:
                 get_spark().sql(alter_sql)
                 logger.info("Applied is_current boolean constraint")
-            except Exception as e:
+            except PySparkException as e:
                 logger.info(f"Warning: Could not apply is_current constraint: {e}")
 
     def apply_delta_constraints(self, table_name: str, config: dict[str, Any]) -> None:
@@ -320,8 +321,21 @@ class TableCreator:
             table_name: Full table name
             config: Table configuration from YAML
         """
-        # Apply NOT NULL constraints for natural keys
+        # Apply NOT NULL constraints for surrogate key first so that the
+        # PRIMARY KEY declaration (which requires the column to be NOT NULL
+        # on Unity Catalog) succeeds downstream.
         quoted_table_name = quote_table_name(table_name)
+        surrogate_key = config.get("surrogate_key")
+        if surrogate_key and _is_valid_identifier(surrogate_key):
+            try:
+                get_spark().sql(
+                    f"ALTER TABLE {quoted_table_name} ALTER COLUMN `{surrogate_key}` SET NOT NULL"
+                )
+                logger.info(f"Applied NOT NULL constraint to {surrogate_key}")
+            except PySparkException as e:
+                logger.warning(f"Could not apply NOT NULL constraint to {surrogate_key}: {e}")
+
+        # Apply NOT NULL constraints for natural keys
         # Handle both flat and nested config structures for natural keys
         # Use safe navigation to avoid AttributeError if 'keys' is None
         keys_config = config.get("keys") or {}
@@ -333,7 +347,7 @@ class TableCreator:
             try:
                 get_spark().sql(alter_sql)
                 logger.info(f"Applied NOT NULL constraint to {key}")
-            except Exception as e:
+            except PySparkException as e:
                 logger.warning(f"Could not apply NOT NULL constraint to {key}: {e}")
 
         # Apply NOT NULL constraints for foreign keys (fact tables only)
@@ -356,7 +370,7 @@ class TableCreator:
                         logger.info(
                             f"Applied FK NOT NULL constraint: {constraint_name}"
                         )
-                    except Exception as e:
+                    except PySparkException as e:
                         logger.info(
                             f"Warning: Could not apply FK constraint {constraint_name}: {e}"
                         )
@@ -382,7 +396,7 @@ class TableCreator:
                 try:
                     get_spark().sql(alter_sql)
                     logger.info(f"Applied constraint {constraint_name}")
-                except Exception as e:
+                except PySparkException as e:
                     logger.error(f"Failed to apply constraint {constraint_name}: {e}")
 
         # Declare PRIMARY KEY and FOREIGN KEY constraints (Unity Catalog only).
@@ -430,7 +444,7 @@ class TableCreator:
             try:
                 get_spark().sql(pk_sql)
                 logger.info(f"Declared PRIMARY KEY({surrogate_key}) on {table_name}")
-            except Exception as e:
+            except PySparkException as e:
                 logger.warning(f"Could not declare PK on {surrogate_key}: {e}")
 
         # --- Foreign keys (fact tables) ---
@@ -467,7 +481,7 @@ class TableCreator:
                     f"Declared FOREIGN KEY({fk_col} -> {fk_ref}.{ref_col}) "
                     f"on {table_name}"
                 )
-            except Exception as e:
+            except PySparkException as e:
                 logger.warning(f"Could not declare FK on {fk_col}: {e}")
 
     def _apply_pii_masks(self, table_name: str, pii_config: dict[str, Any]) -> None:
@@ -498,10 +512,10 @@ class TableCreator:
                 continue
             try:
                 get_spark().sql(
-                    f"ALTER TABLE {quoted} ALTER COLUMN `{col_name}` SET MASK ({mask_expr})"
+                    f"ALTER TABLE {quoted} ALTER COLUMN `{col_name}` SET MASK {mask_expr}"
                 )
                 logger.info(f"Applied MASK({strategy}) to {col_name} on {table_name}")
-            except Exception as e:
+            except PySparkException as e:
                 logger.warning(f"Could not apply MASK to {col_name}: {e}")
 
     def enable_schema_auto_merge(self) -> None:

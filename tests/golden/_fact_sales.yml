@@ -1,32 +1,32 @@
-table_name: kimball_golden_f3cc8407.fact_sales
+table_name: workspace.kimball_golden_52e074a2.fact_sales
 table_type: fact
 merge_keys: [order_item_id]
 
 foreign_keys:
   - column: customer_sk
-    references: kimball_golden_f3cc8407.dim_customer
+    references: workspace.kimball_golden_52e074a2.dim_customer
     dimension_key: customer_sk
     default_value: -1
   - column: product_sk
-    references: kimball_golden_f3cc8407.dim_product
+    references: workspace.kimball_golden_52e074a2.dim_product
     dimension_key: product_sk
     default_value: -1
 
 sources:
-  - name: kimball_golden_raw_f3cc8407.order_items
+  - name: workspace.kimball_golden_raw_52e074a2.order_items
     alias: oi
     cdc_strategy: cdf
     starting_version: 0
     primary_keys: [order_item_id]
-  - name: kimball_golden_raw_f3cc8407.orders
+  - name: workspace.kimball_golden_raw_52e074a2.orders
     alias: o
     cdc_strategy: cdf
     starting_version: 0
     primary_keys: [order_id]
-  - name: kimball_golden_f3cc8407.dim_customer
+  - name: workspace.kimball_golden_52e074a2.dim_customer
     alias: c
     cdc_strategy: full
-  - name: kimball_golden_f3cc8407.dim_product
+  - name: workspace.kimball_golden_52e074a2.dim_product
     alias: p
     cdc_strategy: full
 
@@ -50,7 +50,7 @@ transformation_sql: |
 
 audit_columns: true
 early_arriving_facts:
-  - dimension_table: kimball_golden_f3cc8407.dim_customer
+  - dimension_table: workspace.kimball_golden_52e074a2.dim_customer
     fact_join_key: customer_id
     dimension_join_key: customer_id
     surrogate_key_col: customer_sk

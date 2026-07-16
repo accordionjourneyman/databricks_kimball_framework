@@ -119,7 +119,40 @@ def _render_config(raw_config_path: Path, catalog: str, run_id: str) -> str:
 
 
 def _read_csv(spark: SparkSession, csv_path: Path, schema: StructType):
-    """Read a CSV with a known schema (string timestamps to keep demo parity)."""
+    """Read a CSV with a known schema (string timestamps to keep demo parity).
+
+    For remote Spark (Databricks Connect), reads the CSV locally and creates
+    a DataFrame from Python data since the cluster can't access local paths.
+    """
+    from pyspark.sql import Row
+
+    is_remote = bool(
+        os.environ.get("SPARK_REMOTE")
+        or (
+            os.environ.get("DATABRICKS_HOST")
+            and os.environ.get("DATABRICKS_TOKEN")
+        )
+    )
+    if is_remote:
+        import csv as csv_mod
+
+        type_map = {
+            IntegerType: int,
+            DoubleType: float,
+            StringType: str,
+        }
+        with open(csv_path, encoding="utf-8") as f:
+            reader = csv_mod.DictReader(f)
+            field_names = [f.name for f in schema.fields]
+            rows = []
+            for row in reader:
+                converted = {}
+                for fn, sf in zip(field_names, schema.fields):
+                    val = row[fn]
+                    converter = type_map.get(type(sf.dataType), str)
+                    converted[fn] = converter(val) if val else None
+                rows.append(Row(**converted))
+        return spark.createDataFrame(rows, schema)
     return (
         spark.read.option("header", "true")
         .option("inferSchema", "false")
@@ -199,7 +232,18 @@ def rendered_configs(spark: SparkSession, run_id: str) -> list[str]:
         _render_config(GOLDEN_DIR / "dim_customer.yml", catalog, run_id),
         _render_config(GOLDEN_DIR / "dim_product.yml", catalog, run_id),
         _render_config(GOLDEN_DIR / "fact_sales.yml", catalog, run_id),
+        _render_config(GOLDEN_DIR / "fact_events.yml", catalog, run_id),
     ]
+
+
+EVENTS_SCHEMA = StructType(
+    [
+        StructField("event_id", IntegerType(), False),
+        StructField("event_type", StringType(), False),
+        StructField("event_time", StringType(), False),
+        StructField("payload", StringType(), True),
+    ]
+)
 
 
 @pytest.fixture(scope="module")
@@ -239,6 +283,14 @@ def day1_data(spark: SparkSession, golden_schemas: tuple[str, str]) -> str:
         "order_items",
         _read_csv(spark, day1 / "order_items.csv", ORDER_ITEMS_SCHEMA),
         ["order_item_id"],
+    )
+    _merge_into_silver(
+        spark,
+        catalog,
+        raw_schema,
+        "events",
+        _read_csv(spark, day1 / "events.csv", EVENTS_SCHEMA),
+        ["event_id"],
     )
     return catalog
 
@@ -281,6 +333,14 @@ def day2_data(
         "order_items",
         _read_csv(spark, day2 / "order_items.csv", ORDER_ITEMS_SCHEMA),
         ["order_item_id"],
+    )
+    _merge_into_silver(
+        spark,
+        day1_data,
+        raw_schema,
+        "events",
+        _read_csv(spark, day2 / "events.csv", EVENTS_SCHEMA),
+        ["event_id"],
     )
     return day1_data
 
@@ -407,3 +467,34 @@ def test_day2_pipeline(
     assert len(links) == 2
     assert links[0].linked_customer_address == "123 A**********"
     assert links[1].linked_customer_address == "789 C**********"
+
+
+def test_append_only_fact_loads(
+    spark: SparkSession,
+    day1_data: str,
+    golden_schemas: tuple[str, str],
+    rendered_configs: list[str],
+) -> None:
+    """append_only + cdc_strategy: append should produce pure append, no dedup."""
+    _, out_schema = golden_schemas
+    _run_pipelines(rendered_configs, day1_data, out_schema)
+
+    event_count = spark.table(_q(day1_data, out_schema, "fact_events")).count()
+    assert event_count == 3, f"Expected 3 events, got {event_count}"
+
+    rows = spark.table(_q(day1_data, out_schema, "fact_events")).orderBy("event_id").collect()
+    assert [r.event_id for r in rows] == [9001, 9002, 9003]
+
+
+def test_append_only_fact_incremental(
+    spark: SparkSession,
+    day2_data: str,
+    golden_schemas: tuple[str, str],
+    rendered_configs: list[str],
+) -> None:
+    """Day 2 should append the 3 new events on top of the 3 from day 1."""
+    _, out_schema = golden_schemas
+    _run_pipelines(rendered_configs, day2_data, out_schema)
+
+    event_count = spark.table(_q(day2_data, out_schema, "fact_events")).count()
+    assert event_count == 6, f"Expected 6 events, got {event_count}"
