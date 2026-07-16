@@ -247,8 +247,16 @@ def _merge_single_pass(
         older_versions = None
 
     # Union all staged rows
+    # has_changed gates both the expire/latest staging AND the EXPIRE
+    # whenMatchedUpdate branch below: the EXPIRE update set references
+    # source.__scd2_oldest_valid_from, which only exists on expire_rows
+    # (derived from rows_changed). When the only matched target is a skeleton
+    # (routed to HYDRATE, not rows_changed) there are no expire rows and the
+    # column is absent from final_source — adding the EXPIRE branch unconditionally
+    # then fails Delta plan resolution with DELTA_MERGE_UNRESOLVED_EXPRESSION.
+    has_changed = not rows_changed.isEmpty()
     staged = new_rows
-    if not rows_changed.isEmpty():
+    if has_changed:
         staged = staged.unionByName(expire_rows, allowMissingColumns=True)
         staged = staged.unionByName(latest_version, allowMissingColumns=True)
     if older_versions is not None:
@@ -328,15 +336,17 @@ def _merge_single_pass(
             set=hydration_set,
         )
 
-    merge_builder.whenMatchedUpdate(
-        condition="source.__merge_action = 'EXPIRE'",
-        set={
-            "__is_current": "false",
-            "__valid_to": "COALESCE(source.__scd2_oldest_valid_from - INTERVAL 1 MICROSECOND, current_timestamp())",
-            "__etl_processed_at": "current_timestamp()",
-            "__is_deleted": "true",
-        },
-    ).whenNotMatchedInsert(values=insert_values).execute()
+    if has_changed:
+        merge_builder = merge_builder.whenMatchedUpdate(
+            condition="source.__merge_action = 'EXPIRE'",
+            set={
+                "__is_current": "false",
+                "__valid_to": "COALESCE(source.__scd2_oldest_valid_from - INTERVAL 1 MICROSECOND, current_timestamp())",
+                "__etl_processed_at": "current_timestamp()",
+                "__is_deleted": "true",
+            },
+        )
+    merge_builder.whenNotMatchedInsert(values=insert_values).execute()
     logger.info("SCD2 single-pass MERGE executed")
 
 
