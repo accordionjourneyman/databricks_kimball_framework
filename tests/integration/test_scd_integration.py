@@ -13,44 +13,12 @@ Requirements:
   - Run via: python tools/run_tests.py -t local --integration
 """
 
-import os
-import uuid
-
 import pytest
 from pyspark.sql import SparkSession
 
-from kimball.common.config import ConfigLoader
 from kimball.orchestration.orchestrator import Orchestrator
 
 pytestmark = pytest.mark.usefixtures("spark")
-
-
-@pytest.fixture
-def test_db(spark: SparkSession):
-    """Create a unique test database for each test run, clean up after."""
-    db_name = f"kimball_test_{uuid.uuid4().hex[:8]}"
-    spark.sql(f"CREATE DATABASE IF NOT EXISTS {db_name}")
-    os.environ["KIMBALL_ETL_SCHEMA"] = db_name
-    yield db_name
-    # Cleanup
-    spark.sql(f"DROP DATABASE IF EXISTS {db_name} CASCADE")
-
-
-@pytest.fixture
-def config_loader():
-    return ConfigLoader()
-
-
-@pytest.fixture
-def tmp_config(tmp_path, config_loader):
-    """Helper to write a config YAML and return its path."""
-
-    def _write(content: str) -> str:
-        path = tmp_path / f"test_config_{uuid.uuid4().hex[:8]}.yml"
-        path.write_text(content, encoding="utf-8")
-        return str(path)
-
-    return _write
 
 
 # =====================================================================
@@ -154,13 +122,14 @@ class TestSCD2Integration:
             CREATE TABLE {test_db}.products_src (
                 product_id INT,
                 name STRING,
-                price DOUBLE
+                price DOUBLE,
+                updated_at STRING
             ) USING DELTA
         """)
         spark.sql(f"""
             INSERT INTO {test_db}.products_src VALUES
-            (100, 'Widget', 9.99),
-            (200, 'Gadget', 19.99)
+            (100, 'Widget', 9.99, '2024-01-01'),
+            (200, 'Gadget', 19.99, '2024-01-01')
         """)
 
         config_path = tmp_config(f"""
@@ -171,12 +140,13 @@ keys:
   surrogate_key: product_sk
   natural_keys: [product_id]
 track_history_columns: [name, price]
+effective_at: updated_at
 sources:
   - name: {test_db}.products_src
     alias: p
     cdc_strategy: full
 transformation_sql: |
-  SELECT product_id, name, price FROM p
+  SELECT product_id, name, price, updated_at FROM p
 """)
 
         orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)
@@ -190,9 +160,10 @@ transformation_sql: |
         assert widget["__is_current"]
         assert widget["price"] == 9.99
 
-        # Change a tracked column
+        # Change a tracked column and advance effective_at so the new version
+        # gets a distinct valid_from (SCD2 versions must not share valid_from).
         spark.sql(f"""
-            UPDATE {test_db}.products_src SET price = 14.99 WHERE product_id = 100
+            UPDATE {test_db}.products_src SET price = 14.99, updated_at = '2024-06-01' WHERE product_id = 100
         """)
 
         # Second run - should create a new version
@@ -226,14 +197,15 @@ transformation_sql: |
         spark.sql(f"""
             CREATE TABLE {test_db}.customers_del_src (
                 customer_id INT,
-                name STRING
+                name STRING,
+                updated_at STRING
             ) USING DELTA
         """)
         spark.sql(f"""
             INSERT INTO {test_db}.customers_del_src VALUES
-            (1, 'Alice'),
-            (2, 'Bob'),
-            (3, 'Charlie')
+            (1, 'Alice', '2024-01-01'),
+            (2, 'Bob', '2024-01-01'),
+            (3, 'Charlie', '2024-01-01')
         """)
 
         config_path = tmp_config(f"""
@@ -244,12 +216,13 @@ keys:
   surrogate_key: customer_sk
   natural_keys: [customer_id]
 track_history_columns: [name]
+effective_at: updated_at
 sources:
   - name: {test_db}.customers_del_src
     alias: c
     cdc_strategy: full
 transformation_sql: |
-  SELECT customer_id, name FROM c
+  SELECT customer_id, name, updated_at FROM c
 """)
 
         # Initial load
@@ -309,11 +282,12 @@ class TestSchemaEvolutionIntegration:
         spark.sql(f"""
             CREATE TABLE {test_db}.evolve_src (
                 entity_id INT,
-                val_a STRING
+                val_a STRING,
+                updated_at STRING
             ) USING DELTA
         """)
         spark.sql(f"""
-            INSERT INTO {test_db}.evolve_src VALUES (1, 'hello'), (2, 'world')
+            INSERT INTO {test_db}.evolve_src VALUES (1, 'hello', '2024-01-01'), (2, 'world', '2024-01-01')
         """)
 
         config_v1 = tmp_config(f"""
@@ -324,12 +298,13 @@ keys:
   surrogate_key: entity_sk
   natural_keys: [entity_id]
 track_history_columns: [val_a]
+effective_at: updated_at
 sources:
   - name: {test_db}.evolve_src
     alias: e
     cdc_strategy: full
 transformation_sql: |
-  SELECT entity_id, val_a FROM e
+  SELECT entity_id, val_a, updated_at FROM e
 """)
 
         # Initial load
@@ -340,7 +315,7 @@ transformation_sql: |
         # Add column to source
         spark.sql(f"ALTER TABLE {test_db}.evolve_src ADD COLUMN val_b STRING")
         spark.sql(
-            f"UPDATE {test_db}.evolve_src SET val_b = 'extra' WHERE entity_id = 1"
+            f"UPDATE {test_db}.evolve_src SET val_b = 'extra', updated_at = '2024-06-01' WHERE entity_id = 1"
         )
 
         # Evolved config with new column + schema_evolution enabled
@@ -352,13 +327,14 @@ keys:
   surrogate_key: entity_sk
   natural_keys: [entity_id]
 track_history_columns: [val_a, val_b]
+effective_at: updated_at
 schema_evolution: true
 sources:
   - name: {test_db}.evolve_src
     alias: e
     cdc_strategy: full
 transformation_sql: |
-  SELECT entity_id, val_a, val_b FROM e
+  SELECT entity_id, val_a, val_b, updated_at FROM e
 """)
 
         orchestrator2 = Orchestrator(config_v2, spark=spark, etl_schema=test_db)

@@ -20,7 +20,8 @@ def _patch_spark_fns():
     """Patch Spark functions that require an active SparkContext."""
     with patch("kimball.processing.scd2.lit", return_value=MagicMock()), \
          patch("kimball.processing.scd2.col", return_value=MagicMock()), \
-         patch("kimball.processing.scd2.current_timestamp", return_value=MagicMock()):
+         patch("kimball.processing.scd2.current_timestamp", return_value=MagicMock()), \
+         patch("kimball.processing.scd2.expr", return_value=MagicMock()):
         yield
 
 
