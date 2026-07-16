@@ -77,10 +77,15 @@ class TestRecoverZombies:
             {"version": 2, "userMetadata": "other"},
         ]
         with patch("kimball.orchestration.transaction.DeltaTable.forName", return_value=delta_table):
-            manager._rollback = MagicMock()
+            # Do NOT mock _rollback -- let the real implementation issue the
+            # RESTORE statement so we verify the actual SQL (version 2 = the
+            # version before the first zombie commit at version 3), not just
+            # that _rollback was called with the right version.
             result = manager.recover_zombies("test_table", "batch-1")
         assert result is True
-        manager._rollback.assert_called_once_with("test_table", 2)
+        spark_mock.sql.assert_called_once_with(
+            "RESTORE TABLE `test_table` TO VERSION AS OF 2"
+        )
 
     def test_handles_restore_below_zero(self, manager, spark_mock):
         spark_mock.catalog.tableExists.return_value = True

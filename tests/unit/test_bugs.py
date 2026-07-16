@@ -214,16 +214,16 @@ class TestSCD2DeleteDedupBug:
         grouped.count.return_value = 0
         source_df.groupBy.return_value = grouped
 
-        try:
-            merge_scd2(
-                source_df,
-                target_table_name="test.dim",
-                join_keys=["id"],
-                track_history_columns=["val"],
-                surrogate_key_col="sk",
-            )
-        except Exception:
-            pass
+        # Do NOT swallow exceptions here: a broad ``except Exception: pass``
+        # would mask any regression that raises before the dedup assertions
+        # below. Let a real failure surface so the assertions are meaningful.
+        merge_scd2(
+            source_df,
+            target_table_name="test.dim",
+            join_keys=["id"],
+            track_history_columns=["val"],
+            surrogate_key_col="sk",
+        )
 
         # FIX VERIFIED: delete_rows were deduplicated via dropDuplicates before MERGE
         delete_rows.dropDuplicates.assert_called_with(["id"])

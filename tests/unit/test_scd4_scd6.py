@@ -21,18 +21,29 @@ class TestCreateMergeStrategy:
             merge(MagicMock(), scd_type=6, target_table_name="dim_customer", join_keys=["customer_id"])
 
     @patch("kimball.processing.dispatcher.current_timestamp")
-    def test_create_scd4_returns_callable(self, _mock_ts):
+    def test_create_scd4_dispatches_to_merge_scd4(self, _mock_ts):
         with patch("kimball.processing.dispatcher.merge_scd4") as mock_scd4:
             merge(MagicMock(), scd_type=4, target_table_name="dim_product",
                   join_keys=["product_id"], history_table="dim_product_history")
+            # merge() dispatches to merge_scd4 with the configured table/keys --
+            # verify it actually wired the history table through (not just that
+            # something was called).
             mock_scd4.assert_called_once()
+            kwargs = mock_scd4.call_args.kwargs
+            assert kwargs["target_table_name"] == "dim_product"
+            assert kwargs["history_table_name"] == "dim_product_history"
+            assert kwargs["join_keys"] == ["product_id"]
 
     @patch("kimball.processing.dispatcher.current_timestamp")
-    def test_create_scd6_returns_callable(self, _mock_ts):
+    def test_create_scd6_dispatches_to_merge_scd6(self, _mock_ts):
         with patch("kimball.processing.dispatcher.merge_scd6") as mock_scd6:
             merge(MagicMock(), scd_type=6, target_table_name="dim_customer",
                   join_keys=["customer_id"], current_value_columns=["city", "status"])
             mock_scd6.assert_called_once()
+            kwargs = mock_scd6.call_args.kwargs
+            assert kwargs["target_table_name"] == "dim_customer"
+            assert kwargs["current_value_columns"] == ["city", "status"]
+            assert kwargs["join_keys"] == ["customer_id"]
 
 
 class TestSCD4Function:

@@ -74,7 +74,11 @@ transformation_sql: |
             .collect()
         )
         assert len(rows) == 1, "SCD1 should overwrite, not version"
-        assert "T-LIGHT HOLDER" in rows[0]["description"]
+        # Exact equality — a substring match would pass even if SCD1 appended
+        # to the old value instead of replacing it.
+        assert rows[0]["description"] == "WHITE HANGING HEART T-LIGHT HOLDER", (
+            f"Expected exact overwrite, got: {rows[0]['description']!r}"
+        )
 
         for t in [f"{test_db}.dim_product", f"{test_db}.products"]:
             spark.sql(f"DROP TABLE IF EXISTS {t}")

@@ -48,7 +48,13 @@ RUN pip install --no-cache-dir \
     pydantic \
     pytest \
     pytest-benchmark \
-    ruff
+    ruff \
+    databricks-sdk
+
+# databricks-sdk is the pure-Python SDK (NOT databricks-connect). tests/conftest.py
+# does `import databricks` and then mocks `databricks.sdk.runtime`, so the SDK
+# package must be present for the test session to import. It does not hijack
+# SparkSession.builder (the reason databricks-connect is deliberately omitted).
 
 # Download Delta Lake JARs at build time so they're available offline at runtime.
 # Delta 4.x is built against Spark 4.0 / 4.1 and Scala 2.13.

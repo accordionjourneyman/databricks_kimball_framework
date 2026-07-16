@@ -188,9 +188,14 @@ class DataQualityValidator:
             if bad_count not in (0, None)
             else []
         )
+        # A test passes ONLY when there are zero bad rows. ``_count_bad_rows``
+        # returns ``None`` (not 0) when bad rows exist but the exact count was
+        # skipped for speed -- that is NOT a pass, it is a known failure with an
+        # unknown count. Treating ``None`` as pass made every validation
+        # silently green whenever violations were present.
         return TestResult(
             test_name=test_name,
-            passed=bad_count in (0, None),
+            passed=bad_count == 0,
             failed_rows=bad_count,
             total_rows=total_rows,
             severity=severity,

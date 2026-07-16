@@ -245,13 +245,17 @@ class TestEvolveTargetSchema:
 
 class TestValidateGrain:
     def test_skip_when_no_join_keys(self, executor, ctx):
-        executor.validate_grain(ctx, MagicMock(), [])
-        assert True
+        source_df = MagicMock()
+        executor.validate_grain(ctx, source_df, [])
+        # No join keys -> early return; must not run any groupBy/agg work.
+        source_df.groupBy.assert_not_called()
 
     def test_skip_mode(self, executor, ctx):
         ctx.config.grain_validation = "skip"
-        executor.validate_grain(ctx, MagicMock(), ["key"])
-        assert True
+        source_df = MagicMock()
+        executor.validate_grain(ctx, source_df, ["key"])
+        # grain_validation=skip -> early return before touching the source df.
+        source_df.groupBy.assert_not_called()
 
     def test_warn_mode(self, executor, ctx):
         ctx.config.grain_validation = "warn"
@@ -260,11 +264,21 @@ class TestValidateGrain:
         grouped.agg.return_value = grouped
         grouped.filter.return_value = grouped
         grouped.limit.return_value = grouped
-        grouped.head.return_value = [MagicMock()]
+        grouped.head.return_value = [MagicMock()]  # 1 violation -> non-empty
         grouped.collect.return_value = [MagicMock()]
         source_df.groupBy.return_value = grouped
-        executor.validate_grain(ctx, source_df, ["key"])
-        assert True
+        # spark_count("*") is a real pyspark call that needs a SparkContext;
+        # mock it so this unit test does not depend on a live session.
+        with patch(
+            "kimball.orchestration.services.merge_executor.spark_count"
+        ) as mock_count, patch(
+            "kimball.orchestration.services.merge_executor.logger"
+        ) as mock_logger:
+            mock_count.return_value = MagicMock()
+            # Warn mode must log a warning and NOT raise, even with violations.
+            executor.validate_grain(ctx, source_df, ["key"])
+        mock_logger.warning.assert_called_once()
+        assert "Grain violation" in str(mock_logger.warning.call_args)
 
     def test_error_mode_raises(self, executor, ctx):
         ctx.config.grain_validation = "error"
@@ -276,8 +290,12 @@ class TestValidateGrain:
         grouped.head.return_value = [MagicMock()]
         grouped.collect.return_value = [MagicMock()]
         source_df.groupBy.return_value = grouped
-        with pytest.raises(ValueError, match="Grain violation"):
-            executor.validate_grain(ctx, source_df, ["key"])
+        with patch(
+            "kimball.orchestration.services.merge_executor.spark_count"
+        ) as mock_count:
+            mock_count.return_value = MagicMock()
+            with pytest.raises(ValueError, match="Grain violation"):
+                executor.validate_grain(ctx, source_df, ["key"])
 
 
 class TestExecuteMerge:
@@ -302,10 +320,16 @@ class TestExecuteMerge:
         ctx.config.optimize_after_merge = True
         source_df = MagicMock()
         with (
-            patch("kimball.orchestration.services.merge_executor._merger.merge"),
+            patch("kimball.orchestration.services.merge_executor._merger.merge") as mock_merge,
             patch("kimball.orchestration.services.merge_executor.os.environ.get", return_value="0"),
+            patch("kimball.orchestration.services.merge_executor._merger.optimize_table") as mock_opt,
         ):
             executor.execute_merge(ctx, source_df, ["key"])
+        # The merge still runs, but optimize_table must be skipped when
+        # KIMBALL_ENABLE_INLINE_OPTIMIZE is not "1" -- otherwise the env gate
+        # is meaningless and optimize runs on every merge.
+        mock_merge.assert_called_once()
+        mock_opt.assert_not_called()
 
 
 class TestGetMergeMetrics:

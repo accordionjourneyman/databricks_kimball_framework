@@ -111,5 +111,15 @@ transformation_sql: |
     sk_values = [row.customer_sk for row in data]
     assert len(set(sk_values)) == len(sk_values)
 
+    # The evolved column must carry real values, not just exist as all-NULL.
+    # Checking only the schema would pass even if email were never populated.
+    emails = {row.email for row in data if row.email is not None}
+    assert "john@example.com" in emails, (
+        f"john@example.com not written to evolved rows; emails={emails}"
+    )
+    assert "jane@example.com" in emails, (
+        f"jane@example.com not written to evolved rows; emails={emails}"
+    )
+
     spark.sql(f"DROP TABLE {test_db}.dim_customer")
     spark.sql(f"DROP TABLE {test_db}.customers")

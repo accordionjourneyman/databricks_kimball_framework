@@ -1,196 +1,270 @@
 """Integration tests for Identity Bridge key resolution.
 
-Uses a real local SparkSession with temp views to verify the orchestrator
-can discover the bridge table via the Spark Catalog and execute the join.
+These tests exercise the REAL bridge resolution logic
+(``SkeletonManager.apply_identity_bridge``) on real Spark DataFrames backed
+by real catalog tables -- no orchestrator internals are mocked. They verify
+the behavior the pipeline now relies on: the ``join_on`` natural-key column is
+replaced by the canonical ``target_column`` value when a mapping exists, and
+left untouched when it does not.
+
+A final end-to-end test runs the full ``Orchestrator.run()`` pipeline to guard
+the wiring in ``TransformValidator.transform_and_validate``: if the bridge call
+is ever removed from the pipeline, the dimension would be keyed by the
+unresolved alternate key and that test would fail.
 """
 
-import sys
-import tempfile
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from pyspark.sql import SparkSession
 
-from kimball.common.config import IdentityBridgeConfig
+from kimball.common.config import IdentityBridgeConfig, TableConfig
+from kimball.orchestration.orchestrator import Orchestrator
+from kimball.orchestration.services.context import PipelineContext
+from kimball.orchestration.services.skeleton_manager import SkeletonManager
+
+pytestmark = pytest.mark.usefixtures("spark")
 
 
-@pytest.fixture(scope="module")
-def local_spark():
-    warehouse_dir = tempfile.mkdtemp(prefix="spark-warehouse-bridge-")
-    session = (
-        SparkSession.builder.appName("KimballBridgeTest")
-        .master("local[*]")
-        .config("spark.sql.warehouse.dir", warehouse_dir)
-        .getOrCreate()
+def _ctx(spark: SparkSession, bridge: IdentityBridgeConfig) -> PipelineContext:
+    """A minimal PipelineContext carrying only what apply_identity_bridge reads.
+
+    apply_identity_bridge touches ctx.spark and ctx.config.identity_bridge only,
+    so the remaining service fields are filled with dummies -- they are NOT the
+    code under test and are never exercised here.
+    """
+    config = TableConfig(
+        table_name="dim_bridge_test",
+        table_type="dimension",
+        surrogate_key="sk",
+        natural_keys=["business_key"],
+        sources=[],
     )
-    if "databricks.sdk.runtime" in sys.modules:
-        import types
-
-        mock_runtime = types.ModuleType("databricks.sdk.runtime")
-        mock_runtime.spark = session
-        mock_runtime.dbutils = MagicMock()
-        sys.modules["databricks.sdk.runtime"] = mock_runtime
-    yield session
-    session.stop()
-    import shutil
-    shutil.rmtree(warehouse_dir, ignore_errors=True)
+    config.identity_bridge = bridge
+    return PipelineContext(
+        spark=spark,
+        config=config,
+        etl_control=MagicMock(),
+        loader=MagicMock(),
+        runtime_options=MagicMock(),
+    )
 
 
-@pytest.fixture(scope="module")
-def bridge_view_name() -> str:
-    return "test_identity_bridge"
+class TestIdentityBridgeResolution:
+    """Verify apply_identity_bridge resolves keys on real Spark DataFrames."""
 
-
-@pytest.fixture(scope="module")
-def bridge_data(local_spark: SparkSession, bridge_view_name: str):
-    data = [("A", "C"), ("B", "C"), ("D", "E")]
-    columns = ["business_key", "target_key"]
-    local_spark.createDataFrame(data, columns).createOrReplaceTempView(bridge_view_name)
-    yield
-    try:
-        local_spark.catalog.dropTempView(bridge_view_name)
-    except Exception:
-        pass
-
-
-@pytest.fixture(scope="module")
-def orchestrator_with_bridge(bridge_data, bridge_view_name, local_spark):
-    with (
-        patch("kimball.orchestration.orchestrator.ConfigLoader") as mock_loader_cls,
-        patch("kimball.orchestration.orchestrator.RuntimeOptions") as mock_runtime,
-        patch("kimball.orchestration.orchestrator.ETLControlManager"),
-        patch("kimball.orchestration.orchestrator.DataLoader"),
-        patch("kimball.orchestration.orchestrator._merger"),
-        patch("kimball.orchestration.orchestrator.SkeletonGenerator"),
-        patch("kimball.orchestration.orchestrator.TableCreator"),
-        patch("kimball.orchestration.orchestrator.TransactionManager"),
-        patch("kimball.orchestration.orchestrator.QueryMetricsCollector"),
-        patch("kimball.orchestration.orchestrator.PipelineCheckpoint"),
-        patch("kimball.orchestration.orchestrator.StagingCleanupManager"),
-        patch(
-            "kimball.orchestration.orchestrator._feature_enabled", return_value=False
-        ),
+    def test_resolves_keys_and_preserves_other_columns(
+        self, spark: SparkSession, test_db: str
     ):
-        mock_loader_cls.return_value.load_config.return_value = MagicMock()
-        mock_runtime.from_environment.return_value = MagicMock(
-            shuffle_partitions="auto",
-            skew_threshold_mb=512,
-            skew_factor=2.0,
-        )
-        from kimball.orchestration.orchestrator import Orchestrator
+        spark.sql(f"""
+            CREATE TABLE {test_db}.bridge (
+                business_key STRING, target_key STRING
+            ) USING DELTA
+        """)
+        spark.sql(f"""
+            INSERT INTO {test_db}.bridge VALUES
+            ('A', 'C'), ('B', 'C'), ('D', 'E')
+        """)
 
-        orch = Orchestrator.__new__(Orchestrator)
-        orch.spark = local_spark
-        orch.config = MagicMock()
-        orch.config.identity_bridge = IdentityBridgeConfig(
-            table=bridge_view_name,
+        bridge = IdentityBridgeConfig(
+            table=f"{test_db}.bridge",
             join_on="business_key",
             target_column="target_key",
         )
-        orch.config.foreign_keys = []
-        orch.config.tests = None
-        orch.config.table_type = "dimension"
-        orch.config.natural_keys = None
-        orch.config.transformation_sql = None
-        orch.config.sources = []
-        orch.etl_control = MagicMock()
-        orch.loader = MagicMock()
-        orch.skeleton_generator = MagicMock()
-        orch.table_creator = MagicMock()
-        orch.transaction_manager = MagicMock()
-        orch.metrics_collector = None
-        orch.checkpoint_manager = None
-        orch.cleanup_manager = None
-        orch._validator = MagicMock()
-        yield orch
+        source = spark.createDataFrame(
+            [("A", 100), ("B", 200), ("D", 300)], "business_key string, val int"
+        )
 
+        resolved = SkeletonManager().apply_identity_bridge(_ctx(spark, bridge), source)
+        rows = {r.business_key: r.val for r in resolved.collect()}
 
-class TestIdentityBridgeIntegration:
-    def test_resolves_merged_keys(
-        self, local_spark: SparkSession, orchestrator_with_bridge
+        # Both A and B resolve to the SAME canonical key C -- assert each one
+        # landed on C (not "one of them might have"), and that the non-key
+        # column traveled with its row rather than being collapsed/lost.
+        assert rows.get("C") is not None, f"A should resolve to C, got {rows}"
+        assert "A" not in rows and "B" not in rows, (
+            f"Unresolved alternate keys leaked through: {rows}"
+        )
+        assert rows["E"] == 300, f"D should resolve to E, got {rows}"
+        # The vals 100 and 200 both survive (one under C); collect them to prove
+        # no source row was silently dropped during resolution.
+        vals_for_c = {
+            r.val for r in resolved.filter("business_key = 'C'").collect()
+        }
+        assert vals_for_c == {100, 200}, (
+            f"Both source rows should resolve to C keeping their vals, got {vals_for_c}"
+        )
+
+        spark.sql(f"DROP TABLE IF EXISTS {test_db}.bridge")
+
+    def test_preserves_unmapped_keys(self, spark: SparkSession, test_db: str):
+        spark.sql(f"""
+            CREATE TABLE {test_db}.bridge (
+                business_key STRING, target_key STRING
+            ) USING DELTA
+        """)
+        spark.sql(f"""
+            INSERT INTO {test_db}.bridge VALUES ('A', 'C')
+        """)
+
+        bridge = IdentityBridgeConfig(
+            table=f"{test_db}.bridge",
+            join_on="business_key",
+            target_column="target_key",
+        )
+        # X has no mapping in the bridge -> must pass through unchanged.
+        source = spark.createDataFrame(
+            [("X", 300)], "business_key string, val int"
+        )
+
+        resolved = SkeletonManager().apply_identity_bridge(_ctx(spark, bridge), source)
+        rows = resolved.collect()
+
+        assert len(rows) == 1, f"Unmapped key should not multiply, got {rows}"
+        assert rows[0].business_key == "X", (
+            f"Unmapped key should pass through as X, got {rows[0].business_key}"
+        )
+        assert rows[0].val == 300
+
+        spark.sql(f"DROP TABLE IF EXISTS {test_db}.bridge")
+
+    def test_handles_empty_bridge_table(self, spark: SparkSession, test_db: str):
+        spark.sql(f"""
+            CREATE TABLE {test_db}.bridge (
+                business_key STRING, target_key STRING
+            ) USING DELTA
+        """)
+        # No rows inserted -- empty bridge.
+
+        bridge = IdentityBridgeConfig(
+            table=f"{test_db}.bridge",
+            join_on="business_key",
+            target_column="target_key",
+        )
+        source = spark.createDataFrame(
+            [("A", 100), ("B", 200)], "business_key string, val int"
+        )
+
+        resolved = SkeletonManager().apply_identity_bridge(_ctx(spark, bridge), source)
+        rows = resolved.collect()
+
+        # With no mappings, every key is unchanged.
+        assert len(rows) == 2, f"Empty bridge should not drop rows, got {rows}"
+        by_key = {r.business_key: r.val for r in rows}
+        assert by_key == {"A": 100, "B": 200}, (
+            f"Empty bridge should leave keys unchanged, got {by_key}"
+        )
+
+        spark.sql(f"DROP TABLE IF EXISTS {test_db}.bridge")
+
+    def test_partial_mapping_resolves_some_preserves_rest(
+        self, spark: SparkSession, test_db: str
     ):
-        source_data = [("A", 100), ("B", 200)]
-        source_df = local_spark.createDataFrame(source_data, ["business_key", "val"])
+        spark.sql(f"""
+            CREATE TABLE {test_db}.bridge (
+                business_key STRING, target_key STRING
+            ) USING DELTA
+        """)
+        spark.sql(f"""
+            INSERT INTO {test_db}.bridge VALUES ('A', 'C')
+        """)
 
-        result_df = orchestrator_with_bridge._apply_identity_bridge(source_df)
+        bridge = IdentityBridgeConfig(
+            table=f"{test_db}.bridge",
+            join_on="business_key",
+            target_column="target_key",
+        )
+        # A is mapped -> C; B is unmapped -> stays B.
+        source = spark.createDataFrame(
+            [("A", 100), ("B", 200)], "business_key string, val int"
+        )
 
-        rows = {r.business_key: r.val for r in result_df.collect()}
-        assert rows.get("C") is not None, "A and B should both resolve to C"
-        assert rows["C"] == 100 or rows["C"] == 200
+        resolved = SkeletonManager().apply_identity_bridge(_ctx(spark, bridge), source)
+        by_key = {r.business_key: r.val for r in resolved.collect()}
 
-    def test_preserves_unmapped_keys(
-        self, local_spark: SparkSession, orchestrator_with_bridge
+        assert by_key.get("C") == 100, f"A should resolve to C, got {by_key}"
+        assert by_key.get("B") == 200, (
+            f"B should pass through unmapped, got {by_key}"
+        )
+        assert "A" not in by_key, f"A should not survive unresolved, got {by_key}"
+
+        spark.sql(f"DROP TABLE IF EXISTS {test_db}.bridge")
+
+
+class TestIdentityBridgeWiredInPipeline:
+    """Guard the bridge wiring: a full run() must resolve the natural key."""
+
+    def test_run_resolves_natural_key_through_bridge(
+        self, spark: SparkSession, test_db: str, tmp_config
     ):
-        source_data = [("X", 300)]
-        source_df = local_spark.createDataFrame(source_data, ["business_key", "val"])
+        # Source keyed by an ALTERNATE key (producer_id 100/200/300).
+        spark.sql(f"""
+            CREATE TABLE {test_db}.producers (
+                producer_id INT, seller_city STRING, seller_state STRING,
+                updated_at STRING
+            ) USING DELTA
+        """)
+        spark.sql(f"""
+            INSERT INTO {test_db}.producers VALUES
+            (100, 'Sao Paulo', 'SP', '2024-01-01T00:00:00'),
+            (200, 'Rio de Janeiro', 'RJ', '2024-01-01T00:00:00'),
+            (300, 'Belo Horizonte', 'MG', '2024-01-01T00:00:00')
+        """)
 
-        result_df = orchestrator_with_bridge._apply_identity_bridge(source_df)
+        # Bridge maps alternate -> canonical. 100/200/300 -> 1/2/3.
+        spark.sql(f"""
+            CREATE TABLE {test_db}.seller_bridge (
+                producer_id INT, canonical_seller_id INT
+            ) USING DELTA
+        """)
+        spark.sql(f"""
+            INSERT INTO {test_db}.seller_bridge VALUES
+            (100, 1), (200, 2), (300, 3)
+        """)
 
-        rows = result_df.collect()
-        assert len(rows) == 1
-        assert rows[0].business_key == "X"
+        config_path = tmp_config(f"""
+table_name: {test_db}.dim_seller
+table_type: dimension
+scd_type: 2
+effective_at: updated_at
+keys:
+  surrogate_key: seller_sk
+  natural_keys: [producer_id]
+track_history_columns: [seller_city, seller_state]
+identity_bridge:
+  table: {test_db}.seller_bridge
+  join_on: producer_id
+  target_column: canonical_seller_id
+sources:
+  - name: {test_db}.producers
+    alias: p
+    cdc_strategy: full
+transformation_sql: |
+  SELECT producer_id, seller_city, seller_state, updated_at FROM p
+""")
 
-    def test_handles_empty_bridge_table(
-        self, local_spark: SparkSession, bridge_view_name
-    ):
-        local_spark.createDataFrame(
-            [], schema="business_key string, target_key string"
-        ).createOrReplaceTempView(bridge_view_name)
-        with (
-            patch("kimball.orchestration.orchestrator.ConfigLoader") as mock_loader_cls,
-            patch("kimball.orchestration.orchestrator.RuntimeOptions") as mock_runtime,
-            patch("kimball.orchestration.orchestrator.ETLControlManager"),
-            patch("kimball.orchestration.orchestrator.DataLoader"),
-            patch("kimball.orchestration.orchestrator._merger"),
-            patch("kimball.orchestration.orchestrator.SkeletonGenerator"),
-            patch("kimball.orchestration.orchestrator.TableCreator"),
-            patch("kimball.orchestration.orchestrator.TransactionManager"),
-            patch("kimball.orchestration.orchestrator.QueryMetricsCollector"),
-            patch("kimball.orchestration.orchestrator.PipelineCheckpoint"),
-            patch("kimball.orchestration.orchestrator.StagingCleanupManager"),
-            patch(
-                "kimball.orchestration.orchestrator._feature_enabled",
-                return_value=False,
-            ),
-        ):
-            mock_loader_cls.return_value.load_config.return_value = MagicMock()
-            mock_runtime.from_environment.return_value = MagicMock(
-                shuffle_partitions="auto",
-                skew_threshold_mb=512,
-                skew_factor=2.0,
-            )
-            from kimball.orchestration.orchestrator import Orchestrator
+        result = Orchestrator(config_path, spark=spark, etl_schema=test_db).run()
+        assert result["status"] == "SUCCESS"
 
-            orch = Orchestrator.__new__(Orchestrator)
-            orch.spark = local_spark
-            orch.config = MagicMock()
-            orch.config.identity_bridge = IdentityBridgeConfig(
-                table=bridge_view_name,
-                join_on="business_key",
-                target_column="target_key",
-            )
-            orch.config.foreign_keys = []
-            orch.config.tests = None
-            orch.config.table_type = "dimension"
-            orch.config.natural_keys = None
-            orch.config.transformation_sql = None
-            orch.config.sources = []
-            orch.etl_control = MagicMock()
-            orch.loader = MagicMock()
-            orch.skeleton_generator = MagicMock()
-            orch.table_creator = MagicMock()
-            orch.transaction_manager = MagicMock()
-            orch.metrics_collector = None
-            orch.checkpoint_manager = None
-            orch.cleanup_manager = None
-            orch._validator = MagicMock()
+        # The dimension must be keyed by the RESOLVED canonical ids (1/2/3).
+        # If the bridge were not wired into the pipeline, these would be the
+        # unresolved producer ids (100/200/300).
+        dim = (
+            spark.table(f"{test_db}.dim_seller")
+            .filter("producer_id > 0")
+            .collect()
+        )
+        by_id = {r.producer_id: r for r in dim}
+        assert set(by_id) == {1, 2, 3}, (
+            f"Bridge did not resolve producer ids to canonical seller ids: {set(by_id)}"
+        )
+        assert by_id[1].seller_city == "Sao Paulo"
+        assert by_id[2].seller_city == "Rio de Janeiro"
+        assert by_id[3].seller_city == "Belo Horizonte"
 
-            source_data = [("A", 100)]
-            source_df = local_spark.createDataFrame(
-                source_data, ["business_key", "val"]
-            )
-
-            result_df = orch._apply_identity_bridge(source_df)
-            rows = result_df.collect()
-            assert len(rows) == 1
-            assert rows[0].business_key == "A"
+        for t in [
+            f"{test_db}.dim_seller",
+            f"{test_db}.producers",
+            f"{test_db}.seller_bridge",
+        ]:
+            spark.sql(f"DROP TABLE IF EXISTS {t}")

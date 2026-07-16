@@ -6,7 +6,9 @@ from typing import Any
 
 from pyspark.sql import DataFrame
 
+from kimball.observability.data_quality import AlertDispatcher, DataQualityEventWriter
 from kimball.orchestration.services.context import PipelineContext
+from kimball.orchestration.services.contracts import ContractValidator
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,27 @@ class SourceLoader:
             else:
                 latest_v = 0
             source_versions[source.name] = latest_v
+            if source.contract:
+                schema = getattr(ctx.etl_control, "schema", None) or "default"
+                obs = ctx.config.observability
+                writer = DataQualityEventWriter(
+                    ctx.spark, schema, obs.event_table if obs else "etl_data_quality_events"
+                )
+                findings = ContractValidator(ctx.spark).validate_source(source)
+                for finding in findings:
+                    event_id = writer.write(
+                        pipeline_table=ctx.config.table_name, source=source, finding=finding,
+                        run_id=ctx.batch_id, source_version=latest_v,
+                        action="blocked" if not finding.passed and finding.severity.value == "error" else "recorded",
+                    )
+                    if (not finding.passed and finding.severity.value == "error" and obs
+                            and "error" in obs.alert_on):
+                        AlertDispatcher(obs.webhook_env).dispatch({
+                            "event_id": event_id, "severity": "error", "category": finding.category,
+                            "source_table": source.name, "pipeline_table": ctx.config.table_name,
+                            "summary": finding.details,
+                        })
+                ContractValidator.raise_for_errors(findings)
 
             if source.cdc_strategy == "full":
                 df = ctx.loader.load_full_snapshot(
@@ -42,7 +65,7 @@ class SourceLoader:
                         df = ctx.loader.load_cdf(
                             source.name,
                             starting_version=source.starting_version,
-                            deduplicate_keys=source.primary_keys,
+                            deduplicate_keys=None,
                             ending_version=source.starting_version,
                         )
                         source_versions[source.name] = source.starting_version
@@ -50,7 +73,7 @@ class SourceLoader:
                         df = ctx.loader.load_cdf(
                             source.name,
                             starting_version=source.starting_version,
-                            deduplicate_keys=source.primary_keys,
+                            deduplicate_keys=None,
                             ending_version=latest_v,
                         )
                         source_versions[source.name] = latest_v
@@ -75,7 +98,7 @@ class SourceLoader:
                         df = ctx.loader.load_cdf(
                             source.name,
                             wm + 1,
-                            deduplicate_keys=source.primary_keys,
+                            deduplicate_keys=None,
                             ending_version=wm + 1,
                         )
                         source_versions[source.name] = wm + 1
@@ -83,7 +106,7 @@ class SourceLoader:
                         df = ctx.loader.load_cdf(
                             source.name,
                             wm + 1,
-                            deduplicate_keys=source.primary_keys,
+                            deduplicate_keys=None,
                             ending_version=latest_v,
                         )
             elif source.cdc_strategy == "append":
@@ -134,6 +157,22 @@ class SourceLoader:
             else:
                 raise ValueError(f"Unknown CDC strategy: {source.cdc_strategy}")
 
+            # Contract temporal checks must see raw CDF rows before the normal
+            # latest-per-key reduction removes ordering evidence.
+            if source.contract and source.contract.temporal:
+                findings = ContractValidator(ctx.spark).validate_temporal(df, source)
+                schema = getattr(ctx.etl_control, "schema", None) or "default"
+                obs = ctx.config.observability
+                writer = DataQualityEventWriter(ctx.spark, schema, obs.event_table if obs else "etl_data_quality_events")
+                for finding in findings:
+                    writer.write(
+                        pipeline_table=ctx.config.table_name, source=source, finding=finding,
+                        run_id=ctx.batch_id, source_version=source_versions[source.name],
+                        action="blocked" if not finding.passed and finding.severity.value == "error" else "accepted_late",
+                    )
+                ContractValidator.raise_for_errors(findings)
+            if source.cdc_strategy == "cdf":
+                df = ctx.loader.deduplicate_cdf(df, source.primary_keys)
             df.createOrReplaceTempView(source.alias)
             active_dfs[source.name] = df
 

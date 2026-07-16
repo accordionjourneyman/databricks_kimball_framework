@@ -214,7 +214,9 @@ class TestSkeletonHydration:
             natural_keys=["customer_id"],
         )
 
-        assert updated >= 1
+        assert updated == 1, (
+            f"Expected exactly 1 skeleton hydrated, got {updated}"
+        )
 
         rows = spark.table(f"{test_db}.dim_customer").collect()
         assert len(rows) == 1
@@ -432,7 +434,9 @@ early_arriving_facts:
             natural_keys=["customer_id"],
         )
 
-        assert updated >= 1
+        assert updated == 1, (
+            f"Expected exactly 1 skeleton hydrated, got {updated}"
+        )
 
         # Step 3: Verify final state
         rows = (
@@ -527,8 +531,13 @@ transformation_sql: |
             .filter("product_id = 200")
             .collect()
         )
-        # The skeleton should have been hydrated: name and price filled in
-        assert len(rows) >= 1
+        # The skeleton should have been hydrated IN PLACE (SK preserved, no
+        # duplicate row created). Exactly one row for product_id=200 proves
+        # in-place hydration; a second row would mean a new version was
+        # inserted instead of the skeleton being filled in.
+        assert len(rows) == 1, (
+            f"Expected 1 hydrated row for product_id=200, got {len(rows)}: {rows}"
+        )
         hydrated = rows[0]
         assert hydrated["name"] == "Gadget"
         assert hydrated["price"] == 19.99

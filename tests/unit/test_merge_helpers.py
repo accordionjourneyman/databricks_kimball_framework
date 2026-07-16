@@ -23,7 +23,14 @@ from kimball.processing.merge_helpers import (
 
 
 @pytest.fixture(autouse=True)
-def _patch_spark_fns():
+def _patch_spark_fns(request):
+    # Real-Spark behavior tests set ``real_spark = True`` on their class so the
+    # pyspark functions stay real (patching them with MagicMocks would make
+    # actual DataFrame operations no-ops, which is exactly the tautology these
+    # tests exist to avoid).
+    if getattr(request.instance, "real_spark", False):
+        yield
+        return
     with patch("kimball.processing.merge_helpers.col", return_value=MagicMock()), \
          patch("kimball.processing.merge_helpers.current_timestamp", return_value=MagicMock()), \
          patch("kimball.processing.merge_helpers.lit", return_value=MagicMock()), \
@@ -44,33 +51,56 @@ class TestDedupCdf:
         with pytest.raises(ValueError, match="ordering column"):
             dedup_cdf(df, ["customer_id"])
 
-    def test_dedup_accepts_explicit_order_column(self):
-        df = MagicMock()
-        df.columns = ["customer_id", "_commit_version"]
-        df.withColumn.return_value = df
-        df.filter.return_value = df
-        df.drop.return_value = df
-        with patch("kimball.processing.merge_helpers.Window"), \
-             patch("kimball.processing.merge_helpers.row_number"), \
-             patch("kimball.processing.merge_helpers.col"), \
-             patch("kimball.processing.merge_helpers.when", return_value=MagicMock()), \
-             patch("kimball.processing.merge_helpers.lit", return_value=MagicMock()):
-            result = dedup_cdf(df, ["customer_id"])
-        assert result is df
 
-    def test_dedup_with_commit_version(self):
-        df = MagicMock()
-        df.columns = ["customer_id", "_change_type", "_commit_version"]
-        df.withColumn.return_value = df
-        df.filter.return_value = df
-        df.drop.return_value = df
-        with patch("kimball.processing.merge_helpers.Window"), \
-             patch("kimball.processing.merge_helpers.row_number"), \
-             patch("kimball.processing.merge_helpers.col"), \
-             patch("kimball.processing.merge_helpers.when", return_value=MagicMock()), \
-             patch("kimball.processing.merge_helpers.lit", return_value=MagicMock()):
-            result = dedup_cdf(df, ["customer_id"])
-        assert result is df
+class TestDedupCdfRealSpark:
+    """Verify dedup_cdf actually collapses CDF rows, not just returns a df.
+
+    The previous mock-based tests set ``df.withColumn.return_value = df`` and
+    asserted ``result is df`` -- which passes whether or not any dedup
+    happened. These run a real Spark session and assert the deduplicated
+    *values*.
+    """
+
+    real_spark = True
+
+    def test_dedup_keeps_latest_version_per_key(self, spark):
+        # Two CDF rows for the same key at different versions: dedup must keep
+        # the latest version's value and drop the stale one.
+        df = spark.createDataFrame(
+            [(1, "old", 1, "insert"), (1, "new", 3, "update"), (2, "b", 1, "insert")],
+            ["id", "name", "_commit_version", "_change_type"],
+        )
+        result = dedup_cdf(df, ["id"]).orderBy("id").collect()
+        assert len(result) == 2  # one row per key
+        by_id = {r["id"]: r["name"] for r in result}
+        assert by_id[1] == "new"  # latest version wins
+        assert by_id[2] == "b"
+
+    def test_dedup_tie_prefers_non_delete(self, spark):
+        # Same _commit_version, one delete and one insert: non-delete wins.
+        df = spark.createDataFrame(
+            [(1, "old", 5, "delete"), (1, "new", 5, "insert")],
+            ["id", "name", "_commit_version", "_change_type"],
+        )
+        result = dedup_cdf(df, ["id"]).collect()
+        assert len(result) == 1
+        assert result[0]["name"] == "new"
+
+    def test_dedup_later_insert_beats_earlier_delete(self, spark):
+        # A delete followed by a later insert for the same key keeps the insert.
+        df = spark.createDataFrame(
+            [(1, "old", 1, "delete"), (1, "revived", 2, "insert")],
+            ["id", "name", "_commit_version", "_change_type"],
+        )
+        result = dedup_cdf(df, ["id"]).collect()
+        assert len(result) == 1
+        assert result[0]["name"] == "revived"
+
+    def test_dedup_no_change_type_is_identity(self, spark):
+        # Without _change_type, dedup_cdf returns the df unchanged (real rows).
+        df = spark.createDataFrame([(1, "a"), (2, "b")], ["id", "name"])
+        result = dedup_cdf(df, ["id"])
+        assert {r["id"] for r in result.collect()} == {1, 2}
 
 
 class TestFilterCdfDeletes:

@@ -53,21 +53,22 @@ class DataLoader:
         df = cast(DataFrame, reader.table(table_name))
         if "_change_type" in df.columns:
             df = df.filter("_change_type != 'update_preimage'")
-        if deduplicate_keys and "_commit_version" in df.columns:
-            from pyspark.sql import functions as F
+        return self.deduplicate_cdf(df, deduplicate_keys)
 
-            window = Window.partitionBy(deduplicate_keys).orderBy(
-                col("_commit_version").desc(),
-                F.when(col("_change_type") == "delete", 0)
-                .when(col("_change_type") == "update_postimage", 1)
-                .otherwise(2),
-            )
-            df = (
-                df.withColumn("_rn", row_number().over(window))
-                .filter(col("_rn") == 1)
-                .drop("_rn")
-            )
-        return df
+    @staticmethod
+    def deduplicate_cdf(df: DataFrame, deduplicate_keys: list[str] | None) -> DataFrame:
+        """Keep the latest CDF row per key after callers inspect raw ordering."""
+        if not deduplicate_keys or "_commit_version" not in df.columns:
+            return df
+        from pyspark.sql import functions as F
+
+        window = Window.partitionBy(deduplicate_keys).orderBy(
+            col("_commit_version").desc(),
+            F.when(col("_change_type") == "delete", 0)
+            .when(col("_change_type") == "update_postimage", 1)
+            .otherwise(2),
+        )
+        return df.withColumn("_rn", row_number().over(window)).filter(col("_rn") == 1).drop("_rn")
 
     def get_latest_version(self, table_name: str) -> int:
         if not self.spark.catalog.tableExists(table_name):

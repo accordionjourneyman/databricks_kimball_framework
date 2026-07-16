@@ -30,7 +30,11 @@ class TestCheckSingleFk:
         )
         assert result is None
 
-    def test_returns_none_when_no_dim_key(self):
+    def test_returns_result_when_column_and_dim_table_provided(self):
+        # _check_single_fk only returns None when the FK column or dimension
+        # table is missing. When both are present (dimension_key defaults to
+        # the FK column), it proceeds and returns a TestResult -- it does NOT
+        # short-circuit on a missing/empty dimension_key.
         validator, spark = _make_validator()
         df = MagicMock()
         df.select.return_value = MagicMock()
@@ -311,7 +315,17 @@ class TestValidateUnique:
         with patch.object(validator, "_build_test_result") as mock_build:
             mock_build.return_value = TestResult("test", True, 0, 10, TestSeverity.ERROR)
             result = validator.validate_unique(df, ["id"])
-        assert result is not None
+        # The validator must actually run groupBy/agg/filter and delegate the
+        # (empty) violation set to _build_test_result with the right test name
+        # -- not short-circuit to a stub. And the returned result must be a
+        # PASS, not merely non-None (which would pass even if it returned a
+        # failing result).
+        mock_build.assert_called_once()
+        assert mock_build.call_args.args[1] is bad_df
+        assert mock_build.call_args.args[2] == "unique(id)"
+        assert mock_build.call_args.args[3] is TestSeverity.ERROR
+        assert result.passed is True
+        assert result.failed_rows == 0
 
     def test_details_count_positive(self):
         validator, _ = _make_validator()
@@ -354,7 +368,11 @@ class TestValidateNotNull:
         with patch.object(validator, "_build_test_result") as mock_build:
             mock_build.return_value = TestResult("test", True, 0, 10, TestSeverity.ERROR)
             result = validator.validate_not_null(df, ["id"])
-        assert result is not None
+        mock_build.assert_called_once()
+        assert mock_build.call_args.args[1] is bad_df
+        assert mock_build.call_args.args[2] == "not_null(id)"
+        assert result.passed is True
+        assert result.failed_rows == 0
 
     def test_details_count_positive(self):
         validator, _ = _make_validator()
@@ -397,7 +415,11 @@ class TestValidateAcceptedValues:
         with patch.object(validator, "_build_test_result") as mock_build:
             mock_build.return_value = TestResult("test", True, 0, 10, TestSeverity.ERROR)
             result = validator.validate_accepted_values(df, "status", ["a", "b"])
-        assert result is not None
+        mock_build.assert_called_once()
+        assert mock_build.call_args.args[1] is bad_df
+        assert mock_build.call_args.args[2] == "accepted_values(status)"
+        assert result.passed is True
+        assert result.failed_rows == 0
 
     def test_details_count_positive(self):
         validator, _ = _make_validator()
@@ -440,7 +462,11 @@ class TestValidateExpression:
         with patch.object(validator, "_build_test_result") as mock_build:
             mock_build.return_value = TestResult("test", True, 0, 10, TestSeverity.ERROR)
             result = validator.validate_expression(df, "amount > 0")
-        assert result is not None
+        mock_build.assert_called_once()
+        assert mock_build.call_args.args[1] is bad_df
+        assert mock_build.call_args.args[2] == "expression(amount > 0...)"
+        assert result.passed is True
+        assert result.failed_rows == 0
 
     def test_rejects_forbidden_sql_keywords(self):
         validator, _ = _make_validator()

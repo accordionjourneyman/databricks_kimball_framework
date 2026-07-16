@@ -1,5 +1,6 @@
 import hashlib
 import os
+import re
 from typing import Any, Literal
 
 import yaml
@@ -53,6 +54,67 @@ class StreamingSourceConfig(BaseModel):
         return self
 
 
+class ContractColumnConfig(BaseModel):
+    """A supplier column expectation used by a consumer pipeline."""
+
+    type: str
+    nullable: bool = True
+    required: bool = True
+
+
+class ContractCDCConfig(BaseModel):
+    required: bool = False
+    primary_key: list[str] = Field(default_factory=list)
+
+
+class ContractFreshnessConfig(BaseModel):
+    max_age: str
+
+    @model_validator(mode="after")
+    def validate_duration(self) -> "ContractFreshnessConfig":
+        if not re.match(r"^\d+\s*(s|m|h|d|seconds?|minutes?|hours?|days?)$", self.max_age, re.I):
+            raise ValueError("freshness.max_age must be a duration such as '2 hours'")
+        return self
+
+
+class ContractQualityRule(BaseModel):
+    name: str | None = None
+    rule: Literal["not_null", "unique", "null_rate", "accepted_values", "expression"]
+    column: str | None = None
+    columns: list[str] | None = None
+    max_ratio: float | None = Field(default=None, ge=0, le=1)
+    values: list[Any] | None = None
+    expression: str | None = None
+    severity: Literal["warn", "error"] = "error"
+
+
+class ContractTemporalConfig(BaseModel):
+    event_time_column: str
+    allowed_lateness: str = "0 hours"
+    late_event_severity: Literal["warn", "error"] = "warn"
+    out_of_order_severity: Literal["warn", "error"] = "warn"
+
+    @model_validator(mode="after")
+    def validate_duration(self) -> "ContractTemporalConfig":
+        if not re.match(r"^\d+\s*(s|m|h|d|seconds?|minutes?|hours?|days?)$", self.allowed_lateness, re.I):
+            raise ValueError("temporal.allowed_lateness must be a duration such as '24 hours'")
+        return self
+
+
+class SourceContractConfig(BaseModel):
+    """Executable, consumer-side contract for one upstream source."""
+
+    id: str
+    version: str
+    owner: str | None = None
+    compatibility: Literal["nullable_additions", "strict"] = "nullable_additions"
+    schema_: dict[str, ContractColumnConfig] = Field(alias="schema")
+    cdc: ContractCDCConfig | None = None
+    freshness: ContractFreshnessConfig | None = None
+    quality: list[ContractQualityRule] = Field(default_factory=list)
+    temporal: ContractTemporalConfig | None = None
+
+
 class SourceConfig(BaseModel):
     name: str
     alias: str
@@ -63,6 +125,7 @@ class SourceConfig(BaseModel):
     primary_keys: list[str] | None = Field(default=None)
     starting_version: int = Field(default=0, ge=0)
     streaming: StreamingSourceConfig | None = Field(default=None)
+    contract: SourceContractConfig | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -122,6 +185,23 @@ class IdentityBridgeConfig(BaseModel):
     target_column: str
 
 
+class EarlyArrivingDimensionConfig(BaseModel):
+    fact_key: str
+    dimension_table: str
+    dimension_key: str
+    surrogate_key: str = "surrogate_key"
+    action: Literal["skeleton", "error"] = "skeleton"
+    severity: Literal["warn", "error"] = "warn"
+
+
+class ObservabilityConfig(BaseModel):
+    enabled: bool = True
+    event_table: str = "etl_data_quality_events"
+    state_table: str = "etl_contract_monitor_state"
+    webhook_env: str = "KIMBALL_ALERT_WEBHOOK_URL"
+    alert_on: list[Literal["warn", "error"]] = Field(default_factory=lambda: ["error"])
+
+
 class TableConfig(BaseModel):
     table_name: str
     table_type: Literal["dimension", "fact"]
@@ -139,6 +219,7 @@ class TableConfig(BaseModel):
     default_rows: dict[str, Any] | None = None
     schema_evolution: bool = False
     early_arriving_facts: list[dict[str, str]] | None = None
+    early_arriving_dimensions: list[EarlyArrivingDimensionConfig] | None = None
     cluster_by: list[str] | None = None
     optimize_after_merge: bool = False
     merge_keys: list[str] | None = None
@@ -151,6 +232,7 @@ class TableConfig(BaseModel):
     declare_constraints: bool = True
     pii: PIIPolicy | None = None
     append_only: bool = False
+    observability: ObservabilityConfig | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -187,6 +269,17 @@ class TableConfig(BaseModel):
             raise ValueError(
                 "SCD Type 6 requires 'current_value_columns' to be specified."
             )
+        for source in self.sources:
+            if source.contract and source.contract.cdc:
+                contract_keys = source.contract.cdc.primary_key
+                if contract_keys and source.primary_keys and contract_keys != source.primary_keys:
+                    raise ValueError(
+                        f"Source '{source.name}' primary_keys must match contract.cdc.primary_key"
+                    )
+                if source.contract.cdc.required and source.cdc_strategy != "cdf":
+                    raise ValueError(
+                        f"Source '{source.name}' contract requires CDF but cdc_strategy is '{source.cdc_strategy}'"
+                    )
         return self
 
 

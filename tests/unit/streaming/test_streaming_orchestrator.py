@@ -263,6 +263,11 @@ class TestPerVersionForeachBatch:
             foreach_fn = orch._make_foreach(cfg.sources[0])
             foreach_fn(batch_df, 42)
 
+        # Verify the actual filter predicate used to strip update_preimage rows.
+        # batch_df.filter is a MagicMock that returns itself for ANY argument, so
+        # asserting only on .return_value would pass even with a wrong/missing
+        # filter predicate -- the predicate itself must be checked.
+        batch_df.filter.assert_called_once_with("_change_type != 'update_preimage'")
         mock_per_version.assert_called_once_with(
             batch_df.filter.return_value, cfg.sources[0], 42
         )
@@ -286,6 +291,8 @@ class TestPerVersionForeachBatch:
             foreach_fn = orch._make_foreach(cfg.sources[0])
             foreach_fn(batch_df, 42)
 
+        # Verify the actual filter predicate (see per_version test for rationale).
+        batch_df.filter.assert_called_once_with("_change_type != 'update_preimage'")
         mock_single.assert_called_once_with(
             batch_df.filter.return_value, cfg.sources[0], 42
         )

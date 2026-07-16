@@ -182,6 +182,17 @@ class TestAdaptivePruning:
         tracked_in_target = {"name", "price", "category_id"} <= target_cols
         extras_in_target = any(c.startswith("extra_") for c in target_cols)
 
+        # Correctness gate: adaptive pruning must keep tracked columns AND drop
+        # the extra_ columns. Saving these to JSON without asserting lets a
+        # broken prune (or no prune at all) pass silently.
+        assert tracked_in_target, (
+            f"Tracked columns missing from target; got {sorted(target_cols)}"
+        )
+        assert not extras_in_target, (
+            f"Adaptive pruning failed: extra_ columns present in target: "
+            f"{sorted(c for c in target_cols if c.startswith('extra_'))}"
+        )
+
         _save(
             "pruning_adaptive",
             scale,

@@ -1,11 +1,11 @@
-table_name: workspace.kimball_golden_52e074a2.dim_product
+table_name: workspace.kimball_golden_490c74b5.dim_product
 table_type: dimension
 scd_type: 1
 keys:
   surrogate_key: product_sk
   natural_keys: [product_id]
 sources:
-  - name: workspace.kimball_golden_raw_52e074a2.products
+  - name: workspace.kimball_golden_raw_490c74b5.products
     alias: p
     cdc_strategy: cdf
     starting_version: 0

@@ -100,30 +100,35 @@ transformation_sql: |
 
 
 class TestOlistIdentityBridge:
-    """Test the identity bridge: producer_id -> seller_id mapping.
+    """Test the identity bridge end-to-end: producer_id -> seller_id mapping.
 
-    In the real Olist data, a producer (manufacturer) can supply multiple sellers.
-    The bridge maps producer_id (business key in one source) to seller_id
-    (the canonical key in the dimension). This tests that the bridge
-    correctly resolves unmapped keys via COALESCE.
+    In the real Olist data, a producer (manufacturer) is identified by
+    producer_id in the source, but the canonical dimension key is seller_id.
+    The identity bridge maps producer_id -> canonical_seller_id so the
+    dimension is keyed by the resolved seller_id. This test configures the
+    bridge and asserts resolution actually happens through a real run() -- if
+    the bridge is never applied in the pipeline, the dimension would be keyed
+    by producer_id (100/200/300) and the assertions below would fail.
     """
 
     def test_producer_bridge_resolves_to_seller(
         self, spark: SparkSession, test_db: str, tmp_config
     ):
+        # Source is keyed by the ALTERNATE business key (producer_id).
         spark.sql(f"""
-            CREATE TABLE {test_db}.sellers (
-                seller_id INT, seller_city STRING, seller_state STRING,
+            CREATE TABLE {test_db}.producers (
+                producer_id INT, seller_city STRING, seller_state STRING,
                 updated_at STRING
             ) USING DELTA
         """)
         spark.sql(f"""
-            INSERT INTO {test_db}.sellers VALUES
-            (1, 'Sao Paulo', 'SP', '2024-01-01T00:00:00'),
-            (2, 'Rio de Janeiro', 'RJ', '2024-01-01T00:00:00'),
-            (3, 'Belo Horizonte', 'MG', '2024-01-01T00:00:00')
+            INSERT INTO {test_db}.producers VALUES
+            (100, 'Sao Paulo', 'SP', '2024-01-01T00:00:00'),
+            (200, 'Rio de Janeiro', 'RJ', '2024-01-01T00:00:00'),
+            (300, 'Belo Horizonte', 'MG', '2024-01-01T00:00:00')
         """)
 
+        # Bridge maps the alternate key to the canonical key.
         spark.sql(f"""
             CREATE TABLE {test_db}.seller_producer_bridge (
                 producer_id INT, canonical_seller_id INT
@@ -132,7 +137,8 @@ class TestOlistIdentityBridge:
         spark.sql(f"""
             INSERT INTO {test_db}.seller_producer_bridge VALUES
             (100, 1),
-            (200, 2)
+            (200, 2),
+            (300, 3)
         """)
 
         config_path = tmp_config(f"""
@@ -142,33 +148,44 @@ scd_type: 2
 effective_at: updated_at
 keys:
   surrogate_key: seller_sk
-  natural_keys: [seller_id]
+  natural_keys: [producer_id]
 track_history_columns: [seller_city, seller_state]
+identity_bridge:
+  table: {test_db}.seller_producer_bridge
+  join_on: producer_id
+  target_column: canonical_seller_id
 sources:
-  - name: {test_db}.sellers
-    alias: s
+  - name: {test_db}.producers
+    alias: p
     cdc_strategy: full
 transformation_sql: |
-  SELECT seller_id, seller_city, seller_state, updated_at FROM s
+  SELECT producer_id, seller_city, seller_state, updated_at FROM p
 """)
 
         orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)
         result = orchestrator.run()
         assert result["status"] == "SUCCESS"
 
-        dim = spark.table(f"{test_db}.dim_seller").filter("seller_id > 0").collect()
-        assert len(dim) == 3
-        by_id = {r.seller_id: r for r in dim}
+        # After bridge resolution the natural key column (producer_id) holds
+        # the CANONICAL seller ids (1/2/3), not the producer ids (100/200/300).
+        dim = (
+            spark.table(f"{test_db}.dim_seller")
+            .filter("producer_id > 0")
+            .collect()
+        )
+        assert len(dim) == 3, f"Expected 3 sellers, got {len(dim)}: {dim}"
+        by_id = {r.producer_id: r for r in dim}
+        # If the bridge never ran, these keys would be 100/200/300, not 1/2/3.
+        assert 1 in by_id, f"Bridge did not resolve producer 100 -> seller 1: {by_id}"
+        assert 2 in by_id, f"Bridge did not resolve producer 200 -> seller 2: {by_id}"
+        assert 3 in by_id, f"Bridge did not resolve producer 300 -> seller 3: {by_id}"
         assert by_id[1]["seller_city"] == "Sao Paulo"
         assert by_id[2]["seller_city"] == "Rio de Janeiro"
         assert by_id[3]["seller_city"] == "Belo Horizonte"
 
-        bridge_count = spark.table(f"{test_db}.seller_producer_bridge").count()
-        assert bridge_count == 2
-
         for t in [
             f"{test_db}.dim_seller",
-            f"{test_db}.sellers",
+            f"{test_db}.producers",
             f"{test_db}.seller_producer_bridge",
         ]:
             spark.sql(f"DROP TABLE IF EXISTS {t}")

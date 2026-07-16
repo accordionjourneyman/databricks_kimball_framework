@@ -1,4 +1,4 @@
-table_name: workspace.kimball_golden_52e074a2.dim_customer
+table_name: workspace.kimball_golden_490c74b5.dim_customer
 table_type: dimension
 scd_type: 2
 keys:
@@ -11,7 +11,7 @@ track_history_columns:
   - email
   - address
 sources:
-  - name: workspace.kimball_golden_raw_52e074a2.customers
+  - name: workspace.kimball_golden_raw_490c74b5.customers
     alias: c
     cdc_strategy: cdf
     starting_version: 0

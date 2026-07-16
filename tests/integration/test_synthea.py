@@ -17,6 +17,7 @@ the same Kimball patterns as the full synthetic dataset.
 import pytest
 from pyspark.sql import SparkSession
 
+from kimball.common.errors import DataQualityError
 from kimball.orchestration.orchestrator import Orchestrator
 
 pytestmark = pytest.mark.usefixtures("spark")
@@ -98,9 +99,15 @@ transformation_sql: |
 
 
 class TestSyntheaEncounterFact:
-    """Test an encounter fact table referencing the patient dimension."""
+    """Test an encounter fact table referencing the patient dimension.
 
-    def test_fact_encounters_with_patient_sk(
+    The fact declares a foreign key on patient_id -> dim_patient.patient_id so
+    the framework's FK integrity gate runs. The test verifies the gate has
+    teeth: a valid run succeeds, but an encounter whose patient_id does not
+    exist in dim_patient is rejected (run fails) rather than silently written.
+    """
+
+    def test_fact_encounters_fk_gates_orphan_patients(
         self, spark: SparkSession, test_db: str, tmp_config
     ):
         spark.sql(f"""
@@ -146,6 +153,11 @@ transformation_sql: |
 table_name: {test_db}.fact_encounters
 table_type: fact
 merge_keys: [encounter_id]
+foreign_keys:
+  - column: patient_id
+    references: {test_db}.dim_patient
+    dimension_key: patient_id
+    default_value: -1
 sources:
   - name: {test_db}.encounters
     alias: e
@@ -156,16 +168,35 @@ transformation_sql: |
   FROM e
 """)
 
-        orch1 = Orchestrator(dim_config, spark=spark, etl_schema=test_db)
-        assert orch1.run()["status"] == "SUCCESS"
-
-        orch2 = Orchestrator(fact_config, spark=spark, etl_schema=test_db)
-        assert orch2.run()["status"] == "SUCCESS"
+        assert Orchestrator(dim_config, spark=spark, etl_schema=test_db).run()["status"] == "SUCCESS"
+        assert Orchestrator(fact_config, spark=spark, etl_schema=test_db).run()["status"] == "SUCCESS"
 
         rows = spark.table(f"{test_db}.fact_encounters").collect()
-        assert len(rows) == 3
+        assert len(rows) == 3, f"Expected 3 encounters, got {len(rows)}"
         p1_encounters = [r for r in rows if r.patient_id == 1]
         assert len(p1_encounters) == 2
+
+        # Real FK verification: every fact.patient_id must exist in dim_patient.
+        # A mere row-count check would pass even if the fact referenced
+        # patients that don't exist in the dimension.
+        dim_patient_ids = {
+            r.patient_id for r in spark.table(f"{test_db}.dim_patient").collect()
+        }
+        for r in rows:
+            assert r.patient_id in dim_patient_ids, (
+                f"Fact row references patient_id={r.patient_id} absent from dim_patient"
+            )
+
+        # Negative case with teeth: insert an encounter whose patient_id is NOT
+        # in dim_patient and re-run. The FK integrity gate must reject it --
+        # the run raises DataQualityError rather than silently writing the
+        # orphan. If it succeeds, the gate is a no-op and the test fails.
+        spark.sql(f"""
+            INSERT INTO {test_db}.encounters VALUES
+            ('e4', 999, 10, 'emergency', TIMESTAMP '2024-04-01 08:00:00')
+        """)
+        with pytest.raises(DataQualityError):
+            Orchestrator(fact_config, spark=spark, etl_schema=test_db).run()
 
         for t in [
             f"{test_db}.fact_encounters",
@@ -177,9 +208,15 @@ transformation_sql: |
 
 
 class TestSyntheaRolePlayingProvider:
-    """Test that the same provider dimension is referenced from multiple facts."""
+    """Test the same provider dimension is referenced from multiple facts.
 
-    def test_provider_appears_in_encounters_and_conditions(
+    Both facts declare a foreign key on provider_id -> dim_provider.provider_id.
+    The test verifies the role-playing relationship has teeth: both facts
+    succeed with valid providers, and an orphan provider in EITHER fact is
+    rejected by the FK integrity gate.
+    """
+
+    def test_both_facts_reference_provider_dimension_with_fk_gate(
         self, spark: SparkSession, test_db: str, tmp_config
     ):
         spark.sql(f"""
@@ -235,6 +272,11 @@ transformation_sql: |
 table_name: {test_db}.fact_encounters
 table_type: fact
 merge_keys: [encounter_id]
+foreign_keys:
+  - column: provider_id
+    references: {test_db}.dim_provider
+    dimension_key: provider_id
+    default_value: -1
 sources:
   - name: {test_db}.encounters
     alias: e
@@ -247,6 +289,11 @@ transformation_sql: |
 table_name: {test_db}.fact_conditions
 table_type: fact
 merge_keys: [condition_id]
+foreign_keys:
+  - column: provider_id
+    references: {test_db}.dim_provider
+    dimension_key: provider_id
+    default_value: -1
 sources:
   - name: {test_db}.conditions
     alias: c
@@ -270,13 +317,33 @@ transformation_sql: |
 
         enc_rows = spark.table(f"{test_db}.fact_encounters").collect()
         cond_rows = spark.table(f"{test_db}.fact_conditions").collect()
-        assert len(enc_rows) == 2
-        assert len(cond_rows) == 2
+        assert len(enc_rows) == 2, f"Expected 2 encounters, got {len(enc_rows)}"
+        assert len(cond_rows) == 2, f"Expected 2 conditions, got {len(cond_rows)}"
 
+        # Real role-playing verification: provider 10 (House) is referenced by
+        # BOTH facts, and every provider_id in both facts exists in dim_provider.
+        dim_provider_ids = {
+            r.provider_id for r in spark.table(f"{test_db}.dim_provider").collect()
+        }
+        for r in enc_rows + cond_rows:
+            assert r.provider_id in dim_provider_ids, (
+                f"Fact row references provider_id={r.provider_id} absent from dim_provider"
+            )
         enc_house = [r for r in enc_rows if r.provider_id == 10]
         cond_house = [r for r in cond_rows if r.provider_id == 10]
-        assert len(enc_house) == 1
-        assert len(cond_house) == 1
+        assert len(enc_house) == 1 and len(cond_house) == 1, (
+            "Provider 10 should be referenced by both facts (role-playing dimension)"
+        )
+
+        # Negative case with teeth: a condition referencing an unknown provider
+        # must be rejected by the FK gate. If the run succeeds, the gate is a
+        # no-op and the role-playing relationship is unenforced.
+        spark.sql(f"""
+            INSERT INTO {test_db}.conditions VALUES
+            ('c3', 2, 999, 'Z99.9', DATE '2024-03-10')
+        """)
+        with pytest.raises(DataQualityError):
+            Orchestrator(cond_config, spark=spark, etl_schema=test_db).run()
 
         for t in [
             f"{test_db}.fact_encounters",

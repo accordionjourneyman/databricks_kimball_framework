@@ -25,6 +25,7 @@ from kimball.orchestration.executor import (
     PipelineResult,
 )
 from kimball.orchestration.orchestrator import Orchestrator
+from kimball.orchestration.contracts_monitor import ContractMonitor
 from kimball.orchestration.watermark import (
     KIMBALL_ETL_SCHEMA_ENV,
     ETLControlManager,
@@ -38,6 +39,7 @@ from kimball.streaming import (
 
 __all__ = [
     "Orchestrator",
+    "ContractMonitor",
     "StreamingOrchestrator",
     "PipelineExecutor",
     "PipelineResult",

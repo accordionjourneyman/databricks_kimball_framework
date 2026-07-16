@@ -50,3 +50,12 @@ wheels/
 
 # Artifacts
 quality_reports/
+
+# Local debug/scratch artifacts — never for VCS
+/_test_golden.py
+/_test_mask.py
+/findings.json
+/golden_output.txt
+/mask_output.txt
+/build-debug.log
+/tests/golden/_debug_*.yml

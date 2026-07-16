@@ -185,6 +185,15 @@ transformation_sql: |
         result = batch_orch.run()
         assert result["status"] == "SUCCESS"
 
+        # Capture Widget's surrogate key BEFORE the update so we can prove the
+        # streaming merge preserved it (in-place update) rather than re-inserting
+        # the row with a new SK.
+        original_sk = (
+            spark.table(f"{test_db}.dim_product")
+            .filter("product_id = 100")
+            .first()["product_sk"]
+        )
+
         # Update Widget's price
         spark.sql(f"""
             UPDATE {test_db}.products_src
@@ -219,8 +228,11 @@ transformation_sql: |
         )
         assert widget is not None
         assert widget["price"] == 14.99, f"Expected price 14.99, got {widget['price']}"
-        # SK should be preserved (same row, not re-inserted)
-        assert widget["product_sk"] is not None
+        # SK must be preserved (in-place update), not a freshly generated key.
+        # A non-null check alone would pass even if the row were re-inserted.
+        assert widget["product_sk"] == original_sk, (
+            f"Expected SK preserved={original_sk}, got {widget['product_sk']}"
+        )
 
         for t in [f"{test_db}.dim_product", f"{test_db}.products_src"]:
             spark.sql(f"DROP TABLE IF EXISTS {t}")

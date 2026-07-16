@@ -41,7 +41,13 @@ class TestUpdateSkeletonsWithRealData:
         dim_df.columns = ["__is_skeleton", "id"]
         dim_df.filter.return_value.isEmpty.return_value = True
         delta_table.toDF.return_value = dim_df
-        with patch("kimball.processing.late_arriving_dimension.DeltaTable.forName", return_value=delta_table):
+        # col("__is_skeleton") is a real pyspark call that needs a SparkContext;
+        # patch it (as the sibling update-path tests do) so this unit test does
+        # not depend on a live session.
+        with (
+            patch("kimball.processing.late_arriving_dimension.DeltaTable.forName", return_value=delta_table),
+            patch("kimball.processing.late_arriving_dimension.col", return_value=MagicMock()),
+        ):
             result = processor.update_skeletons_with_real_data("dim", MagicMock(), ["key"])
         assert result == 0
 

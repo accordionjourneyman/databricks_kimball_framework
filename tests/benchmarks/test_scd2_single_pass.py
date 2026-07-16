@@ -236,9 +236,25 @@ def test_benchmark(spark: SparkSession) -> None:
                 "source_rows": n_source_rows,
                 "sp_time": sp_time,
                 "tp_time": tp_time,
+                "sp_count": sp_count,
+                "tp_count": tp_count,
                 "match": match,
                 "tp_error": tp_error,
             })
+
+        # Correctness gate: the benchmark is only meaningful if single-pass
+        # produces the SAME output as the reference two-phase implementation.
+        # Printing YES/NO without asserting lets a divergence pass silently.
+        for r in results:
+            if r["tp_error"] is None:
+                assert r["match"], (
+                    f"Single-pass output differs from two-phase for scenario "
+                    f"{r['scenario']!r} ({r['source_rows']} source rows)"
+                )
+            assert r["sp_count"] > 0 or r["source_rows"] == 0, (
+                f"Single-pass produced 0 rows for scenario {r['scenario']!r} "
+                f"from {r['source_rows']} source rows"
+            )
 
         # Summary
         print(f"\n{'='*60}")

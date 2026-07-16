@@ -125,9 +125,10 @@ class TestBugSCD6SKClobbersExistingRows:
 # ===================================================================
 
 class TestBugResetWatermarkSQLInjection:
-    """reset_watermark uses raw string interpolation without quoting."""
+    """reset_watermark must escape single quotes in table names so a crafted
+    name cannot break out of the string literal (SQL injection)."""
 
-    def test_reset_watermark_interpolates_unquoted(self):
+    def test_reset_watermark_escapes_injected_quote(self):
         from kimball.orchestration.watermark import ETLControlManager
 
         spark_mock = MagicMock(spec=SparkSession)
@@ -136,14 +137,27 @@ class TestBugResetWatermarkSQLInjection:
 
         manager = ETLControlManager(etl_schema="test", spark_session=spark_mock)
 
-        manager.reset_watermark("target_table", "source_table")
+        # Payload that would break out of the WHERE string literal if the
+        # table name were interpolated raw (the original bug).
+        payload = "evil'; DROP TABLE etl_control;--"
+        manager.reset_watermark(payload, "source_table")
 
         sql_call = spark_mock.sql.call_args[0][0]
-        # The bug: table names are interpolated without quoting
-        assert "DELETE FROM" in sql_call
-        assert "target_table = 'target_table'" in sql_call
-        # Should use quote_table_name or backtick-quoted identifiers
-        assert "'" in sql_call  # String quotes around identifiers = SQL injection risk
+        assert sql_call.startswith("DELETE FROM `test`.`etl_control` WHERE ")
+        # The injected single quote MUST be doubled ('') so the payload stays
+        # inside the string literal instead of terminating it. Just checking
+        # that "'" appears in the SQL would pass even with no escaping, since
+        # the literal is single-quoted anyway -- the real protection is the
+        # doubling.
+        assert "target_table = 'evil''; DROP TABLE etl_control;--'" in sql_call, (
+            f"Injected quote not escaped; SQL vulnerable to injection: {sql_call!r}"
+        )
+        # The dangerous statement must remain INSIDE the escaped literal, not
+        # appear as a separate top-level statement.
+        assert "DROP TABLE etl_control" in sql_call  # present but escaped
+        assert "DROP TABLE `etl_control`" not in sql_call, (
+            f"Injection escaped the string literal: {sql_call!r}"
+        )
 
 
 # ===================================================================

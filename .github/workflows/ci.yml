@@ -129,3 +129,45 @@ jobs:
             exit 0
           fi
           databricks bundle validate --target ${{ matrix.target }}
+
+  integration:
+    name: Integration tests (real Spark + Delta, Docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Docker test image
+        run: docker compose build kimball-tests
+
+      - name: Run integration tests against real Spark + Delta
+        # Run the real-Spark integration suite on the project's Docker image
+        # (pyspark 4.0.1 + delta-spark 4.2.0, Java 17). databricks-sdk is baked
+        # into the image so tests/conftest.py imports cleanly. JUnit results are
+        # written to a bind-mounted host dir so they survive the --rm container.
+        run: |
+          mkdir -p test-results
+          docker compose run --rm --no-deps \
+            -v "${PWD}/test-results:/test-results" \
+            -e KIMBALL_TARGET=local \
+            -e KIMBALL_ETL_SCHEMA=etl_control \
+            kimball-tests \
+            bash -c "python -m pytest tests/integration/ -v --tb=short --junitxml=/test-results/junit-integration.xml -o junit_family=legacy"
+
+      - name: Publish integration test results
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        if: always()
+        continue-on-error: true
+        with:
+          check_name: Integration test results
+          files: test-results/junit-integration.xml
+
+      - name: Upload integration test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-results
+          path: test-results/junit-integration.xml
+          if-no-files-found: warn

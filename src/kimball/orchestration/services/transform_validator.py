@@ -6,9 +6,10 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import StringType
 
-from kimball.common.config import ConfigLoader
 from kimball.common.errors import DataQualityError
+from kimball.observability.data_quality import DataQualityEventWriter
 from kimball.orchestration.services.context import PipelineContext
+from kimball.orchestration.services.contracts import ContractValidator
 from kimball.orchestration.services.fingerprint import FingerprintService
 from kimball.orchestration.validation import DataQualityValidator
 
@@ -27,6 +28,13 @@ class TransformValidator:
     ) -> DataFrame:
         spark = ctx.spark
         config = ctx.config
+
+        # The validator's spark may otherwise resolve via get_spark() to a
+        # different session than the pipeline's (e.g. the mocked
+        # databricks.sdk.runtime.spark in local tests). FK integrity reads
+        # dimension tables from the catalog, so it MUST use the pipeline's
+        # own session to see the tables the pipeline created.
+        self._validator._spark = spark
 
         if config.transformation_sql:
             sql_stripped = config.transformation_sql.strip().upper()
@@ -66,6 +74,39 @@ class TransformValidator:
             logger.info(f"Applying PII masking to {len(config.pii.columns)} column(s)")
             transformed_df = apply_pii_masking(transformed_df, config.pii)
 
+        if config.identity_bridge:
+            from kimball.orchestration.services.skeleton_manager import SkeletonManager
+
+            sm = getattr(self, "_skeleton_manager", None) or SkeletonManager()
+            logger.info(
+                f"Applying identity bridge: {config.identity_bridge.table} on "
+                f"{config.identity_bridge.join_on} -> "
+                f"{config.identity_bridge.target_column}"
+            )
+            transformed_df = sm.apply_identity_bridge(ctx, transformed_df)
+
+        # Contract data rules are intentionally never fingerprint-skipped: source
+        # content can change while both configuration and schema remain stable.
+        contracted_sources = [s for s in config.sources if s.contract]
+        if contracted_sources:
+            schema = getattr(ctx.etl_control, "schema", None) or "default"
+            obs = config.observability
+            writer = DataQualityEventWriter(
+                spark, schema, obs.event_table if obs else "etl_data_quality_events"
+            )
+            validator = ContractValidator(spark)
+            contract_findings = []
+            for source in contracted_sources:
+                findings = validator.validate_data(transformed_df, source)
+                contract_findings.extend(findings)
+                for finding in findings:
+                    writer.write(
+                        pipeline_table=config.table_name, source=source, finding=finding,
+                        run_id=ctx.batch_id, source_version=ctx.source_versions.get(source.name),
+                        action="blocked" if not finding.passed and finding.severity.value == "error" else "recorded",
+                    )
+            ContractValidator.raise_for_errors(contract_findings)
+
         if config.foreign_keys:
             for fk in config.foreign_keys:
                 col_name = fk.column
@@ -94,7 +135,7 @@ class TransformValidator:
                     )
 
         if getattr(config, "tests", None):
-            if fingerprint_service.should_skip_validation(ctx):
+            if fingerprint_service.should_skip_validation(ctx) and not contracted_sources:
                 logger.info(
                     "Skipping data quality validation: config + source schema "
                     "fingerprints unchanged since last successful run."
@@ -109,7 +150,7 @@ class TransformValidator:
                 report.raise_on_failure()
 
         if config.table_type == "dimension" and config.natural_keys:
-            if not fingerprint_service.should_skip_validation(ctx):
+            if not fingerprint_service.should_skip_validation(ctx) or contracted_sources:
                 logger.info("Validating natural key uniqueness (pre-merge gate)...")
                 nk_result = self._validator.validate_natural_key_uniqueness(
                     transformed_df,
@@ -127,7 +168,7 @@ class TransformValidator:
                 logger.info("Skipping NK uniqueness: fingerprints unchanged.")
 
         if config.table_type == "fact" and config.foreign_keys:
-            if not fingerprint_service.should_skip_validation(ctx) and not getattr(config, "tests", None):
+            if (not fingerprint_service.should_skip_validation(ctx) or contracted_sources) and not getattr(config, "tests", None):
                 logger.info(
                     "Validating FK integrity against dimensions (pre-merge gate)..."
                 )
