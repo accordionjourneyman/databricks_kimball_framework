@@ -10,41 +10,13 @@ These tests share the same environment as the other integration tests
 (Java, pyspark, delta-spark).
 """
 
-import os
-import uuid
-
 import pytest
 from pyspark.sql import SparkSession
 
-from kimball.common.config import ConfigLoader
 from kimball.orchestration.orchestrator import Orchestrator
 from kimball.streaming.orchestrator import StreamingOrchestrator
 
 pytestmark = pytest.mark.usefixtures("spark")
-
-
-@pytest.fixture
-def test_db(spark: SparkSession):
-    db_name = f"kimball_stream_{uuid.uuid4().hex[:8]}"
-    spark.sql(f"CREATE DATABASE IF NOT EXISTS {db_name}")
-    os.environ["KIMBALL_ETL_SCHEMA"] = db_name
-    yield db_name
-    spark.sql(f"DROP DATABASE IF EXISTS {db_name} CASCADE")
-
-
-@pytest.fixture
-def config_loader():
-    return ConfigLoader()
-
-
-@pytest.fixture
-def tmp_config(tmp_path, config_loader):
-    def _write(content: str) -> str:
-        path = tmp_path / f"stream_test_{uuid.uuid4().hex[:8]}.yml"
-        path.write_text(content, encoding="utf-8")
-        return str(path)
-
-    return _write
 
 
 class TestStreamingCdfSCD1:

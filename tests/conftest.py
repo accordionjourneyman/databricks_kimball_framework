@@ -1,6 +1,7 @@
 import os
 import sys
 import tempfile
+import uuid
 from typing import Any, cast
 from unittest.mock import MagicMock
 
@@ -92,8 +93,13 @@ def _is_remote_only() -> bool:
         return False
 
 
-def _create_local_spark_session() -> SparkSession:
-    """Create a local SparkSession with Delta Lake support."""
+def _create_local_spark_session(warehouse_dir: str | None = None) -> SparkSession:
+    """Create a local SparkSession with Delta Lake support.
+
+    Args:
+        warehouse_dir: Path for spark.sql.warehouse.dir. If None, a temp dir
+                       is created (caller must clean up).
+    """
     builder = SparkSession.builder.appName("KimballFrameworkTest")
     if _is_remote_only():
         # pyspark 4.x with databricks-connect: only Spark Connect sessions are
@@ -118,10 +124,7 @@ def _create_local_spark_session() -> SparkSession:
             pass  # delta-spark not installed — tests that need it will fail
     return (
         builder.config("spark.sql.ansi.enabled", "true")
-        .config(
-            "spark.sql.warehouse.dir",
-            tempfile.mkdtemp(prefix="spark-warehouse-kimball-tests-"),
-        )
+        .config("spark.sql.warehouse.dir", warehouse_dir or tempfile.mkdtemp(prefix="spark-warehouse-kimball-tests-"))
         .getOrCreate()
     )
 
@@ -139,13 +142,18 @@ def spark():
       - Otherwise, fall back to a local SparkSession (requires Java).
 
     For remote runs, set DATABRICKS_CLUSTER_ID to skip interactive cluster selection.
+
+    The local Spark warehouse directory is created as a temp dir and
+    automatically cleaned up when the session ends.
     """
     if _is_databricks_runtime():
         spark = _create_databricks_runtime_spark_session()
     elif _is_remote_spark_requested():
         spark = _create_remote_spark_session()
     else:
-        spark = _create_local_spark_session()
+        # Use TemporaryDirectory so the warehouse dir is cleaned up on exit
+        warehouse_dir = tempfile.mkdtemp(prefix="spark-warehouse-kimball-tests-")
+        spark = _create_local_spark_session(warehouse_dir)
 
     # Inject the active SparkSession into the mocked databricks.sdk.runtime
     # so application code that imports `spark` from there uses the right session.
@@ -163,6 +171,9 @@ def spark():
     # Do not stop remote or runtime sessions; their lifecycle is managed separately.
     if not _is_remote_spark_requested() and not _is_databricks_runtime():
         spark.stop()
+        # Clean up the warehouse directory after stopping the session
+        import shutil
+        shutil.rmtree(warehouse_dir, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")
@@ -174,3 +185,73 @@ def test_catalog() -> str:
     for local runs. Override with KIMBALL_TEST_CATALOG.
     """
     return os.environ.get("KIMBALL_TEST_CATALOG", "spark_catalog")
+
+
+# ---------------------------------------------------------------------------
+# Shared fixtures for integration tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def test_db(spark: SparkSession, request: pytest.FixtureRequest):
+    """
+    Create a unique test database (schema) for each test function and drop it
+    on teardown.
+
+    The database name is derived from the test module and a random suffix so
+    that parallel test runs do not collide.  The database is dropped with
+    CASCADE on teardown regardless of test outcome.
+
+    Usage in an integration test module::
+
+        pytestmark = pytest.mark.usefixtures("spark")
+
+        def test_something(spark, test_db):
+            spark.sql(f"CREATE TABLE {test_db}.my_table ...")
+    """
+    # Derive a short prefix from the test module name
+    module_name = request.module.__name__ if request.module else "kimball"
+    # Take the last component of the module path, strip "test_"
+    prefix = module_name.split(".")[-1].replace("test_", "")[:12]
+    db_name = f"kimball_{prefix}_{uuid.uuid4().hex[:8]}"
+    spark.sql(f"CREATE DATABASE IF NOT EXISTS {db_name}")
+    os.environ["KIMBALL_ETL_SCHEMA"] = db_name
+    yield db_name
+    spark.sql(f"DROP DATABASE IF EXISTS {db_name} CASCADE")
+
+
+@pytest.fixture
+def config_loader():
+    """Provide a ConfigLoader instance for integration tests."""
+    from kimball.common.config import ConfigLoader
+    return ConfigLoader()
+
+
+@pytest.fixture
+def tmp_config(tmp_path):
+    """
+    Write a config YAML string to a temp file and return its path.
+
+    Usage::
+
+        config_path = tmp_config(f\"\"\"
+        table_name: {test_db}.dim_customer
+        table_type: dimension
+        ...
+        \"\"\")
+    """
+    configs_written: list[str] = []
+
+    def _write(content: str) -> str:
+        path = tmp_path / f"test_config_{uuid.uuid4().hex[:8]}.yml"
+        path.write_text(content, encoding="utf-8")
+        configs_written.append(str(path))
+        return str(path)
+
+    yield _write
+
+    # Clean up config files after the test
+    for p in configs_written:
+        try:
+            os.remove(p)
+        except OSError:
+            pass

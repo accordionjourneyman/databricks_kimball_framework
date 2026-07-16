@@ -16,13 +16,11 @@ from kimball.common.config import IdentityBridgeConfig
 
 @pytest.fixture(scope="module")
 def local_spark():
+    warehouse_dir = tempfile.mkdtemp(prefix="spark-warehouse-bridge-")
     session = (
         SparkSession.builder.appName("KimballBridgeTest")
         .master("local[*]")
-        .config(
-            "spark.sql.warehouse.dir",
-            tempfile.mkdtemp(prefix="spark-warehouse-bridge-"),
-        )
+        .config("spark.sql.warehouse.dir", warehouse_dir)
         .getOrCreate()
     )
     if "databricks.sdk.runtime" in sys.modules:
@@ -34,6 +32,8 @@ def local_spark():
         sys.modules["databricks.sdk.runtime"] = mock_runtime
     yield session
     session.stop()
+    import shutil
+    shutil.rmtree(warehouse_dir, ignore_errors=True)
 
 
 @pytest.fixture(scope="module")

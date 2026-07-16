@@ -92,6 +92,17 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Schema/catalog for test tables on Databricks (default: kimball_test)",
     )
+    parser.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="After tests, run cleanup_databricks.py to remove stale test schemas",
+    )
+    parser.add_argument(
+        "--cleanup-older-than",
+        type=int,
+        default=1,
+        help="Only clean up schemas older than N days (default: 1, used with --cleanup)",
+    )
     return parser.parse_args()
 
 
@@ -203,6 +214,28 @@ def main() -> None:
     print("-" * 60)
 
     result = subprocess.run(cmd, env=env)
+
+    # Optionally clean up stale test schemas on Databricks
+    if args.cleanup and args.target == "databricks":
+        print("\n" + "=" * 60)
+        print("Running Databricks schema cleanup...")
+        print("=" * 60)
+        cleanup_cmd = [
+            sys.executable,
+            str(Path(__file__).parent / "cleanup_databricks.py"),
+            "--older-than",
+            str(args.cleanup_older_than),
+            "--all",
+            "--yes",
+        ]
+        if args.databricks_schema:
+            cleanup_cmd.extend(["--catalog", args.databricks_schema])
+        cleanup_result = subprocess.run(cleanup_cmd, env=env)
+        if cleanup_result.returncode != 0:
+            print("warning: cleanup reported errors (see above)")
+    elif args.cleanup and args.target == "local":
+        print("\nnote: --cleanup is only meaningful with --target databricks (local temp dirs are auto-cleaned)")
+
     sys.exit(result.returncode)
 
 

@@ -14,7 +14,9 @@ from delta import configure_spark_with_delta_pip
 _NULL_SENTINEL = "__NULL_SENTINEL_12345678123456781234567812345678__"
 
 
-def build_spark() -> SparkSession:
+def build_spark() -> tuple[SparkSession, str]:
+    """Build a local SparkSession and return (session, warehouse_dir)."""
+    warehouse_dir = tempfile.mkdtemp(prefix="spark-warehouse-")
     builder = (
         SparkSession.builder.appName("HashPlanCompare")
         .master("local[2]")
@@ -23,9 +25,9 @@ def build_spark() -> SparkSession:
         .config("spark.sql.shuffle.partitions", "8")
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.driver.memory", "4g")
-        .config("spark.sql.warehouse.dir", tempfile.mkdtemp(prefix="spark-warehouse-"))
+        .config("spark.sql.warehouse.dir", warehouse_dir)
     )
-    return configure_spark_with_delta_pip(builder).getOrCreate()
+    return configure_spark_with_delta_pip(builder).getOrCreate(), warehouse_dir
 
 
 def compute_hashdiff_xxhash64_str(columns):
@@ -47,7 +49,7 @@ def compute_hashdiff_sha256(columns):
 
 
 def main():
-    spark = build_spark()
+    spark, warehouse_dir = build_spark()
     spark.sparkContext.setLogLevel("ERROR")
 
     db = "kimball_hash_compare"
@@ -208,6 +210,8 @@ def main():
     wide.unpersist()
     spark.sql(f"DROP DATABASE IF EXISTS {db} CASCADE")
     spark.stop()
+    import shutil
+    shutil.rmtree(warehouse_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -52,6 +52,7 @@ def spark():
 
         from pyspark.sql import SparkSession
 
+        warehouse_dir = tempfile.mkdtemp(prefix="spark-warehouse-bench-")
         builder = (
             SparkSession.builder.appName("KimballBenchmark")
             .master("local[2]")
@@ -65,10 +66,7 @@ def spark():
             .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
             .config("spark.driver.memory", "4g")
             .config("spark.sql.ansi.enabled", "false")
-            .config(
-                "spark.sql.warehouse.dir",
-                tempfile.mkdtemp(prefix="spark-warehouse-bench-"),
-            )
+            .config("spark.sql.warehouse.dir", warehouse_dir)
         )
         # Ensure the delta-spark JARs are on the classpath when running
         # outside Databricks (e.g. GitHub Actions, local dev).
@@ -90,6 +88,8 @@ def spark():
     yield session
     if not _is_databricks_runtime():
         session.stop()
+        import shutil
+        shutil.rmtree(warehouse_dir, ignore_errors=True)
 
 
 @pytest.fixture

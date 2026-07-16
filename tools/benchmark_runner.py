@@ -129,9 +129,17 @@ class ScenarioResult:
         }
 
 
-def build_spark() -> SparkSession:
-    """Build a local SparkSession tuned for benchmarks."""
-    return (
+def build_spark() -> tuple[SparkSession, str]:
+    """Build a local SparkSession tuned for benchmarks.
+
+    Returns:
+        Tuple of (SparkSession, warehouse_dir_path).
+        Caller should clean up warehouse_dir after stopping the session.
+    """
+    import tempfile
+
+    warehouse_dir = tempfile.mkdtemp(prefix="spark-warehouse-bench-")
+    session = (
         SparkSession.builder.appName("KimballBenchmark")
         .master("local[2]")
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
@@ -143,14 +151,12 @@ def build_spark() -> SparkSession:
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
         .config("spark.sql.ansi.enabled", "false")
-        .config(
-            "spark.sql.warehouse.dir",
-            tempfile.mkdtemp(prefix="spark-warehouse-bench-"),
-        )
+        .config("spark.sql.warehouse.dir", warehouse_dir)
         .config("spark.driver.memory", "2g")
         .config("spark.sql.adaptive.skewJoin.enabled", "true")
         .getOrCreate()
     )
+    return session, warehouse_dir
 
 
 def render_config(template_path: Path, db: str) -> str:
@@ -432,7 +438,7 @@ def main() -> None:
     output_dir = Path(_HERE / args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    spark = build_spark()
+    spark, _warehouse_dir = build_spark()
     listener = MetricsListener()
     listener.attach(spark)
 
@@ -473,6 +479,8 @@ def main() -> None:
                 )
     finally:
         spark.stop()
+        import shutil
+        shutil.rmtree(_warehouse_dir, ignore_errors=True)
 
     # Write results
     timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
