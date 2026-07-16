@@ -171,17 +171,26 @@ class StreamingMicroBatchProcessor:
         grain_mode = getattr(self.config, "grain_validation", "error")
         if grain_mode == "skip":
             return
+        # CDF streaming batches legitimately carry multiple versions of the same
+        # natural key (one per Delta commit) — that is the input to multi-version
+        # SCD2, not a grain violation. Scope the grain to (key, commit_version)
+        # when CDF metadata is present so per-version batches are not false-flagged.
+        grain_keys = list(join_keys)
+        if "_commit_version" in source_df.columns:
+            grain_keys = grain_keys + ["_commit_version"]
         grain_violations = (
-            source_df.groupBy(*join_keys)
+            source_df.groupBy(*grain_keys)
             .agg(spark_count("*").alias("__grain_count"))
             .filter("__grain_count > 1")
         )
         if len(grain_violations.limit(1).head(1)) > 0:
             sample = grain_violations.limit(5).collect()
-            keys_str = ", ".join({k: row[k] for k in join_keys} for row in sample)
+            keys_str = "; ".join(
+                ", ".join(f"{k}={row[k]}" for k in grain_keys) for row in sample
+            )
             msg = (
                 f"Grain violation in {self.config.table_name}: "
-                f"Duplicate keys for grain {join_keys}. Sample: {keys_str}"
+                f"Duplicate keys for grain {grain_keys}. Sample: {keys_str}"
             )
             if grain_mode == "warn":
                 logger.warning(msg)

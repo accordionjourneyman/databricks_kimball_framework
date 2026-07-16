@@ -113,14 +113,15 @@ class TestOlistIdentityBridge:
     ):
         spark.sql(f"""
             CREATE TABLE {test_db}.sellers (
-                seller_id INT, seller_city STRING, seller_state STRING
+                seller_id INT, seller_city STRING, seller_state STRING,
+                updated_at STRING
             ) USING DELTA
         """)
         spark.sql(f"""
             INSERT INTO {test_db}.sellers VALUES
-            (1, 'Sao Paulo', 'SP'),
-            (2, 'Rio de Janeiro', 'RJ'),
-            (3, 'Belo Horizonte', 'MG')
+            (1, 'Sao Paulo', 'SP', '2024-01-01T00:00:00'),
+            (2, 'Rio de Janeiro', 'RJ', '2024-01-01T00:00:00'),
+            (3, 'Belo Horizonte', 'MG', '2024-01-01T00:00:00')
         """)
 
         spark.sql(f"""
@@ -138,6 +139,7 @@ class TestOlistIdentityBridge:
 table_name: {test_db}.dim_seller
 table_type: dimension
 scd_type: 2
+effective_at: updated_at
 keys:
   surrogate_key: seller_sk
   natural_keys: [seller_id]
@@ -147,7 +149,7 @@ sources:
     alias: s
     cdc_strategy: full
 transformation_sql: |
-  SELECT seller_id, seller_city, seller_state FROM s
+  SELECT seller_id, seller_city, seller_state, updated_at FROM s
 """)
 
         orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)
@@ -248,19 +250,21 @@ class TestOlistSCD2OnProducts:
     ):
         spark.sql(f"""
             CREATE TABLE {test_db}.products (
-                product_id INT, product_category STRING, product_weight_g INT
+                product_id INT, product_category STRING, product_weight_g INT,
+                updated_at STRING
             ) USING DELTA
         """)
         spark.sql(f"""
             INSERT INTO {test_db}.products VALUES
-            (1, 'electronics', 500),
-            (2, 'furniture',  2000)
+            (1, 'electronics', 500,  '2024-01-01T00:00:00'),
+            (2, 'furniture',  2000, '2024-01-01T00:00:00')
         """)
 
         config_path = tmp_config(f"""
 table_name: {test_db}.dim_product
 table_type: dimension
 scd_type: 2
+effective_at: updated_at
 keys:
   surrogate_key: product_sk
   natural_keys: [product_id]
@@ -270,7 +274,7 @@ sources:
     alias: p
     cdc_strategy: full
 transformation_sql: |
-  SELECT product_id, product_category, product_weight_g FROM p
+  SELECT product_id, product_category, product_weight_g, updated_at FROM p
 """)
 
         orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)
@@ -279,7 +283,7 @@ transformation_sql: |
 
         spark.sql(f"""
             UPDATE {test_db}.products
-            SET product_category = 'audio', product_weight_g = 450
+            SET product_category = 'audio', product_weight_g = 450, updated_at = '2024-06-01T00:00:00'
             WHERE product_id = 1
         """)
 

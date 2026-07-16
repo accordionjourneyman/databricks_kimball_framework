@@ -126,8 +126,16 @@ transformation_sql: |
         assert final_rows[2]["name"] == "Charlie"
         assert final_rows[3]["name"] == "Diana"
 
-        # SKs should be sequential (identity strategy)
-        assert final_rows[0]["customer_sk"] < final_rows[3]["customer_sk"]
+        # SKs are deterministic hash surrogate keys (xxhash64), so they have no
+        # ordering relationship to customer_id. Verify they are present and unique
+        # instead — the real invariant for a surrogate key column.
+        sk_values = [r["customer_sk"] for r in final_rows]
+        assert all(sk is not None for sk in sk_values), (
+            f"Expected non-null surrogate keys, got: {sk_values}"
+        )
+        assert len(set(sk_values)) == len(sk_values), (
+            f"Expected unique surrogate keys, got duplicates in: {sk_values}"
+        )
 
         for t in [f"{test_db}.dim_customer", f"{test_db}.customers_src"]:
             spark.sql(f"DROP TABLE IF EXISTS {t}")

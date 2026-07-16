@@ -31,19 +31,21 @@ class TestSyntheaPatientSCD2:
         spark.sql(f"""
             CREATE TABLE {test_db}.patients (
                 patient_id INT, first_name STRING, last_name STRING,
-                city STRING, state STRING, marital_status STRING
+                city STRING, state STRING, marital_status STRING,
+                updated_at STRING
             ) USING DELTA
         """)
         spark.sql(f"""
             INSERT INTO {test_db}.patients VALUES
-            (1, 'Alice', 'Smith', 'Boston',    'MA', 'single'),
-            (2, 'Bob',   'Jones', 'Cambridge', 'MA', 'married')
+            (1, 'Alice', 'Smith', 'Boston',    'MA', 'single',   '2024-01-01T00:00:00'),
+            (2, 'Bob',   'Jones', 'Cambridge', 'MA', 'married',  '2024-01-01T00:00:00')
         """)
 
         config_path = tmp_config(f"""
 table_name: {test_db}.dim_patient
 table_type: dimension
 scd_type: 2
+effective_at: updated_at
 keys:
   surrogate_key: patient_sk
   natural_keys: [patient_id]
@@ -53,7 +55,7 @@ sources:
     alias: p
     cdc_strategy: full
 transformation_sql: |
-  SELECT patient_id, first_name, last_name, city, state, marital_status FROM p
+  SELECT patient_id, first_name, last_name, city, state, marital_status, updated_at FROM p
 """)
 
         orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)
@@ -62,7 +64,7 @@ transformation_sql: |
 
         spark.sql(f"""
             UPDATE {test_db}.patients
-            SET city = 'Worcester', marital_status = 'married'
+            SET city = 'Worcester', marital_status = 'married', updated_at = '2024-06-01T00:00:00'
             WHERE patient_id = 1
         """)
 

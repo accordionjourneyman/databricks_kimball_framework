@@ -462,6 +462,7 @@ early_arriving_facts:
                 product_id INT,
                 name STRING,
                 price DOUBLE,
+                updated_at STRING,
                 __is_current BOOLEAN,
                 __valid_from TIMESTAMP,
                 __valid_to TIMESTAMP,
@@ -476,13 +477,13 @@ early_arriving_facts:
         # Real product
         spark.sql(f"""
             INSERT INTO {test_db}.dim_product_scd2 VALUES
-            (1, 100, 'Widget', 9.99, true, current_timestamp(), NULL,
+            (1, 100, 'Widget', 9.99, '2024-01-01T00:00:00', true, current_timestamp(), NULL,
              current_timestamp(), 'INIT', 12345, false, NULL, false)
         """)
         # Skeleton for product_id=200
         spark.sql(f"""
             INSERT INTO {test_db}.dim_product_scd2 VALUES
-            (2, 200, NULL, NULL, true, timestamp('1800-01-01'), NULL,
+            (2, 200, NULL, NULL, NULL, true, timestamp('1800-01-01'), NULL,
              current_timestamp(), 'SKELETON_GEN', NULL, true, current_timestamp(), false)
         """)
 
@@ -491,18 +492,20 @@ early_arriving_facts:
             CREATE TABLE {test_db}.products_src (
                 product_id INT,
                 name STRING,
-                price DOUBLE
+                price DOUBLE,
+                updated_at STRING
             ) USING DELTA
         """)
         spark.sql(f"""
             INSERT INTO {test_db}.products_src VALUES
-            (200, 'Gadget', 19.99)
+            (200, 'Gadget', 19.99, '2024-01-01T00:00:00')
         """)
 
         config_path = tmp_config(f"""
 table_name: {test_db}.dim_product_scd2
 table_type: dimension
 scd_type: 2
+effective_at: updated_at
 keys:
   surrogate_key: product_sk
   natural_keys: [product_id]
@@ -512,7 +515,7 @@ sources:
     alias: p
     cdc_strategy: full
 transformation_sql: |
-  SELECT product_id, name, price FROM p
+  SELECT product_id, name, price, updated_at FROM p
 """)
 
         orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)

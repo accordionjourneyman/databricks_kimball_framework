@@ -88,19 +88,20 @@ class TestOnlineRetailSCD2Customer:
     ):
         spark.sql(f"""
             CREATE TABLE {test_db}.customers (
-                customer_id INT, country STRING, segment STRING
+                customer_id INT, country STRING, segment STRING, updated_at STRING
             ) USING DELTA
         """)
         spark.sql(f"""
             INSERT INTO {test_db}.customers VALUES
-            (1, 'United Kingdom', 'retail'),
-            (2, 'Germany',        'wholesale')
+            (1, 'United Kingdom', 'retail',     '2024-01-01T00:00:00'),
+            (2, 'Germany',        'wholesale',  '2024-01-01T00:00:00')
         """)
 
         config_path = tmp_config(f"""
 table_name: {test_db}.dim_customer
 table_type: dimension
 scd_type: 2
+effective_at: updated_at
 keys:
   surrogate_key: customer_sk
   natural_keys: [customer_id]
@@ -110,7 +111,7 @@ sources:
     alias: c
     cdc_strategy: full
 transformation_sql: |
-  SELECT customer_id, country, segment FROM c
+  SELECT customer_id, country, segment, updated_at FROM c
 """)
 
         orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)
@@ -119,7 +120,7 @@ transformation_sql: |
 
         spark.sql(f"""
             UPDATE {test_db}.customers
-            SET country = 'France'
+            SET country = 'France', updated_at = '2024-06-01T00:00:00'
             WHERE customer_id = 1
         """)
 
@@ -152,20 +153,21 @@ class TestOnlineRetailReturnsAsSoftDelete:
     ):
         spark.sql(f"""
             CREATE TABLE {test_db}.customers (
-                customer_id INT, country STRING
+                customer_id INT, country STRING, updated_at STRING
             ) USING DELTA
         """)
         spark.sql(f"""
             INSERT INTO {test_db}.customers VALUES
-            (1, 'United Kingdom'),
-            (2, 'Germany'),
-            (3, 'France')
+            (1, 'United Kingdom', '2024-01-01T00:00:00'),
+            (2, 'Germany',        '2024-01-01T00:00:00'),
+            (3, 'France',         '2024-01-01T00:00:00')
         """)
 
         config_path = tmp_config(f"""
 table_name: {test_db}.dim_customer
 table_type: dimension
 scd_type: 2
+effective_at: updated_at
 keys:
   surrogate_key: customer_sk
   natural_keys: [customer_id]
@@ -176,7 +178,7 @@ sources:
     alias: c
     cdc_strategy: full
 transformation_sql: |
-  SELECT customer_id, country FROM c
+  SELECT customer_id, country, updated_at FROM c
 """)
 
         orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)

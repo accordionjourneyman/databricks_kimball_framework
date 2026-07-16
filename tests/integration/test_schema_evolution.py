@@ -15,6 +15,7 @@ def test_schema_evolution_with_new_column(spark: SparkSession, test_db: str, tmp
 table_name: {test_db}.dim_customer
 table_type: dimension
 scd_type: 2
+effective_at: updated_at
 keys:
   surrogate_key: customer_sk
   natural_keys: [customer_id]
@@ -27,7 +28,8 @@ transformation_sql: |
   SELECT
     c.customer_id,
     c.first_name,
-    c.last_name
+    c.last_name,
+    c.updated_at
   FROM c
 """
 
@@ -35,14 +37,15 @@ transformation_sql: |
     CREATE TABLE {test_db}.customers (
         customer_id INT,
         first_name STRING,
-        last_name STRING
+        last_name STRING,
+        updated_at STRING
     ) USING DELTA
     """)
 
     spark.sql(f"""
     INSERT INTO {test_db}.customers VALUES
-    (1, 'John', 'Doe'),
-    (2, 'Jane', 'Smith')
+    (1, 'John', 'Doe',   '2024-01-01T00:00:00'),
+    (2, 'Jane', 'Smith', '2024-01-01T00:00:00')
     """)
 
     config_path = tmp_config(initial_config)
@@ -61,6 +64,7 @@ transformation_sql: |
 table_name: {test_db}.dim_customer
 table_type: dimension
 scd_type: 2
+effective_at: updated_at
 keys:
   surrogate_key: customer_sk
   natural_keys: [customer_id]
@@ -75,7 +79,8 @@ transformation_sql: |
     c.customer_id,
     c.first_name,
     c.last_name,
-    c.email
+    c.email,
+    c.updated_at
   FROM c
 """
     spark.sql(f"""
@@ -83,11 +88,11 @@ transformation_sql: |
     """)
 
     spark.sql(f"""
-    UPDATE {test_db}.customers SET email = 'john@example.com' WHERE customer_id = 1
+    UPDATE {test_db}.customers SET email = 'john@example.com', updated_at = '2024-06-01T00:00:00' WHERE customer_id = 1
     """)
 
     spark.sql(f"""
-    UPDATE {test_db}.customers SET email = 'jane@example.com' WHERE customer_id = 2
+    UPDATE {test_db}.customers SET email = 'jane@example.com', updated_at = '2024-06-02T00:00:00' WHERE customer_id = 2
     """)
 
     config_path = tmp_config(evolved_config)
