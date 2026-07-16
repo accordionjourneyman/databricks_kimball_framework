@@ -19,13 +19,13 @@ from kimball.observability.resilience import (
     StagingCleanupManager,
     StagingTableManager,
 )
+from kimball.orchestration.contracts_monitor import ContractMonitor
 from kimball.orchestration.executor import (
     ExecutionSummary,
     PipelineExecutor,
     PipelineResult,
 )
 from kimball.orchestration.orchestrator import Orchestrator
-from kimball.orchestration.contracts_monitor import ContractMonitor
 from kimball.orchestration.watermark import (
     KIMBALL_ETL_SCHEMA_ENV,
     ETLControlManager,

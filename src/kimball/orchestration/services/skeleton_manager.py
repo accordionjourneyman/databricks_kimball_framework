@@ -15,7 +15,20 @@ class SkeletonManager:
         self.skeleton_generator = skeleton_generator or SkeletonGenerator()
 
     def generate_skeletons(self, ctx: PipelineContext, active_dfs: dict[str, DataFrame]):
-        if not ctx.config.early_arriving_facts:
+        configured = ctx.config.early_arriving_facts or []
+        # ``early_arriving_dimensions`` is the fact-side contract vocabulary.
+        # Translate it to the established generator shape for compatibility.
+        configured += [
+            {
+                "fact_join_key": item.fact_key,
+                "dimension_table": item.dimension_table,
+                "dimension_join_key": item.dimension_key,
+                "surrogate_key_col": item.surrogate_key,
+            }
+            for item in (ctx.config.early_arriving_dimensions or [])
+            if item.action == "skeleton"
+        ]
+        if not configured:
             return
         logger.info("Checking for Early Arriving Facts...")
         col_to_df: dict[str, DataFrame] = {}
@@ -23,7 +36,7 @@ class SkeletonManager:
             for col_name in df.columns:
                 if col_name not in col_to_df:
                     col_to_df[col_name] = df
-        for eaf in ctx.config.early_arriving_facts:
+        for eaf in configured:
             fact_source_df = col_to_df.get(eaf["fact_join_key"])
             if fact_source_df is not None:
                 self.skeleton_generator.generate_skeletons(

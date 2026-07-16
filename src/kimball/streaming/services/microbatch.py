@@ -4,9 +4,12 @@ import logging
 from typing import Any
 
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import broadcast, count as spark_count
+from pyspark.sql.functions import broadcast
+from pyspark.sql.functions import count as spark_count
 
 from kimball.common.config import ConfigLoader
+from kimball.observability.data_quality import DataQualityEventWriter
+from kimball.orchestration.services.contracts import ContractValidator
 from kimball.orchestration.validation import DataQualityValidator
 from kimball.orchestration.watermark import compute_source_schema_fingerprint
 from kimball.processing import merger as _merger
@@ -96,6 +99,19 @@ class StreamingMicroBatchProcessor:
         if self.config.pii and self.config.pii.columns:
             logger.info(f"Applying PII masking to {len(self.config.pii.columns)} column(s)")
             source_df = apply_pii_masking(source_df, self.config.pii)
+
+        if source.contract:
+            obs = self.config.observability
+            writer = DataQualityEventWriter(
+                self.spark, self.etl_schema, obs.event_table if obs else "etl_data_quality_events"
+            )
+            findings = ContractValidator(self.spark).validate_data(source_df, source)
+            for finding in findings:
+                writer.write(
+                    pipeline_table=self.config.table_name, source=source, finding=finding,
+                    run_id=str(batch_id), action="blocked" if not finding.passed and finding.severity.value == "error" else "recorded",
+                )
+            ContractValidator.raise_for_errors(findings)
 
         cdf_meta_cols = [
             c for c in ("_commit_version", "_commit_timestamp") if c in batch_df.columns
