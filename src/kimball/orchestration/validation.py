@@ -145,9 +145,9 @@ class DataQualityValidator:
     @property
     def spark(self) -> SparkSession:
         if self._spark is None:
-            from databricks.sdk.runtime import spark
+            from kimball.common.spark_session import get_spark
 
-            self._spark = spark
+            self._spark = get_spark()
         return self._spark
 
     def _dev_total_rows(self, df: DataFrame) -> int | None:
