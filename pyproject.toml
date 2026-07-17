@@ -45,7 +45,7 @@ kimball = "kimball.cli:main"
 [project.optional-dependencies]
 # For local development/testing outside Databricks
 spark = [
-    "pyspark>=4.0.0,<4.2.0",
+    "pyspark>=4.0.0,<4.3.0",
     "delta-spark>=4.0.0,<5.0.0",
 ]
 dev = [
@@ -53,12 +53,12 @@ dev = [
     "pytest-benchmark",
     "pytest-cov",
     "ruff",
-    "mypy>=1.11,<2",
+    "mypy>=1.11,<3",
     "types-PyYAML",
     "pyright",
     "build",
     "pip-audit",
-    "pyspark>=4.0.0,<4.2.0",
+    "pyspark>=4.0.0,<4.3.0",
     "delta-spark>=4.0.0,<5.0.0",
 ]
 remote = [
