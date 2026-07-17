@@ -18,9 +18,7 @@ class HashKeyGenerator:
         self.natural_keys = natural_keys
         self.version_column = version_column
 
-    def generate_keys(
-        self, df: DataFrame, key_col_name: str
-    ) -> DataFrame:
+    def generate_keys(self, df: DataFrame, key_col_name: str) -> DataFrame:
         hash_cols = [col(c) for c in self.natural_keys]
         if self.version_column and self.version_column in df.columns:
             hash_cols.append(col(self.version_column))

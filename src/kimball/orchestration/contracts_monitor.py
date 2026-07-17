@@ -1,11 +1,16 @@
 """Read-only scheduled upstream contract monitor."""
+
 from __future__ import annotations
 
 import uuid
 from pathlib import Path
 
 from kimball.common.config import ConfigLoader
-from kimball.observability.data_quality import AlertDispatcher, DataQualityEventWriter
+from kimball.observability.data_quality import (
+    AlertDispatcher,
+    DataQualityEventSink,
+    DataQualityEventWriter,
+)
 from kimball.orchestration.services.contracts import ContractValidator
 from kimball.processing.loader import DataLoader
 
@@ -32,24 +37,42 @@ class ContractMonitor:
                 if not source.contract:
                     continue
                 summary["checked"] += 1
-                writer = DataQualityEventWriter(
-                    self.spark, self.etl_schema, obs.event_table if obs else "etl_data_quality_events"
+                writer = DataQualityEventSink(
+                    self.spark,
+                    self.etl_schema,
+                    obs.event_table if obs else "etl_data_quality_events",
+                    failure_mode=obs.write_failure if obs else "warn",
+                    writer_type=DataQualityEventWriter,
                 )
                 findings = ContractValidator(self.spark).validate_source(source)
                 version = None
-                if self.spark.catalog.tableExists(source.name) and source.format == "delta":
+                if (
+                    self.spark.catalog.tableExists(source.name)
+                    and source.format == "delta"
+                ):
                     version = versions.get_latest_version(source.name)
                 for finding in findings:
                     writer.write(
-                        pipeline_table=config.table_name, source=source, finding=finding,
-                        source_version=version, monitor_run_id=monitor_run_id,
+                        pipeline_table=config.table_name,
+                        source=source,
+                        finding=finding,
+                        source_version=version,
+                        monitor_run_id=monitor_run_id,
                     )
                     if not finding.passed:
                         summary["failed"] += 1
-                        if finding.severity.value == "error" and obs and "error" in obs.alert_on:
-                            AlertDispatcher(obs.webhook_env).dispatch({
-                                "severity": "error", "category": finding.category,
-                                "source_table": source.name, "pipeline_table": config.table_name,
-                                "summary": finding.details,
-                            })
+                        if (
+                            finding.severity.value == "error"
+                            and obs
+                            and "error" in obs.alert_on
+                        ):
+                            AlertDispatcher(obs.webhook_env).dispatch(
+                                {
+                                    "severity": "error",
+                                    "category": finding.category,
+                                    "source_table": source.name,
+                                    "pipeline_table": config.table_name,
+                                    "summary": finding.details,
+                                }
+                            )
         return summary

@@ -15,13 +15,6 @@ from kimball.processing.hashing import compute_hashdiff
 from kimball.processing.key_generator import HashKeyGenerator
 from kimball.processing.late_arriving_dimension import LateArrivingDimensionProcessor
 from kimball.processing.loader import DataLoader
-from kimball.processing.merger import (
-    ensure_scd1_defaults,
-    ensure_scd2_defaults,
-    get_last_merge_metrics,
-    merge,
-    optimize_table,
-)
 from kimball.processing.pii import apply_pii_masking
 from kimball.processing.scd1 import merge_scd1
 from kimball.processing.scd2 import merge_scd2
@@ -29,6 +22,7 @@ from kimball.processing.scd4 import merge_scd4
 from kimball.processing.scd6 import merge_scd6
 from kimball.processing.skeleton_generator import SkeletonGenerator
 from kimball.processing.table_creator import TableCreator
+from kimball.processing.table_ops import get_last_merge_metrics, optimize_table
 
 __all__ = [
     "DataLoader",

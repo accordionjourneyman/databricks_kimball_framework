@@ -3,11 +3,10 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from pyspark.sql.types import StringType
 
 from kimball.common.config import PIIColumnConfig, PIIPolicy
-from kimball.processing.pii import apply_pii_masking
+from kimball.processing.pii import _hmac_sha256, apply_pii_masking
 
 
 @pytest.fixture(autouse=True)
@@ -20,13 +19,16 @@ def _patch_spark_fns(request):
     if getattr(request.instance, "real_spark", False):
         yield
         return
-    with patch("kimball.processing.pii.F") as mock_F, \
-         patch("kimball.processing.pii.xxhash64", return_value=MagicMock()):
+    with (
+        patch("kimball.processing.pii.F") as mock_F,
+        patch("kimball.processing.pii.xxhash64", return_value=MagicMock()),
+    ):
         mock_F.col.return_value = MagicMock()
         mock_F.lit.return_value = MagicMock()
         mock_F.concat.return_value = MagicMock()
         mock_F.sha2.return_value = MagicMock()
         mock_F.substring.return_value = MagicMock()
+        mock_F.udf.return_value = MagicMock()
         yield
 
 
@@ -42,7 +44,7 @@ def _make_df(columns: list[str]):
         fields.append(f)
     schema.fields = fields
     df.schema = schema
-    schema_dict = {c: f for c, f in zip(columns, fields)}
+    schema_dict = {c: f for c, f in zip(columns, fields, strict=True)}
     df.schema.__getitem__ = MagicMock(side_effect=lambda k: schema_dict[k])
     df.drop.return_value = df
     df.withColumn.return_value = df
@@ -51,7 +53,6 @@ def _make_df(columns: list[str]):
 
 class TestPIIMasking:
     def test_hash_strategy_applies_xxhash64(self):
-        from pyspark.sql import functions as F
         df = _make_df(["customer_id", "email"])
         policy = PIIPolicy(columns=[PIIColumnConfig(column="email", strategy="hash")])
         result = apply_pii_masking(df, policy)
@@ -60,10 +61,52 @@ class TestPIIMasking:
         args = df.withColumn.call_args
         assert args[0][0] == "email"
 
+    def test_fast_hash_is_explicitly_non_security_sensitive(self):
+        df = _make_df(["email"])
+        policy = PIIPolicy(
+            columns=[PIIColumnConfig(column="email", strategy="fast_hash")]
+        )
+
+        apply_pii_masking(df, policy)
+
+        df.withColumn.assert_called_once()
+
+    def test_tokenize_requires_a_secret_reference(self):
+        with pytest.raises(ValueError, match="secret_ref"):
+            PIIColumnConfig(column="email", strategy="tokenize")
+
+    def test_tokenize_resolves_secret_and_applies_hmac_udf(self):
+        df = _make_df(["email"])
+        policy = PIIPolicy(
+            columns=[
+                PIIColumnConfig(
+                    column="email",
+                    strategy="tokenize",
+                    secret_ref="env://CUSTOMER_TOKEN_KEY",
+                )
+            ]
+        )
+        resolver = MagicMock()
+        resolver.resolve.return_value = "test-key"
+
+        apply_pii_masking(df, policy, secret_resolver=resolver)
+
+        resolver.resolve.assert_called_once_with("env://CUSTOMER_TOKEN_KEY")
+        df.withColumn.assert_called_once()
+
+    def test_hmac_sha256_is_deterministic_keyed_and_null_preserving(self):
+        first = _hmac_sha256("customer@example.com", b"key-a")
+        assert first == _hmac_sha256("customer@example.com", b"key-a")
+        assert first != _hmac_sha256("customer@example.com", b"key-b")
+        assert len(first) == 64
+        assert _hmac_sha256(None, b"key-a") is None
+
     def test_mask_strategy_reveals_prefix(self):
         df = _make_df(["customer_id", "address"])
         policy = PIIPolicy(
-            columns=[PIIColumnConfig(column="address", strategy="mask", reveal_prefix=5)]
+            columns=[
+                PIIColumnConfig(column="address", strategy="mask", reveal_prefix=5)
+            ]
         )
         result = apply_pii_masking(df, policy)
         assert result is df
@@ -79,13 +122,13 @@ class TestPIIMasking:
     def test_drop_strategy_drops_column(self):
         df = _make_df(["customer_id", "email"])
         policy = PIIPolicy(columns=[PIIColumnConfig(column="email", strategy="drop")])
-        result = apply_pii_masking(df, policy)
+        apply_pii_masking(df, policy)
         df.drop.assert_called_with("email")
 
     def test_missing_column_skips_silently(self):
         df = _make_df(["customer_id"])
         policy = PIIPolicy(columns=[PIIColumnConfig(column="email", strategy="hash")])
-        result = apply_pii_masking(df, policy)
+        apply_pii_masking(df, policy)
         df.withColumn.assert_not_called()
 
     def test_multiple_columns(self):
@@ -105,7 +148,7 @@ class TestPIIMasking:
     def test_empty_policy_no_changes(self):
         df = _make_df(["customer_id", "email"])
         policy = PIIPolicy(columns=[])
-        result = apply_pii_masking(df, policy)
+        apply_pii_masking(df, policy)
         df.withColumn.assert_not_called()
         df.drop.assert_not_called()
 
@@ -150,7 +193,11 @@ class TestPIIMaskingRealSpark:
         df = spark.createDataFrame([("1234567890",)], ["ssn"])
         out = apply_pii_masking(
             df,
-            PIIPolicy(columns=[PIIColumnConfig(column="ssn", strategy="mask", reveal_prefix=4)]),
+            PIIPolicy(
+                columns=[
+                    PIIColumnConfig(column="ssn", strategy="mask", reveal_prefix=4)
+                ]
+            ),
         ).head()
         masked = out["ssn"]
         # First 4 chars preserved, the remainder is the mask character run.
@@ -163,7 +210,11 @@ class TestPIIMaskingRealSpark:
         df = spark.createDataFrame([("1234567890",)], ["ssn"])
         out = apply_pii_masking(
             df,
-            PIIPolicy(columns=[PIIColumnConfig(column="ssn", strategy="mask", reveal_prefix=0)]),
+            PIIPolicy(
+                columns=[
+                    PIIColumnConfig(column="ssn", strategy="mask", reveal_prefix=0)
+                ]
+            ),
         ).head()
         assert "1234567890" not in str(out["ssn"])
         assert "*" * 10 in str(out["ssn"])

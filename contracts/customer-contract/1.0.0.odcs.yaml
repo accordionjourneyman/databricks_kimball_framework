@@ -1,0 +1,46 @@
+apiVersion: v3.1.0
+kind: DataContract
+id: customer-contract
+name: CRM customers
+version: 1.0.0
+status: active
+schema:
+  - name: customers
+    logicalType: object
+    properties:
+      - name: customer_id
+        logicalType: integer
+        physicalType: INT
+        required: true
+        primaryKey: true
+        primaryKeyPosition: 1
+        quality:
+          - id: customer_id_not_null
+            metric: nullValues
+            mustBe: 0
+      - name: first_name
+        logicalType: string
+        physicalType: STRING
+        required: false
+      - name: last_name
+        logicalType: string
+        physicalType: STRING
+        required: false
+      - name: email
+        logicalType: string
+        physicalType: STRING
+        required: false
+      - name: address
+        logicalType: string
+        physicalType: STRING
+        required: false
+      - name: updated_at
+        logicalType: string
+        physicalType: STRING
+        required: true
+    quality:
+      - id: customer_primary_key_unique
+        metric: duplicateValues
+        mustBe: 0
+        arguments:
+          properties: [customer_id]

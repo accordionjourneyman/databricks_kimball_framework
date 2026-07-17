@@ -30,8 +30,13 @@ class TestUpdateSkeletonsWithRealData:
         dim_df = MagicMock()
         dim_df.columns = ["id", "name"]
         delta_table.toDF.return_value = dim_df
-        with patch("kimball.processing.late_arriving_dimension.DeltaTable.forName", return_value=delta_table):
-            result = processor.update_skeletons_with_real_data("dim", MagicMock(), ["key"])
+        with patch(
+            "kimball.processing.late_arriving_dimension.DeltaTable.forName",
+            return_value=delta_table,
+        ):
+            result = processor.update_skeletons_with_real_data(
+                "dim", MagicMock(), ["key"]
+            )
         assert result == 0
 
     def test_skips_when_no_skeleton_rows(self, processor, spark):
@@ -45,10 +50,18 @@ class TestUpdateSkeletonsWithRealData:
         # patch it (as the sibling update-path tests do) so this unit test does
         # not depend on a live session.
         with (
-            patch("kimball.processing.late_arriving_dimension.DeltaTable.forName", return_value=delta_table),
-            patch("kimball.processing.late_arriving_dimension.col", return_value=MagicMock()),
+            patch(
+                "kimball.processing.late_arriving_dimension.DeltaTable.forName",
+                return_value=delta_table,
+            ),
+            patch(
+                "kimball.processing.late_arriving_dimension.col",
+                return_value=MagicMock(),
+            ),
         ):
-            result = processor.update_skeletons_with_real_data("dim", MagicMock(), ["key"])
+            result = processor.update_skeletons_with_real_data(
+                "dim", MagicMock(), ["key"]
+            )
         assert result == 0
 
     def test_updates_skeletons_and_returns_count(self, processor, spark):
@@ -70,8 +83,14 @@ class TestUpdateSkeletonsWithRealData:
         source_df.columns = ["id", "name"]
 
         with (
-            patch("kimball.processing.late_arriving_dimension.DeltaTable.forName", return_value=delta_table),
-            patch("kimball.processing.late_arriving_dimension.col", return_value=MagicMock()),
+            patch(
+                "kimball.processing.late_arriving_dimension.DeltaTable.forName",
+                return_value=delta_table,
+            ),
+            patch(
+                "kimball.processing.late_arriving_dimension.col",
+                return_value=MagicMock(),
+            ),
         ):
             result = processor.update_skeletons_with_real_data("dim", source_df, ["id"])
         assert result == 5
@@ -91,8 +110,14 @@ class TestUpdateSkeletonsWithRealData:
         source_df.columns = ["id", "name"]
 
         with (
-            patch("kimball.processing.late_arriving_dimension.DeltaTable.forName", return_value=delta_table),
-            patch("kimball.processing.late_arriving_dimension.col", return_value=MagicMock()),
+            patch(
+                "kimball.processing.late_arriving_dimension.DeltaTable.forName",
+                return_value=delta_table,
+            ),
+            patch(
+                "kimball.processing.late_arriving_dimension.col",
+                return_value=MagicMock(),
+            ),
         ):
             result = processor.update_skeletons_with_real_data("dim", source_df, ["id"])
         assert result == 0
@@ -101,7 +126,9 @@ class TestUpdateSkeletonsWithRealData:
 class TestReconcileFactForeignKeys:
     def test_skips_when_tables_not_exist(self, processor, spark):
         spark.catalog.tableExists.return_value = False
-        result = processor.reconcile_fact_foreign_keys("fact", "dim", "fk_col", "sk", ["nk"])
+        result = processor.reconcile_fact_foreign_keys(
+            "fact", "dim", "fk_col", "sk", ["nk"]
+        )
         assert result == 0
 
     def test_reconciles_successfully(self, processor, spark):
@@ -110,14 +137,24 @@ class TestReconcileFactForeignKeys:
         merge_builder = MagicMock()
         merge_builder.whenMatchedUpdate.return_value = merge_builder
         delta_table.alias.return_value.merge.return_value = merge_builder
-        with patch("kimball.processing.late_arriving_dimension.DeltaTable.forName", return_value=delta_table):
-            result = processor.reconcile_fact_foreign_keys("fact", "dim", "fk_col", "sk", ["nk"])
+        with patch(
+            "kimball.processing.late_arriving_dimension.DeltaTable.forName",
+            return_value=delta_table,
+        ):
+            result = processor.reconcile_fact_foreign_keys(
+                "fact", "dim", "fk_col", "sk", ["nk"]
+            )
         assert result == 1
 
     def test_handles_exception(self, processor, spark):
         spark.catalog.tableExists.return_value = True
-        with patch("kimball.processing.late_arriving_dimension.DeltaTable.forName", side_effect=Exception("merge failed")):
-            result = processor.reconcile_fact_foreign_keys("fact", "dim", "fk_col", "sk", ["nk"])
+        with patch(
+            "kimball.processing.late_arriving_dimension.DeltaTable.forName",
+            side_effect=Exception("merge failed"),
+        ):
+            result = processor.reconcile_fact_foreign_keys(
+                "fact", "dim", "fk_col", "sk", ["nk"]
+            )
         assert result == 0
 
 
@@ -126,8 +163,12 @@ class TestProcessLateArrivingDimension:
         processor.update_skeletons_with_real_data = MagicMock(return_value=3)
         processor.reconcile_fact_foreign_keys = MagicMock(return_value=1)
         result = processor.process_late_arriving_dimension(
-            "dim", MagicMock(), ["nk"],
-            fact_tables=[{"table": "fact", "fk_column": "fk", "dimension_sk_column": "sk"}],
+            "dim",
+            MagicMock(),
+            ["nk"],
+            fact_tables=[
+                {"table": "fact", "fk_column": "fk", "dimension_sk_column": "sk"}
+            ],
         )
         assert result["skeletons_updated"] == 3
         assert result["facts_reconciled"] == 1

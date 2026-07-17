@@ -68,7 +68,11 @@ class DataLoader:
             .when(col("_change_type") == "update_postimage", 1)
             .otherwise(2),
         )
-        return df.withColumn("_rn", row_number().over(window)).filter(col("_rn") == 1).drop("_rn")
+        return (
+            df.withColumn("_rn", row_number().over(window))
+            .filter(col("_rn") == 1)
+            .drop("_rn")
+        )
 
     def get_latest_version(self, table_name: str) -> int:
         if not self.spark.catalog.tableExists(table_name):

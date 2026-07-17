@@ -232,13 +232,12 @@ class StagingCleanupManager:
         Returns:
             Tuple of (cleaned_count, failed_count).
         """
-        if spark_session is None:
-            spark_session = get_spark()
+        active_spark = spark_session or get_spark()
 
         from pyspark.sql.functions import expr
 
         # Use DataFrame API instead of SQL string building (fixes SQL injection)
-        registry_df = spark_session.table(self.registry_table)
+        registry_df = active_spark.table(self.registry_table)
         # Apply age filter using DataFrame API
         if max_age_hours > 0:
             threshold = current_timestamp() - expr(f"INTERVAL {max_age_hours} HOURS")
@@ -270,7 +269,7 @@ class StagingCleanupManager:
 
             for staging_table_name in tables_to_cleanup:
                 try:
-                    if not _safe_drop_table(spark_session, staging_table_name):
+                    if not _safe_drop_table(active_spark, staging_table_name):
                         failed += 1
                         continue
                     self.unregister_staging_table(staging_table_name)

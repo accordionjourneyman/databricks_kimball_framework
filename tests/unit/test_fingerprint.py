@@ -29,7 +29,10 @@ class TestShouldSkipValidation:
         ctx.etl_control.get_config_fingerprint.return_value = "fp1"
         ctx.etl_control.get_source_schema_fingerprint.return_value = "sfp1"
         service = FingerprintService(config_loader)
-        with patch("kimball.orchestration.services.fingerprint.compute_source_schema_fingerprint", return_value="sfp1"):
+        with patch(
+            "kimball.orchestration.services.fingerprint.compute_source_schema_fingerprint",
+            return_value="sfp1",
+        ):
             result = service.should_skip_validation(ctx)
         assert result is True
 
@@ -47,7 +50,10 @@ class TestShouldSkipValidation:
         ctx.etl_control.get_config_fingerprint.return_value = "fp1"
         ctx.etl_control.get_source_schema_fingerprint.return_value = "sfp_old"
         service = FingerprintService(config_loader)
-        with patch("kimball.orchestration.services.fingerprint.compute_source_schema_fingerprint", return_value="sfp_new"):
+        with patch(
+            "kimball.orchestration.services.fingerprint.compute_source_schema_fingerprint",
+            return_value="sfp_new",
+        ):
             result = service.should_skip_validation(ctx)
         assert result is False
 
@@ -57,6 +63,9 @@ class TestSaveFingerprints:
         config_loader = MagicMock()
         config_loader.compute_fingerprint.return_value = "fp1"
         service = FingerprintService(config_loader)
-        with patch("kimball.orchestration.services.fingerprint.compute_source_schema_fingerprint", return_value="sfp1"):
+        with patch(
+            "kimball.orchestration.services.fingerprint.compute_source_schema_fingerprint",
+            return_value="sfp1",
+        ):
             service.save_fingerprints(ctx)
         assert ctx.etl_control.update_fingerprints.call_count == 2

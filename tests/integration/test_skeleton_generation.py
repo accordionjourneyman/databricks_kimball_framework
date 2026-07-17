@@ -11,9 +11,7 @@ Uses real local SparkSession + Delta tables (no mocking).
 
 import pytest
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col
 
-from kimball.common.config import ConfigLoader
 from kimball.orchestration.orchestrator import Orchestrator
 from kimball.processing.late_arriving_dimension import LateArrivingDimensionProcessor
 from kimball.processing.skeleton_generator import SkeletonGenerator
@@ -66,11 +64,7 @@ class TestSkeletonGeneratorDirect:
             batch_id="test-batch-001",
         )
 
-        rows = (
-            spark.table(f"{test_db}.dim_customer")
-            .orderBy("customer_id")
-            .collect()
-        )
+        rows = spark.table(f"{test_db}.dim_customer").orderBy("customer_id").collect()
         assert len(rows) == 2
 
         alice = [r for r in rows if r["customer_id"] == 10][0]
@@ -82,9 +76,7 @@ class TestSkeletonGeneratorDirect:
         assert skeleton["name"] is None
         assert skeleton["__etl_batch_id"] == "test-batch-001"
 
-    def test_no_skeletons_when_all_keys_exist(
-        self, spark: SparkSession, test_db
-    ):
+    def test_no_skeletons_when_all_keys_exist(self, spark: SparkSession, test_db):
         """All fact keys already in dimension -> no skeleton rows."""
         spark.sql(f"""
             CREATE TABLE {test_db}.dim_product (
@@ -149,9 +141,7 @@ class TestSkeletonGeneratorDirect:
                 name STRING
             ) USING DELTA
         """)
-        spark.sql(
-            f"INSERT INTO {test_db}.dim_plain VALUES (1, 10, 'Alice')"
-        )
+        spark.sql(f"INSERT INTO {test_db}.dim_plain VALUES (1, 10, 'Alice')")
 
         fact_df = spark.createDataFrame([(20,)], ["entity_id"])
         gen = SkeletonGenerator(spark)
@@ -214,9 +204,7 @@ class TestSkeletonHydration:
             natural_keys=["customer_id"],
         )
 
-        assert updated == 1, (
-            f"Expected exactly 1 skeleton hydrated, got {updated}"
-        )
+        assert updated == 1, f"Expected exactly 1 skeleton hydrated, got {updated}"
 
         rows = spark.table(f"{test_db}.dim_customer").collect()
         assert len(rows) == 1
@@ -263,11 +251,7 @@ class TestSkeletonHydration:
             natural_keys=["customer_id"],
         )
 
-        rows = (
-            spark.table(f"{test_db}.dim_cust2")
-            .orderBy("customer_id")
-            .collect()
-        )
+        rows = spark.table(f"{test_db}.dim_cust2").orderBy("customer_id").collect()
         assert len(rows) == 2
         alice = rows[0]
         assert alice["name"] == "Alice"
@@ -276,9 +260,7 @@ class TestSkeletonHydration:
         assert bob["name"] == "Bob"
         assert not bob["__is_skeleton"]
 
-    def test_no_hydration_when_no_skeletons_exist(
-        self, spark: SparkSession, test_db
-    ):
+    def test_no_hydration_when_no_skeletons_exist(self, spark: SparkSession, test_db):
         """If no skeleton rows exist, hydration is a no-op."""
         spark.sql(f"""
             CREATE TABLE {test_db}.dim_no_skel (
@@ -288,9 +270,7 @@ class TestSkeletonHydration:
                 __is_skeleton BOOLEAN
             ) USING DELTA
         """)
-        spark.sql(
-            f"INSERT INTO {test_db}.dim_no_skel VALUES (1, 10, 'Alice', false)"
-        )
+        spark.sql(f"INSERT INTO {test_db}.dim_no_skel VALUES (1, 10, 'Alice', false)")
 
         source_df = spark.createDataFrame([(10, "Bob")], ["entity_id", "name"])
 
@@ -434,9 +414,7 @@ early_arriving_facts:
             natural_keys=["customer_id"],
         )
 
-        assert updated == 1, (
-            f"Expected exactly 1 skeleton hydrated, got {updated}"
-        )
+        assert updated == 1, f"Expected exactly 1 skeleton hydrated, got {updated}"
 
         # Step 3: Verify final state
         rows = (

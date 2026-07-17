@@ -11,18 +11,19 @@ from kimball.common.config import (
     PIIColumnConfig,
     PIIPolicy,
     SourceConfig,
+    SourceContractConfig,
     StreamingSourceConfig,
     TableConfig,
 )
 from kimball.streaming.orchestrator import StreamingOrchestrator
 
-from pyspark.sql.types import StringType
-
 
 @pytest.fixture(autouse=True)
 def _patch_spark_fns():
     """Patch Spark functions that require an active SparkContext."""
-    with patch("kimball.streaming.services.microbatch.spark_count", return_value=MagicMock()):
+    with patch(
+        "kimball.streaming.services.microbatch.spark_count", return_value=MagicMock()
+    ):
         yield
 
 
@@ -303,6 +304,7 @@ class TestPerVersionForeachBatch:
 # Streaming feature parity tests (PII, FK validation, grain, target creation)
 # ===================================================================
 
+
 class TestStreamingPIIMasking:
     def test_pii_masking_applied_in_microbatch(self):
         cfg = _make_config(True)
@@ -318,8 +320,13 @@ class TestStreamingPIIMasking:
         source_df.join.return_value = source_df
         with patch.object(spark, "sql", return_value=source_df):
             with patch("kimball.processing.merger.merge"):
-                with patch("kimball.streaming.services.microbatch.StreamingMicroBatchProcessor.ensure_target_table"):
-                    with patch("kimball.streaming.services.microbatch.apply_pii_masking", return_value=source_df) as mock_pii:
+                with patch(
+                    "kimball.streaming.services.microbatch.StreamingMicroBatchProcessor.ensure_target_table"
+                ):
+                    with patch(
+                        "kimball.streaming.services.microbatch.apply_pii_masking",
+                        return_value=source_df,
+                    ) as mock_pii:
                         orch._execute_one_microbatch(
                             MagicMock(columns=["customer_id", "email"]),
                             cfg.sources[0],
@@ -341,7 +348,9 @@ class TestStreamingFKValidation:
             table_type="fact",
             merge_keys=["order_id"],
             sources=[src],
-            foreign_keys=[ForeignKeyConfig(column="customer_sk", references="gold.dim_customer")],
+            foreign_keys=[
+                ForeignKeyConfig(column="customer_sk", references="gold.dim_customer")
+            ],
         )
         spark = MagicMock()
         spark.catalog.tableExists.return_value = True
@@ -351,8 +360,12 @@ class TestStreamingFKValidation:
         source_df.columns = ["order_id", "customer_sk"]
         with patch.object(spark, "sql", return_value=source_df):
             with patch("kimball.processing.merger.merge"):
-                with patch("kimball.streaming.services.microbatch.StreamingMicroBatchProcessor.ensure_target_table"):
-                    with patch("kimball.streaming.services.microbatch.DataQualityValidator") as mock_val_cls:
+                with patch(
+                    "kimball.streaming.services.microbatch.StreamingMicroBatchProcessor.ensure_target_table"
+                ):
+                    with patch(
+                        "kimball.streaming.services.microbatch.DataQualityValidator"
+                    ) as mock_val_cls:
                         mock_val = mock_val_cls.return_value
                         mock_report = MagicMock()
                         mock_report.results = []
@@ -387,7 +400,9 @@ class TestStreamingGrainValidation:
 
         with patch.object(spark, "sql", return_value=source_df):
             with patch("kimball.processing.merger.merge"):
-                with patch("kimball.streaming.services.microbatch.StreamingMicroBatchProcessor.ensure_target_table"):
+                with patch(
+                    "kimball.streaming.services.microbatch.StreamingMicroBatchProcessor.ensure_target_table"
+                ):
                     with pytest.raises(ValueError, match="Grain violation"):
                         orch._execute_one_microbatch(
                             MagicMock(columns=["customer_id"]), cfg.sources[0], 1
@@ -406,10 +421,98 @@ class TestStreamingTargetCreation:
         source_df.columns = ["customer_id"]
         source_df.limit.return_value = source_df
         with patch.object(spark, "sql", return_value=source_df):
-            with patch("kimball.streaming.services.microbatch.TableCreator") as mock_tc_cls:
+            with patch(
+                "kimball.streaming.services.microbatch.TableCreator"
+            ) as mock_tc_cls:
                 mock_tc = mock_tc_cls.return_value
                 mock_tc.add_system_columns.return_value = source_df
                 with patch("kimball.processing.merger.ensure_scd2_defaults"):
                     processor = orch._get_processor()
                     processor.ensure_target_table(source_df)
         mock_tc.create_table_with_clustering.assert_called_once()
+
+
+class TestStreamingTemporalContracts:
+    @staticmethod
+    def _contracted_config() -> TableConfig:
+        cfg = _make_config(True)
+        cfg.sources[0].contract = SourceContractConfig.model_validate(
+            {
+                "id": "customer-events",
+                "version": "1.0.0",
+                "schema": {
+                    "customer_id": {"type": "int"},
+                    "updated_at": {"type": "timestamp"},
+                },
+                "temporal": {
+                    "event_time_column": "updated_at",
+                    "out_of_order_severity": "error",
+                },
+            }
+        )
+        return cfg
+
+    def test_temporal_state_commits_after_successful_merge_and_watermark(self) -> None:
+        cfg = self._contracted_config()
+        spark = MagicMock()
+        spark.catalog.tableExists.return_value = True
+        orchestrator = StreamingOrchestrator(cfg, spark=spark)
+        orchestrator.etl_control = MagicMock()
+        batch_df = MagicMock()
+        batch_df.columns = ["customer_id", "updated_at", "_commit_version"]
+        batch_df.agg.return_value.first.return_value = [9]
+
+        order: list[str] = []
+        orchestrator.etl_control.batch_complete.side_effect = lambda **_kwargs: (
+            order.append("watermark")
+        )
+        with (
+            patch(
+                "kimball.streaming.services.microbatch.ContractValidator"
+            ) as validator,
+            patch(
+                "kimball.streaming.services.microbatch.TemporalStateStore"
+            ) as store_type,
+            patch(
+                "kimball.processing.merger.merge",
+                side_effect=lambda **_kwargs: order.append("merge"),
+            ),
+        ):
+            validator.return_value.validate_data.return_value = []
+            validator.return_value.validate_temporal.return_value = []
+            store_type.return_value.commit.side_effect = lambda *_args: order.append(
+                "temporal_state"
+            )
+            orchestrator._execute_one_microbatch(batch_df, cfg.sources[0], 3)
+
+        validator.return_value.validate_temporal.assert_called_once_with(
+            batch_df,
+            cfg.sources[0],
+            prior_state=store_type.return_value.existing.return_value,
+        )
+        assert order == ["merge", "watermark", "temporal_state"]
+
+    def test_failed_merge_does_not_advance_temporal_state(self) -> None:
+        cfg = self._contracted_config()
+        spark = MagicMock()
+        spark.catalog.tableExists.return_value = True
+        orchestrator = StreamingOrchestrator(cfg, spark=spark)
+        orchestrator.etl_control = MagicMock()
+        batch_df = MagicMock()
+        batch_df.columns = ["customer_id", "updated_at", "_commit_version"]
+
+        with (
+            patch(
+                "kimball.streaming.services.microbatch.ContractValidator"
+            ) as validator,
+            patch(
+                "kimball.streaming.services.microbatch.TemporalStateStore"
+            ) as store_type,
+            patch("kimball.processing.merger.merge", side_effect=RuntimeError("boom")),
+        ):
+            validator.return_value.validate_data.return_value = []
+            validator.return_value.validate_temporal.return_value = []
+            with pytest.raises(RuntimeError, match="boom"):
+                orchestrator._execute_one_microbatch(batch_df, cfg.sources[0], 3)
+
+        store_type.return_value.commit.assert_not_called()

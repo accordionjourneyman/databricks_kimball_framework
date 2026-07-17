@@ -174,7 +174,9 @@ def test_get_running_batches_filters_only_running_records(
     assert len(result) == 1
     assert result[0] == {"batch_id": "batch-1", "source_table": "source_a"}
     spark_mock.table.return_value.filter.assert_called_once()
-    spark_mock.table.return_value.select.assert_called_once_with("batch_id", "source_table")
+    spark_mock.table.return_value.select.assert_called_once_with(
+        "batch_id", "source_table"
+    )
 
 
 @patch("kimball.orchestration.watermark.DeltaTable.forName")

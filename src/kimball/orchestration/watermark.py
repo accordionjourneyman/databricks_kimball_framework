@@ -120,7 +120,7 @@ class ETLControlManager:
                     source_schema_fingerprint STRING
                 ) USING DELTA PARTITIONED BY (target_table, source_table)
             """)
-        except PySparkException as exc:
+        except PySparkException:
             if not self.spark.catalog.tableExists(self.fq_table):
                 raise
 
@@ -198,7 +198,10 @@ class ETLControlManager:
         return batch_id
 
     def batch_start_all(
-        self, target_table: str, source_tables: list[str], run_batch_id: str | None = None
+        self,
+        target_table: str,
+        source_tables: list[str],
+        run_batch_id: str | None = None,
     ) -> dict[str, str]:
         timestamp = datetime.now()
         records = []
@@ -282,14 +285,22 @@ class ETLControlManager:
             "error_message": row["error_message"],
         }
 
-    def get_running_batches(self, target_table: str, ttl_minutes: int = 60) -> list[dict[str, str]]:
+    def get_running_batches(
+        self, target_table: str, ttl_minutes: int = 60
+    ) -> list[dict[str, str]]:
         try:
             rows = (
                 self.spark.table(self.fq_table)
                 .filter(
                     (col("target_table") == target_table)
                     & (col("batch_status") == "RUNNING")
-                    & (col("batch_started_at") > (current_timestamp() - F.expr(f"INTERVAL {ttl_minutes} MINUTES")))
+                    & (
+                        col("batch_started_at")
+                        > (
+                            current_timestamp()
+                            - F.expr(f"INTERVAL {ttl_minutes} MINUTES")
+                        )
+                    )
                 )
                 .select("batch_id", "source_table")
                 .collect()
@@ -377,7 +388,9 @@ class ETLControlManager:
         if source_table is not None:
             safe_source = source_table.replace("'", "''")
             condition += f" AND source_table = '{safe_source}'"
-        self.spark.sql(f"DELETE FROM {quote_table_name(self.fq_table)} WHERE {condition}")
+        self.spark.sql(
+            f"DELETE FROM {quote_table_name(self.fq_table)} WHERE {condition}"
+        )
 
     def _upsert_control_record(
         self, target_table: str, source_table: str, updates: ETLControlRecord
@@ -394,12 +407,18 @@ class ETLControlManager:
         delta_table = DeltaTable.forName(self.spark, self.fq_table)
         normalized = []
         for record in records:
+            target_table = record.get("target_table")
+            source_table = record.get("source_table")
+            if target_table is None or source_table is None:
+                raise ValueError(
+                    "ETL control upserts require target_table and source_table"
+                )
             item = {
                 field.name: record.get(field.name)
                 for field in self._UPDATE_SCHEMA.fields
             }
-            item["target_table"] = record["target_table"]
-            item["source_table"] = record["source_table"]
+            item["target_table"] = target_table
+            item["source_table"] = source_table
             if not item.get("updated_at"):
                 item["updated_at"] = datetime.now()
             normalized.append(item)

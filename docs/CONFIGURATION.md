@@ -102,7 +102,7 @@ Slowly Changing Dimension type (dimensions only).
 > [!NOTE]
 > **SCD2 Multi-Version Batches**: When multiple changes for the same natural key
 > occur within a single batch, the framework preserves ALL versions using a
-> two-phase algorithm (phase 1 merges the latest version, phase 2 back-fills
+> canonical single-pass SCD2 merge stages all source versions and preserves their validity chain
 > intermediate history rows). Set `preserve_all_changes: true` to enable this.
 
 ### merge_keys (facts only)
@@ -186,10 +186,12 @@ natural_keys: [region_id, customer_id]
 
 ### Surrogate Keys
 
-Surrogate keys are generated via `xxhash64(natural_keys)` — deterministic and
-distributed-safe.  For SCD2, `__valid_from` is included in the hash so each
-historical version gets a unique SK.  No configuration is needed; the framework
-handles this automatically.
+Dimensions use deterministic `xxhash64(natural_keys)` and SCD2 includes
+`__valid_from` in the input. This is distributed and replay-stable but not
+collision-free. Managed junk dimensions explicitly detect conflicting
+combinations that map to the same key; general dimensions require collision
+risk to be accepted and monitored. Delta identity is used only where the
+configured pattern supports it.
 
 ### track_history_columns
 
@@ -212,31 +214,17 @@ track_history_columns:
 
 ### effective_at
 
-Column containing the business effective date for SCD2 history tracking.
-
-**Time Semantics:**
-
-- If set: Uses the specified column value for `__valid_from` and `__valid_to` boundaries (business time)
-- If not set: Uses `__etl_processed_at` (processing time)
-
-**Use Cases:**
-| Scenario | effective_at | Result |
-|----------|--------------|--------|
-| Real-time source | Not set | Processing time is acceptable |
-| Batch from source system | `updated_at` | Event time from source |
-| Historical data load | `effective_date` | Business effective date |
-
-**Example:**
+`effective_at` is required for SCD2. It defines deterministic business-time
+`__valid_from`/`__valid_to` boundaries and makes replays and out-of-order
+backfills testable. Processing time is not an implicit fallback.
 
 ```yaml
-# Business-time SCD2: history reflects when changes actually occurred
 effective_at: updated_at
-# Processing-time SCD2 (default): history reflects when changes were processed
-# effective_at: (omit or set to null)
 ```
 
-> [!NOTE]
-> For accurate temporal queries, use `effective_at` when the source provides reliable event timestamps.
+The transformation must project this column. If no reliable business timestamp
+exists, materialize an explicit source-side ingestion timestamp and document
+that its semantics are processing time.
 
 ### cdc_strategy
 
@@ -387,6 +375,12 @@ Configuration for handling facts that arrive before dimension data.
 - `dimension_join_key` - Column in dimension
 - `surrogate_key_col` - Dimension's surrogate key column
 
+The legacy form creates an unknown-member skeleton for missing dimension keys.
+For an explicit policy, use `early_arriving_dimensions` with `action: skeleton`
+or `action: error`. Both paths record an `early_arriving_fact` finding in the
+configured data-quality event table. `error` records the evidence and blocks
+the fact load without creating a skeleton.
+
 **Example:**
 
 ```yaml
@@ -397,80 +391,54 @@ early_arriving_facts:
     surrogate_key_col: employee_sk
 ```
 
-## PII Masking
+## PII transformation and tokenization
 
-The framework supports configurable, per-column PII masking declared
-directly in the YAML config.  Masking is applied **after**
-`transformation_sql` and **before** validation and merge, so sensitive
-data never lands in the target Delta table.
-
-### Configuration
+PII policy is applied after transformation SQL and before validation/merge. The
+policy must distinguish cryptographic pseudonymization from fast analytical
+encoding.
 
 ```yaml
 pii:
   columns:
     - column: email
-      strategy: hash              # sha256(value + column_name), irreversible
+      strategy: tokenize
+      secret_ref: databricks://security/pii_hmac
+    - column: search_key
+      strategy: fast_hash
     - column: address
-      strategy: mask              # replace with "**********"
-      reveal_prefix: 5            # keep first 5 chars: "12345**********"
-      mask_char: "*"              # default
+      strategy: mask
+      reveal_prefix: 5
+      mask_char: "*"
     - column: ssn
-      strategy: null              # set to NULL
-    - column: phone
-      strategy: drop              # remove column entirely
+      strategy: null
+    - column: free_text
+      strategy: drop
 ```
 
-### Strategies
+| Strategy | Guarantee | Intended use |
+| --- | --- | --- |
+| `tokenize` | Deterministic keyed HMAC-SHA-256, null preserving. Requires `secret_ref`. | Security pseudonymization and equality joins where every producer uses the same controlled key. |
+| `fast_hash` | Unsalted `xxhash64`; deterministic but vulnerable to dictionary attacks. | Non-sensitive equality encoding only. |
+| `hash` | Deprecated alias for `fast_hash`; emits a warning. | Migration only. |
+| `mask` | Produces a string mask and optional visible prefix. | Limited display; numeric inputs are not cast back to a numeric type. |
+| `null` | Replaces values with typed null. | Schema-preserving data minimization. |
+| `drop` | Removes the column from the transformed DataFrame. | Strongest pipeline-level minimization. |
 
-| Strategy | What it does | Reversible? | Use case |
-|----------|-------------|-------------|----------|
-| `hash` | `xxhash64(cast(col as string), col_name)` — 64-bit irreversible hash | No | Pseudonymization. Same input always produces the same hash, so hashed columns can be used for joins and equality checks. Uses xxhash64 (~1.8x faster than SHA-256). |
-| `mask` | Replace value with `mask_char * 10`, optionally reveal first N chars | No | Partial visibility (e.g., `"12345**********"` for address). Useful when some characters are needed for analytics (ZIP code, area code). |
-| `null` | Set column to `NULL` | No | Column retained for schema compatibility but value removed. |
-| `drop` | Remove column from DataFrame entirely | No | Data minimization — downstream consumers never see the column. |
+Secrets use explicit references:
 
-### Fields
+- `databricks://scope/key` resolves through Databricks Secrets at runtime.
+- `env://NAME` resolves from a controlled local/CI environment.
 
-| Field | Required | Default | Description |
-|-------|----------|---------|-------------|
-| `column` | Yes | — | Column name in the transformed DataFrame |
-| `strategy` | No | `mask` | One of `hash`, `mask`, `null`, `drop` |
-| `reveal_prefix` | No | `0` | Number of leading characters to keep (only used by `mask`) |
-| `mask_char` | No | `"*"` | Character to use for masking (only used by `mask`) |
+The manifest stores only the reference. Secret values are never included in
+configuration fingerprints, plans, or exception messages. Do not tokenize
+foreign keys unless both sides are deliberately tokenized with the same key.
+Changing a tokenization key or PII strategy changes stored values and can create
+new SCD versions; treat it as a migration/backfill.
 
-### Runtime behavior
-
-**Local Spark / OSS Delta:**
-- `apply_pii_masking()` runs in the orchestrator after `transformation_sql`
-  and before FK fill, validation, and merge.
-- PII values are transformed in-flight; the Delta table only ever stores
-  masked/hashed values.
-
-**Databricks (Unity Catalog):**
-- In addition to transform-time masking, `TableCreator._apply_pii_masks`
-  emits `ALTER TABLE ... ALTER COLUMN ... SET MASK (...)` DDL on table
-  creation. This enforces role-based read-time masking via Unity Catalog,
-  so even users with `SELECT` access see masked values unless they have
-  the `MASK` exemption (via `UNMASK` privilege).
-- The transform-time masking still runs, so the table stores already-masked
-  data. The Delta MASK provides an additional layer for any columns that
-  might be added later without PII config.
-
-### Interaction with other features
-
-- **Fingerprint:** PII config is included in the config fingerprint hash,
-  so changing PII strategies invalidates the validation-skip cache.
-- **SCD2 history:** If a PII column is in `track_history_columns`, the
-  hashed/masked value is what gets versioned. Changing the PII strategy
-  will produce a new SCD2 version for every row (since the hashdiff changes).
-  To avoid this, consider removing PII columns from `track_history_columns`.
-- **FK validation:** If a PII column is also a FK column, hashing it will
-  break FK validation (the dimension's SK won't match the fact's hashed FK).
-  Do not hash FK columns.
-- **Schema evolution:** If `drop` strategy is used, the column is removed
-  from the DataFrame but the target table schema is not altered. Use
-  `schema_evolution: true` if you want the column dropped from the table too.
+Delta/Unity Catalog read-time masks are separate from transform-time storage
+protection. The framework may apply supported read-time mask DDL when creating
+tables, but grants, exemptions, and policy ownership remain governance-plane
+responsibilities.
 
 ## Standard Columns
 
@@ -528,3 +496,182 @@ The following environment variables control performance optimizations and valida
 | ----------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `KIMBALL_ENABLE_DEV_CHECKS`         | `0` (Disabled) | **Strict Mode**. Enables expensive data quality counts (validation) and pre-merge grain checks (merger). Recommended for Dev/Test only.                       |
 | `KIMBALL_ENABLE_INLINE_OPTIMIZE`    | `0` (Disabled) | Enables `OPTIMIZE` command immediately after every merge. Not recommended for high-frequency or streaming jobs (adds latency). Use async maintenance instead. |
+
+## Kimball Modeling Metadata
+
+The following fields make a fact model self-describing. They are additive and backward-compatible: existing fact YAML remains valid until a `fact_pattern` is declared.
+
+### Fact patterns, grain, and measures
+
+```yaml
+table_type: fact
+merge_keys: [snapshot_date, product_id, warehouse_id]
+grain: one product per warehouse per snapshot day
+fact_pattern: periodic_snapshot
+snapshot_period: day
+measures:
+  - name: on_hand_quantity
+    aggregation: sum
+    additivity: semi_additive
+    non_additive_dimensions: [snapshot_date]
+```
+
+`fact_pattern` is `transaction`, `periodic_snapshot`, or `accumulating_snapshot`. When it is supplied, `grain` is required. Periodic snapshots also require `snapshot_period` (`day`, `week`, `month`, `quarter`, or `year`). A semi-additive measure must declare the dimensions across which it cannot be summed.
+
+Accumulating snapshots declare ordered lifecycle milestones:
+
+```yaml
+fact_pattern: accumulating_snapshot
+grain: one order lifecycle
+milestones:
+  - name: ordered
+    column: ordered_at
+    order: 1
+  - name: shipped
+    column: shipped_at
+    order: 2
+  - name: delivered
+    column: delivered_at
+    order: 3
+```
+
+At least two milestones are required and `order` values must be unique. The metadata documents and validates the model shape; lifecycle update SQL remains the pipeline transformation responsibility.
+
+### Role-playing, degenerate, and junk dimensions
+
+A role-playing dimension uses explicit FK metadata, never a column-name heuristic:
+
+```yaml
+foreign_keys:
+  - column: order_date_sk
+    references: demo_gold.dim_date
+    dimension_key: date_sk
+    role_playing: true
+    role: order_date
+  - column: ship_date_sk
+    references: demo_gold.dim_date
+    dimension_key: date_sk
+    role_playing: true
+    role: ship_date
+```
+
+Roles must be unique within a fact. The enterprise bus matrix shows one `dim_date` column with role annotations such as `X (order_date, ship_date)`.
+
+A degenerate dimension is a business identifier intentionally retained on the fact:
+
+```yaml
+degenerate_dimensions: [order_number, invoice_number]
+```
+
+The framework validates that every declared degenerate column exists in the
+transformed fact output. It does not create a separate table or alter merge
+behavior.
+
+A managed junk dimension groups low-cardinality flags into a deterministic key:
+
+```yaml
+junk_dimensions:
+  - dimension_table: demo_gold.dim_order_flags
+    surrogate_key: order_flags_sk
+    source_columns: [is_gift, is_priority, is_first_order]
+```
+
+Before the fact merge, the framework idempotently merges new distinct
+combinations into the junk table, detects deterministic-key collisions, adds
+`order_flags_sk` to the fact DataFrame, and validates it as an FK. Junk keys
+must be unique in one fact config and cannot also be degenerate dimensions.
+
+### Table and column descriptions
+
+Use YAML to manage catalog documentation:
+
+```yaml
+table_description: Customer master used by sales and service facts.
+column_descriptions:
+  customer_sk: Framework-generated surrogate key.
+  customer_id: Source-system business identifier.
+  email: Customer email address; PII.
+```
+
+Descriptions are synchronized after a successful data merge, after schema
+evolution has made new columns available. The framework validates referenced
+columns, compares the desired state with the normalized manifest in table
+property `kimball.descriptions.manifest`, and emits DDL only for changes.
+Removing a previously YAML-owned description clears that comment with `NULL`;
+unrelated comments are not claimed. Description text is SQL-escaped.
+
+A description-sync failure is best-effort: data remains loaded and the next run retries the metadata synchronization. Empty descriptions are rejected during configuration loading.
+
+## Project dependencies and planning
+
+Production projects declare every in-project upstream explicitly:
+
+```yaml
+table_name: gold.fact_sales
+depends_on: [gold.dim_customer, gold.dim_product]
+```
+
+References in sources and foreign keys are used to infer the effective graph.
+Production compilation rejects an inferred dependency omitted from
+`depends_on`, cycles, missing declared upstreams, duplicate target writers, and
+auxiliary-table writer conflicts. See [Production Readiness](PRODUCTION_READINESS.md).
+
+## Supplier contracts and validation budgets
+
+Use an exact ODCS pin for producer/consumer CI:
+
+```yaml
+sources:
+  - name: prod_silver.customers
+    alias: customers
+    contract_ref: ../../contracts/customer-contract/1.0.0.odcs.yaml
+```
+
+Inline contracts can additionally declare `schema`, `cdc`, `freshness`,
+`quality`, `temporal`, and an execution budget:
+
+```yaml
+contract:
+  id: customer-events
+  version: 1.2.0
+  schema:
+    customer_id: {type: bigint, nullable: false}
+    event_at: {type: timestamp, nullable: false}
+  cdc:
+    required: true
+    primary_key: [customer_id]
+  temporal:
+    event_time_column: event_at
+    allowed_lateness: 2 hours
+    late_event_severity: warn
+    out_of_order_severity: error
+  validation:
+    mode: sampled
+    sample_fraction: 0.1
+    sample_seed: 17
+    max_sample_rows: 1000000
+    max_failure_samples: 5
+    max_actions: 8
+```
+
+`mode` is `full`, `sampled`, or `approximate`. Approximate mode uses
+approximate distinct counting for uniqueness. Sampling is explicit rather than
+silently changing the meaning of a full check. See [Data Supplier Contracts](DATA_CONTRACTS.md).
+
+## Observability storage
+
+```yaml
+observability:
+  enabled: true
+  event_table: etl_data_quality_events
+  temporal_state_table: etl_contract_temporal_state
+  write_failure: warn
+  webhook_env: KIMBALL_ALERT_WEBHOOK_URL
+  alert_on: [error]
+```
+
+`write_failure: warn` preserves the transformation result when optional event
+or temporal-state storage fails and logs the exception type. `error` fails the
+run. Error-severity validation findings always block regardless of this storage
+policy. Batch and streaming commit temporal maxima only after their merge and
+watermark succeed.

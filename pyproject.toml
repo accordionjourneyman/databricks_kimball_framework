@@ -23,7 +23,8 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 
-# Core deps are pure-python. PySpark/Delta provided by Databricks Runtime.
+# Control-plane APIs (config/contracts/planning) are Spark-free. Runtime commands
+# require Databricks Runtime or installation with the ``spark`` extra.
 dependencies = [
     "pyyaml",
     "jinja2",
@@ -38,6 +39,9 @@ Documentation = "https://github.com/accordionjourneyman/databricks_kimball_frame
 Repository = "https://github.com/accordionjourneyman/databricks_kimball_framework"
 Changelog = "https://github.com/accordionjourneyman/databricks_kimball_framework/blob/main/CHANGELOG.md"
 
+[project.scripts]
+kimball = "kimball.cli:main"
+
 [project.optional-dependencies]
 # For local development/testing outside Databricks
 spark = [
@@ -49,9 +53,11 @@ dev = [
     "pytest-benchmark",
     "pytest-cov",
     "ruff",
-    "mypy",
+    "mypy>=1.11,<2",
+    "types-PyYAML",
     "pyright",
     "build",
+    "pip-audit",
     "pyspark>=4.0.0,<4.2.0",
     "delta-spark>=4.0.0,<5.0.0",
 ]
@@ -64,6 +70,9 @@ remote = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"kimball.contracts" = ["schemas/*.json"]
 
 [tool.ruff]
 line-length = 88

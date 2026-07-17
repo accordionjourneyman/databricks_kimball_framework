@@ -73,7 +73,7 @@ that complements it lives in [`../COMPARISON.md`](../COMPARISON.md).
 - **Decision.** When a batch contains ≥2 versions of a key, stage the full
   history chain (expire the old current row + insert all new versions) and apply
   it in **one** MERGE keyed on the surrogate key, instead of the classic
-  two-phase "merge latest, then rebuild history" approach.
+  single-pass SCD2 staging approach.
 - **Evidence.** Whittles (2012) and the broader SCD2-load-performance lineage
   motivate reducing MERGE passes for throughput. The single-pass,
   SK-matched formulation is an engineering contribution of this project; Lanzas

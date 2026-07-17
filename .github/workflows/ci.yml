@@ -42,6 +42,12 @@ jobs:
       - name: Check Ruff formatting
         run: ruff format --check src tests tools
 
+      - name: Type-check control plane with mypy
+        run: mypy src/kimball/common src/kimball/contracts src/kimball/planning src/kimball/cli.py
+
+      - name: Type-check package with Pyright
+        run: pyright src/kimball
+
       - name: Run unit tests
         run: |
           pytest tests/unit -v \
@@ -51,6 +57,7 @@ jobs:
             -o junit_family=legacy \
             --cov=src/kimball \
             --cov-branch \
+            --cov-fail-under=70 \
             --cov-report=xml
 
       - name: Publish test results

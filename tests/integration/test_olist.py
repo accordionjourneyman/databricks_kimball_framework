@@ -168,11 +168,7 @@ transformation_sql: |
 
         # After bridge resolution the natural key column (producer_id) holds
         # the CANONICAL seller ids (1/2/3), not the producer ids (100/200/300).
-        dim = (
-            spark.table(f"{test_db}.dim_seller")
-            .filter("producer_id > 0")
-            .collect()
-        )
+        dim = spark.table(f"{test_db}.dim_seller").filter("producer_id > 0").collect()
         assert len(dim) == 3, f"Expected 3 sellers, got {len(dim)}: {dim}"
         by_id = {r.producer_id: r for r in dim}
         # If the bridge never ran, these keys would be 100/200/300, not 1/2/3.

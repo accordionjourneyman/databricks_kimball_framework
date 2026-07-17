@@ -1,0 +1,46 @@
+table_name: demo_gold.fact_orders
+table_type: fact
+merge_keys: [order_id]
+grain: one order
+fact_pattern: transaction
+degenerate_dimensions: [order_number]
+junk_dimensions:
+  - dimension_table: demo_gold.dim_order_flags
+    surrogate_key: order_flags_sk
+    source_columns: [is_gift, is_priority, channel_code]
+measures:
+  - name: order_amount
+    aggregation: sum
+    additivity: additive
+foreign_keys:
+  - column: order_date_sk
+    references: demo_gold.dim_date
+    dimension_key: date_sk
+    role_playing: true
+    role: order_date
+  - column: ship_date_sk
+    references: demo_gold.dim_date
+    dimension_key: date_sk
+    role_playing: true
+    role: ship_date
+table_description: Order transaction fact with two roles played by one physical date dimension.
+column_descriptions:
+  order_id: Durable merge key at the declared order grain.
+  order_number: Operational identifier retained as a degenerate dimension.
+  order_date_sk: Order-date role foreign key to the physical date dimension.
+  ship_date_sk: Ship-date role foreign key to the physical date dimension.
+  order_flags_sk: Generated junk-dimension key for low-cardinality order flags.
+sources:
+  - name: silver.orders
+    alias: orders
+transformation_sql: |
+  SELECT
+    order_id,
+    order_number,
+    order_date_sk,
+    ship_date_sk,
+    order_amount,
+    is_gift,
+    is_priority,
+    channel_code
+  FROM silver.orders

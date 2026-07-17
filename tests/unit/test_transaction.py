@@ -21,20 +21,30 @@ class TestGetTableVersion:
     def test_returns_version_from_history(self, manager, spark_mock):
         delta_table = MagicMock()
         delta_table.history.return_value.collect.return_value = [{"version": 5}]
-        with patch("kimball.orchestration.transaction.DeltaTable.forName", return_value=delta_table):
+        with patch(
+            "kimball.orchestration.transaction.DeltaTable.forName",
+            return_value=delta_table,
+        ):
             result = manager._get_table_version("test_table")
         assert result == 5
 
     def test_returns_negative_one_when_no_history(self, manager, spark_mock):
         delta_table = MagicMock()
         delta_table.history.return_value.collect.return_value = []
-        with patch("kimball.orchestration.transaction.DeltaTable.forName", return_value=delta_table):
+        with patch(
+            "kimball.orchestration.transaction.DeltaTable.forName",
+            return_value=delta_table,
+        ):
             result = manager._get_table_version("test_table")
         assert result == -1
 
     def test_returns_negative_one_on_analysis_exception(self, manager, spark_mock):
         from pyspark.errors import AnalysisException
-        with patch("kimball.orchestration.transaction.DeltaTable.forName", side_effect=AnalysisException("not found")):
+
+        with patch(
+            "kimball.orchestration.transaction.DeltaTable.forName",
+            side_effect=AnalysisException("not found"),
+        ):
             result = manager._get_table_version("test_table")
         assert result == -1
 
@@ -48,6 +58,7 @@ class TestRollback:
 
     def test_rollback_raises_on_failure(self, manager, spark_mock):
         from pyspark.errors import PySparkException
+
         spark_mock.sql.side_effect = PySparkException("restore failed")
         with pytest.raises(PySparkException, match="restore failed"):
             manager._rollback("test_table", 3)
@@ -65,7 +76,10 @@ class TestRecoverZombies:
         delta_table.history.return_value.collect.return_value = [
             {"version": 1, "userMetadata": "other_batch"}
         ]
-        with patch("kimball.orchestration.transaction.DeltaTable.forName", return_value=delta_table):
+        with patch(
+            "kimball.orchestration.transaction.DeltaTable.forName",
+            return_value=delta_table,
+        ):
             result = manager.recover_zombies("test_table", "batch-1")
         assert result is False
 
@@ -76,7 +90,10 @@ class TestRecoverZombies:
             {"version": 3, "userMetadata": "batch-1"},
             {"version": 2, "userMetadata": "other"},
         ]
-        with patch("kimball.orchestration.transaction.DeltaTable.forName", return_value=delta_table):
+        with patch(
+            "kimball.orchestration.transaction.DeltaTable.forName",
+            return_value=delta_table,
+        ):
             # Do NOT mock _rollback -- let the real implementation issue the
             # RESTORE statement so we verify the actual SQL (version 2 = the
             # version before the first zombie commit at version 3), not just
@@ -93,12 +110,16 @@ class TestRecoverZombies:
         delta_table.history.return_value.collect.return_value = [
             {"version": 0, "userMetadata": "batch-1"}
         ]
-        with patch("kimball.orchestration.transaction.DeltaTable.forName", return_value=delta_table):
+        with patch(
+            "kimball.orchestration.transaction.DeltaTable.forName",
+            return_value=delta_table,
+        ):
             result = manager.recover_zombies("test_table", "batch-1")
         assert result is False
 
     def test_handles_general_exception(self, manager, spark_mock):
         from pyspark.errors import PySparkException
+
         spark_mock.catalog.tableExists.side_effect = PySparkException("boom")
         result = manager.recover_zombies("test_table", "batch-1")
         assert result is False
@@ -146,6 +167,7 @@ class TestTableTransaction:
 
     def test_handles_conf_set_failure(self, manager, spark_mock):
         from pyspark.errors import PySparkException
+
         spark_mock.conf.set.side_effect = PySparkException("cannot set")
         manager._get_table_version = MagicMock(return_value=5)
         with manager.table_transaction("test_table", "batch-1"):

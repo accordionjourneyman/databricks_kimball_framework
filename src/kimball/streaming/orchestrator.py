@@ -11,6 +11,7 @@ For multi-source pipelines, the orchestrator starts one streaming query
 per CDF source and joins their output by a per-batch ``foreachBatch``
 that fans the rows into the same MERGE.
 """
+
 from __future__ import annotations
 
 import logging
@@ -21,10 +22,8 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.functions import broadcast
-from pyspark.sql.streaming import StreamingQuery
+from pyspark.sql.streaming.query import StreamingQuery
 
-from kimball.processing import merger as _merger
 from kimball.streaming.checkpoint import default_checkpoint_path
 from kimball.streaming.loader import StreamCdfLoader
 from kimball.streaming.services.microbatch import StreamingMicroBatchProcessor
@@ -56,6 +55,7 @@ class StreamingOrchestrator:
 
         if spark is None:
             from databricks.sdk.runtime import spark as _sdk_spark
+
             self.spark: SparkSession = _sdk_spark
         else:
             self.spark = spark
@@ -65,6 +65,7 @@ class StreamingOrchestrator:
         self.etl_schema = etl_schema
 
         from kimball.orchestration.watermark import ETLControlManager
+
         self.etl_control = ETLControlManager(etl_schema=self.etl_schema)
         self.stream_loader = StreamCdfLoader(self.spark)
         self._active_queries: dict[str, StreamingQuery] = {}
@@ -76,12 +77,17 @@ class StreamingOrchestrator:
         if not self._is_streaming():
             logger.info("No source has streaming.enabled=True; falling back to batch.")
             from kimball.orchestration.orchestrator import Orchestrator
+
             return Orchestrator(self.config, spark=self.spark).run()
 
         start = time.time()
         summary: dict[str, Any] = {
-            "status": "SUCCESS", "rows_read": 0, "rows_written": 0,
-            "duration_seconds": 0.0, "queries": {}, "errors": [],
+            "status": "SUCCESS",
+            "rows_read": 0,
+            "rows_written": 0,
+            "duration_seconds": 0.0,
+            "queries": {},
+            "errors": [],
         }
         try:
             self._start_queries(summary)
@@ -101,14 +107,20 @@ class StreamingOrchestrator:
         for source in self.config.sources:
             self.etl_control.reset_watermark(self.config.table_name, source.name)
         for source in self.config.sources:
-            if getattr(source.streaming, "enabled", False):
-                cp = source.streaming.checkpoint_location or default_checkpoint_path(
+            streaming = source.streaming
+            if streaming and streaming.enabled:
+                cp = streaming.checkpoint_location or default_checkpoint_path(
                     source.name, self.etl_schema
                 )
                 if os.path.exists(cp):
                     shutil.rmtree(cp, ignore_errors=True)
         from kimball.orchestration.orchestrator import Orchestrator
-        batch = Orchestrator(self._config_path or self.config, spark=self.spark, etl_schema=self.etl_schema)
+
+        batch = Orchestrator(
+            self._config_path or self.config,
+            spark=self.spark,
+            etl_schema=self.etl_schema,
+        )
         result = batch.run(full_reload=True)
         if result.get("status") == "FAILED":
             raise RuntimeError(f"Full reload failed: {result.get('errors', 'unknown')}")
@@ -125,7 +137,8 @@ class StreamingOrchestrator:
 
     def _streaming_sources(self) -> list[Any]:
         return [
-            s for s in self.config.sources
+            s
+            for s in self.config.sources
             if getattr(s.streaming, "enabled", False) and s.cdc_strategy == "cdf"
         ]
 
@@ -136,15 +149,21 @@ class StreamingOrchestrator:
                 streaming_cfg.starting_version is None
                 and streaming_cfg.starting_timestamp is None
             ):
-                watermark = self.etl_control.get_watermark(self.config.table_name, source.name)
+                watermark = self.etl_control.get_watermark(
+                    self.config.table_name, source.name
+                )
                 latest_v = self.stream_loader.get_latest_version(source.name)
                 if watermark is not None and watermark < latest_v:
-                    logger.info(f"Resuming streaming for {source.name} from version {watermark + 1}")
+                    logger.info(
+                        f"Resuming streaming for {source.name} from version {watermark + 1}"
+                    )
                     streaming_cfg = streaming_cfg.model_copy(
                         update={"starting_version": watermark + 1}
                     )
 
-            stream_df = self.stream_loader.stream_cdf(table_name=source.name, config=streaming_cfg)
+            stream_df = self.stream_loader.stream_cdf(
+                table_name=source.name, config=streaming_cfg
+            )
             checkpoint = (
                 source.streaming.checkpoint_location
                 or default_checkpoint_path(source.name, self.etl_schema)
@@ -195,7 +214,9 @@ class StreamingOrchestrator:
         return _foreach
 
     def _get_processor(self) -> StreamingMicroBatchProcessor:
-        return StreamingMicroBatchProcessor(self.spark, self.config, self.etl_schema, self.etl_control)
+        return StreamingMicroBatchProcessor(
+            self.spark, self.config, self.etl_schema, self.etl_control
+        )
 
     def _execute_one_microbatch(
         self, batch_df: DataFrame, source: Any, batch_id: int
@@ -213,10 +234,14 @@ class StreamingOrchestrator:
             int(r._commit_version)
             for r in batch_df.select("_commit_version").distinct().collect()
         )
-        logger.info(f"Processing {len(versions)} version(s) for {source.name} in micro-batch {batch_id}")
+        logger.info(
+            f"Processing {len(versions)} version(s) for {source.name} in micro-batch {batch_id}"
+        )
         batch_table = f"{self.etl_schema}._kimball_batch_{source.alias}_{batch_id}"
         for version in versions:
-            version_df = self.spark.table(batch_table).filter(f"`_commit_version` = {version}")
+            version_df = self.spark.table(batch_table).filter(
+                f"`_commit_version` = {version}"
+            )
             version_df.createOrReplaceTempView(source.alias)
             self._execute_one_microbatch(version_df, source, batch_id)
             logger.info(f"Processed version {version} for {source.name}")

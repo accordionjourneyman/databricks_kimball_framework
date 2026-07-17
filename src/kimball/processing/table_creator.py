@@ -87,9 +87,7 @@ class TableCreator:
 
         # Add surrogate key column (always LongType for xxhash64)
         if surrogate_key:
-            result_df = result_df.withColumn(
-                surrogate_key, lit(None).cast(LongType())
-            )
+            result_df = result_df.withColumn(surrogate_key, lit(None).cast(LongType()))
 
         return result_df
 
@@ -272,9 +270,7 @@ class TableCreator:
                 logger.info(f"Warning: Delta features failed: {first_line}")
 
         # Apply basic Delta constraints after table creation
-        self.apply_basic_constraints(
-            table_name, surrogate_key_col, schema_df
-        )
+        self.apply_basic_constraints(table_name, surrogate_key_col, schema_df)
 
         # Apply additional constraints from config
         if config:
@@ -333,7 +329,9 @@ class TableCreator:
                 )
                 logger.info(f"Applied NOT NULL constraint to {surrogate_key}")
             except PySparkException as e:
-                logger.warning(f"Could not apply NOT NULL constraint to {surrogate_key}: {e}")
+                logger.warning(
+                    f"Could not apply NOT NULL constraint to {surrogate_key}: {e}"
+                )
 
         # Apply NOT NULL constraints for natural keys
         # Handle both flat and nested config structures for natural keys
@@ -489,7 +487,11 @@ class TableCreator:
         if not policy.is_databricks:
             return
         quoted = quote_table_name(table_name)
-        columns = pii_config.get("columns", []) if isinstance(pii_config, dict) else pii_config
+        columns = (
+            pii_config.get("columns", [])
+            if isinstance(pii_config, dict)
+            else pii_config
+        )
         for col_cfg in columns:
             if isinstance(col_cfg, dict):
                 col_name = col_cfg.get("column")
@@ -503,10 +505,18 @@ class TableCreator:
                 continue
             if strategy == "null":
                 mask_expr = "NULL"
-            elif strategy == "hash":
+            elif strategy in {"hash", "fast_hash"}:
                 mask_expr = f"xxhash64(cast(`{col_name}` as string), '{col_name}')"
+            elif strategy == "tokenize":
+                # Stored values are already keyed HMAC tokens. Re-tokenizing on
+                # read would break equality and require exposing a key in DDL.
+                continue
             elif strategy == "mask":
-                mask_char = col_cfg.get("mask_char", "*") if isinstance(col_cfg, dict) else getattr(col_cfg, "mask_char", "*")
+                mask_char = (
+                    col_cfg.get("mask_char", "*")
+                    if isinstance(col_cfg, dict)
+                    else getattr(col_cfg, "mask_char", "*")
+                )
                 mask_expr = f"'{mask_char * 10}'"
             else:
                 continue

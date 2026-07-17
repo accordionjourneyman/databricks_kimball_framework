@@ -4,18 +4,18 @@ This module provides a function to get the SparkSession lazily,
 allowing the Kimball framework to be imported outside of Databricks
 (e.g., for testing, type checking, or documentation generation).
 """
+
 from __future__ import annotations
 
-import os
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
 
-_active_spark: Optional["SparkSession"] = None
+_active_spark: SparkSession | None = None
 
 
-def set_active_spark(spark: "SparkSession") -> None:
+def set_active_spark(spark: SparkSession) -> None:
     """Register an active SparkSession to be returned by ``get_spark()``.
 
     Used by the Databricks Connect test harness to inject a remote

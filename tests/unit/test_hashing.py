@@ -12,6 +12,7 @@ changed). These tests guard the SCD2 change-detection contract:
 - NULLs are handled (sentinel), and differ from a real value
 - untracked columns do not affect the hash
 """
+
 from __future__ import annotations
 
 from kimball.processing.hashing import compute_hashdiff
@@ -48,7 +49,9 @@ def test_hashdiff_handles_nulls(spark):
 
 def test_hashdiff_only_tracks_requested_columns(spark):
     """Changes to an untracked column must NOT change the hashdiff."""
-    df = spark.createDataFrame([("a", "x", 1), ("a", "x", 2)], ["name", "city", "phone"])
+    df = spark.createDataFrame(
+        [("a", "x", 1), ("a", "x", 2)], ["name", "city", "phone"]
+    )
     rows = df.withColumn("h", compute_hashdiff(["name", "city"])).select("h").collect()
     assert rows[0]["h"] == rows[1]["h"]  # phone not tracked -> same hash
 
@@ -58,5 +61,14 @@ def test_hashdiff_returns_bigint_column(spark):
     from pyspark.sql.types import LongType
 
     df = spark.createDataFrame([("a", "x")], ["name", "city"])
-    field = df.withColumn("h", compute_hashdiff(["name", "city"])).schema.fieldNames().index("h")
-    assert isinstance(df.withColumn("h", compute_hashdiff(["name", "city"])).schema.fields[field].dataType, LongType)
+    field = (
+        df.withColumn("h", compute_hashdiff(["name", "city"]))
+        .schema.fieldNames()
+        .index("h")
+    )
+    assert isinstance(
+        df.withColumn("h", compute_hashdiff(["name", "city"]))
+        .schema.fields[field]
+        .dataType,
+        LongType,
+    )

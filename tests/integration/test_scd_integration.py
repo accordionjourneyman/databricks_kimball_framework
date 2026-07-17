@@ -172,9 +172,7 @@ transformation_sql: |
         assert result2["status"] == "SUCCESS"
 
         all_rows = (
-            spark.table(f"{test_db}.dim_product")
-            .filter("product_id = 100")
-            .collect()
+            spark.table(f"{test_db}.dim_product").filter("product_id = 100").collect()
         )
 
         # Should have 2 rows: old (expired) + new (current)

@@ -1,10 +1,21 @@
 import logging
+from dataclasses import dataclass
 
 from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import broadcast, col, current_timestamp, lit
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SkeletonGenerationResult:
+    """Evidence from one early-arriving-fact check."""
+
+    dimension_table: str
+    missing_rows: int
+    samples: list[dict]
+    status: str
 
 
 class SkeletonGenerator:
@@ -17,9 +28,7 @@ class SkeletonGenerator:
         try:
             self.spark = get_spark()
         except (ImportError, AttributeError, RuntimeError):
-            self.spark = (
-                __import__("databricks.sdk.runtime", fromlist=["spark"]).spark
-            )
+            self.spark = __import__("databricks.sdk.runtime", fromlist=["spark"]).spark
 
     def generate_skeletons(
         self,
@@ -30,12 +39,13 @@ class SkeletonGenerator:
         surrogate_key_col: str,
         batch_id: str | None = None,
         effective_at_column: str | None = None,
-    ) -> None:
+        create: bool = True,
+    ) -> SkeletonGenerationResult:
         if not self.spark.catalog.tableExists(dim_table_name):
             logger.info(
                 f"Dimension table {dim_table_name} does not exist. Skipping skeleton generation."
             )
-            return
+            return SkeletonGenerationResult(dim_table_name, 0, [], "missing_dimension")
         dim_table = DeltaTable.forName(self.spark, dim_table_name)
         dim_df = dim_table.toDF()
         has_skeleton_col = "__is_skeleton" in [f.name for f in dim_df.schema.fields]
@@ -43,13 +53,21 @@ class SkeletonGenerator:
             logger.info(
                 f"Dimension table {dim_table_name} does not have __is_skeleton column. Skipping skeleton generation."
             )
-            return
+            return SkeletonGenerationResult(
+                dim_table_name, 0, [], "unsupported_dimension"
+            )
         fact_keys = fact_df.select(col(fact_join_key).alias("key")).distinct()
         dim_keys = dim_df.select(col(dim_join_key).alias("key"))
         missing = fact_keys.join(broadcast(dim_keys), "key", "left_anti")
         if missing.isEmpty():
             logger.info(f"No missing keys found for {dim_table_name}.")
-            return
+            return SkeletonGenerationResult(dim_table_name, 0, [], "no_missing_keys")
+        missing_count = missing.count()
+        samples = [row.asDict() for row in missing.limit(5).collect()]
+        if not create:
+            return SkeletonGenerationResult(
+                dim_table_name, missing_count, samples, "detected"
+            )
         skeletons = missing.withColumnRenamed("key", dim_join_key)
         from datetime import datetime
 
@@ -80,3 +98,6 @@ class SkeletonGenerator:
             f"target.{dim_join_key} <=> source.{dim_join_key}",
         ).whenNotMatchedInsertAll().execute()
         logger.info(f"Inserted skeleton rows into {dim_table_name} (via atomic MERGE).")
+        return SkeletonGenerationResult(
+            dim_table_name, missing_count, samples, "created"
+        )

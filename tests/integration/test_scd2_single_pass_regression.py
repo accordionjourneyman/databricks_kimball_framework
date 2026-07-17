@@ -1,9 +1,8 @@
 """Regression tests for the two critical bugs in ``_merge_single_pass``.
 
-These cover the SCD2 multi-version path (the single-pass MERGE dispatched by
-``merge_scd2`` when >=2 versions of a key arrive in one batch). Both bugs were
-silent data-corruption issues; the tests pin the fixed behaviour and fail on
-the pre-fix code.
+These cover the canonical SCD2 single-pass path used for snapshots and CDF
+batches of every size. The bugs covered here were silent data-corruption
+issues; the tests pin the fixed behaviour and fail on the pre-fix code.
 
 Bug 1 -- skeleton hydration
     When a multi-version batch targets an early-arriving-fact skeleton, the
@@ -25,6 +24,7 @@ so the single-pass dispatch and the MERGE are both exercised end-to-end. They
 require a real Spark + Delta session (local or Databricks); they are not
 mock-based.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -32,7 +32,10 @@ import uuid
 import pytest
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.types import (
-    IntegerType, StringType, StructField, StructType,
+    IntegerType,
+    StringType,
+    StructField,
+    StructType,
 )
 
 from kimball.processing.scd2 import merge_scd2
@@ -41,14 +44,16 @@ pytestmark = pytest.mark.usefixtures("spark")
 
 TABLE = "dim_customer_reg"
 
-CUSTOMER_SCHEMA = StructType([
-    StructField("customer_id", IntegerType(), False),
-    StructField("name", StringType(), True),
-    StructField("email", StringType(), True),
-    StructField("updated_at", StringType(), False),
-    StructField("_change_type", StringType(), True),
-    StructField("_commit_version", IntegerType(), True),
-])
+CUSTOMER_SCHEMA = StructType(
+    [
+        StructField("customer_id", IntegerType(), False),
+        StructField("name", StringType(), True),
+        StructField("email", StringType(), True),
+        StructField("updated_at", StringType(), False),
+        StructField("_change_type", StringType(), True),
+        StructField("_commit_version", IntegerType(), True),
+    ]
+)
 
 
 @pytest.fixture
@@ -100,6 +105,127 @@ def _run(spark: SparkSession, db: str, source: DataFrame) -> None:
     )
 
 
+class TestIncrementalCdfDeleteSafety:
+    """An incremental CDF update must not expire keys absent from that commit."""
+
+    def test_update_without_delete_keeps_untouched_current_rows(
+        self, spark: SparkSession, scd2_db: str
+    ) -> None:
+        _create_target(spark, scd2_db)
+        initial = _make_source(
+            spark,
+            [
+                {
+                    "customer_id": 1,
+                    "name": "Ada",
+                    "email": "ada@old",
+                    "updated_at": "2024-01-01",
+                },
+                {
+                    "customer_id": 2,
+                    "name": "Bea",
+                    "email": "bea@old",
+                    "updated_at": "2024-01-01",
+                },
+                {
+                    "customer_id": 3,
+                    "name": "Cy",
+                    "email": "cy@old",
+                    "updated_at": "2024-01-01",
+                },
+            ],
+        )
+        # Initial source is a snapshot, so it intentionally has no CDF marker.
+        _run(spark, scd2_db, initial.drop("_change_type", "_commit_version"))
+
+        # A later CDF commit updates customer 1 only and contains no deletes.
+        incremental = _make_source(
+            spark,
+            [
+                {
+                    "customer_id": 1,
+                    "name": "Ada",
+                    "email": "ada@new",
+                    "updated_at": "2024-02-01",
+                    "_change_type": "update_postimage",
+                    "_commit_version": 10,
+                }
+            ],
+        )
+        _run(spark, scd2_db, incremental)
+
+        current = {
+            r.customer_id: r
+            for r in spark.table(f"{scd2_db}.{TABLE}")
+            .filter("__is_current = true")
+            .collect()
+        }
+        assert set(current) == {1, 2, 3}
+        assert current[2]["__is_deleted"] is False
+        assert current[3]["__is_deleted"] is False
+
+    def test_delete_only_commit_expires_only_the_deleted_key(
+        self, spark: SparkSession, scd2_db: str
+    ) -> None:
+        _create_target(spark, scd2_db)
+        initial = _make_source(
+            spark,
+            [
+                {
+                    "customer_id": 1,
+                    "name": "Ada",
+                    "email": "ada@x",
+                    "updated_at": "2024-01-01",
+                },
+                {
+                    "customer_id": 2,
+                    "name": "Bea",
+                    "email": "bea@x",
+                    "updated_at": "2024-01-01",
+                },
+                {
+                    "customer_id": 3,
+                    "name": "Cy",
+                    "email": "cy@x",
+                    "updated_at": "2024-01-01",
+                },
+            ],
+        )
+        _run(spark, scd2_db, initial.drop("_change_type", "_commit_version"))
+
+        _run(
+            spark,
+            scd2_db,
+            _make_source(
+                spark,
+                [
+                    {
+                        "customer_id": 2,
+                        "name": "Bea",
+                        "email": "bea@x",
+                        "updated_at": "2024-02-01",
+                        "_change_type": "delete",
+                        "_commit_version": 10,
+                    }
+                ],
+            ),
+        )
+
+        current_keys = {
+            row.customer_id
+            for row in spark.table(f"{scd2_db}.{TABLE}")
+            .filter("__is_current = true")
+            .collect()
+        }
+        deleted = (
+            spark.table(f"{scd2_db}.{TABLE}")
+            .filter("customer_id = 2 AND __is_deleted = true")
+            .collect()
+        )
+        assert current_keys == {1, 3}
+        assert len(deleted) == 1
+
+
 # =====================================================================
 # Bug 1: skeleton hydration
 # =====================================================================
@@ -120,10 +246,23 @@ class TestSinglePassSkeletonHydration:
         """)
 
         # Two versions of customer 1 in one batch -> forces _merge_single_pass.
-        source = _make_source(spark, [
-            {"customer_id": 1, "name": "Alice", "email": "alice@x.com", "updated_at": "2024-01-01"},
-            {"customer_id": 1, "name": "Alice", "email": "alice@y.com", "updated_at": "2024-06-01"},
-        ])
+        source = _make_source(
+            spark,
+            [
+                {
+                    "customer_id": 1,
+                    "name": "Alice",
+                    "email": "alice@x.com",
+                    "updated_at": "2024-01-01",
+                },
+                {
+                    "customer_id": 1,
+                    "name": "Alice",
+                    "email": "alice@y.com",
+                    "updated_at": "2024-06-01",
+                },
+            ],
+        )
         _run(spark, scd2_db, source)
 
         rows = spark.sql(f"""
@@ -135,7 +274,9 @@ class TestSinglePassSkeletonHydration:
         # Exactly one current row, hydrated with the LATEST version's attributes,
         # keeping the skeleton's original SK (1001).
         current = [r for r in rows if r["__is_current"]]
-        assert len(current) == 1, f"expected one current row, got {len(current)}: {rows}"
+        assert len(current) == 1, (
+            f"expected one current row, got {len(current)}: {rows}"
+        )
         assert current[0]["customer_sk"] == 1001, (
             f"skeleton SK must be preserved on hydration; got {current[0]['customer_sk']}"
         )
@@ -147,7 +288,9 @@ class TestSinglePassSkeletonHydration:
         null_sk = spark.sql(
             f"SELECT COUNT(*) AS c FROM {scd2_db}.{TABLE} WHERE customer_sk IS NULL"
         ).first()["c"]
-        assert null_sk == 0, f"found {null_sk} null-SK row(s) -- skeleton not hydrated in place"
+        assert null_sk == 0, (
+            f"found {null_sk} null-SK row(s) -- skeleton not hydrated in place"
+        )
 
     def test_fact_fk_resolves_to_hydrated_attributes(
         self, spark: SparkSession, scd2_db: str
@@ -159,10 +302,23 @@ class TestSinglePassSkeletonHydration:
             SELECT 1001, 1, NULL, NULL, 0, true,
                    '1900-01-01'::timestamp, NULL, false, true, current_timestamp()
         """)
-        source = _make_source(spark, [
-            {"customer_id": 1, "name": "Alice", "email": "alice@x.com", "updated_at": "2024-01-01"},
-            {"customer_id": 1, "name": "Alice", "email": "alice@y.com", "updated_at": "2024-06-01"},
-        ])
+        source = _make_source(
+            spark,
+            [
+                {
+                    "customer_id": 1,
+                    "name": "Alice",
+                    "email": "alice@x.com",
+                    "updated_at": "2024-01-01",
+                },
+                {
+                    "customer_id": 1,
+                    "name": "Alice",
+                    "email": "alice@y.com",
+                    "updated_at": "2024-06-01",
+                },
+            ],
+        )
         _run(spark, scd2_db, source)
 
         # A fact that arrived early and keyed to the skeleton's SK.
@@ -202,11 +358,29 @@ class TestSinglePassExpireValidTo:
 
     def _three_version_batch(self, spark: SparkSession) -> DataFrame:
         # oldest v1 = 2024-03-01, middle v2 = 2024-06-01, latest v3 = 2024-09-01
-        return _make_source(spark, [
-            {"customer_id": 1, "name": "Alice", "email": "alice@a.com", "updated_at": "2024-03-01"},
-            {"customer_id": 1, "name": "Alice", "email": "alice@b.com", "updated_at": "2024-06-01"},
-            {"customer_id": 1, "name": "Alice", "email": "alice@c.com", "updated_at": "2024-09-01"},
-        ])
+        return _make_source(
+            spark,
+            [
+                {
+                    "customer_id": 1,
+                    "name": "Alice",
+                    "email": "alice@a.com",
+                    "updated_at": "2024-03-01",
+                },
+                {
+                    "customer_id": 1,
+                    "name": "Alice",
+                    "email": "alice@b.com",
+                    "updated_at": "2024-06-01",
+                },
+                {
+                    "customer_id": 1,
+                    "name": "Alice",
+                    "email": "alice@c.com",
+                    "updated_at": "2024-09-01",
+                },
+            ],
+        )
 
     def test_old_row_expired_at_oldest_new_version(
         self, spark: SparkSession, scd2_db: str
@@ -215,12 +389,13 @@ class TestSinglePassExpireValidTo:
         _run(spark, scd2_db, self._three_version_batch(spark))
 
         old_row = spark.sql(f"""
-            SELECT __valid_to, __is_current
+            SELECT __valid_to, __is_current, __is_deleted
             FROM {scd2_db}.{TABLE}
             WHERE email = 'alice@old.com'
         """).first()
         assert old_row is not None
         assert old_row["__is_current"] is False
+        assert old_row["__is_deleted"] is False
 
         # Must be expired at oldest_new_valid_from - 1us (2024-02-29 23:59:59.999999),
         # NOT at latest_new_valid_from - 1us (2024-08-31 23:59:59.999999).
@@ -253,3 +428,18 @@ class TestSinglePassExpireValidTo:
             f"PIT read at 2024-04-15 should return only alice@a.com; got {emails} "
             "(stale old row overlapping the back-filled versions)"
         )
+
+    def test_point_in_time_read_before_latest_returns_second_version(
+        self, spark: SparkSession, scd2_db: str
+    ) -> None:
+        self._seed_old_current(spark, scd2_db)
+        _run(spark, scd2_db, self._three_version_batch(spark))
+
+        pit = spark.sql(f"""
+            SELECT email
+            FROM {scd2_db}.{TABLE}
+            WHERE customer_id = 1
+              AND __valid_from <= '2024-07-15'::timestamp
+              AND (__valid_to > '2024-07-15'::timestamp OR __is_current = true)
+        """).collect()
+        assert [row["email"] for row in pit] == ["alice@b.com"]

@@ -103,16 +103,16 @@ result = orch.run()
 If no source has `streaming.enabled: true`, `StreamingOrchestrator.run()`
 falls back to the regular batch `Orchestrator.run()` automatically.
 
-### Target Table Must Exist
+### Target table initialization
 
-The streaming orchestrator **does not create** the target table. Run the
-batch `Orchestrator` once to create it and seed default rows, then switch
-to `StreamingOrchestrator` for subsequent runs:
+The micro-batch processor can create a missing target from a transformed empty
+sample and seed dimension defaults. A batch baseline is still recommended when
+you need an intentional full snapshot before starting CDF consumption:
 
 ```python
 from kimball import Orchestrator, StreamingOrchestrator
 
-# First run: batch creates the target table
+# Optional baseline: batch creates and fully populates the target table
 Orchestrator("configs/dim_customer.yml", spark=spark).run()
 
 # Subsequent runs: streaming picks up new changes
@@ -135,33 +135,45 @@ Set `KIMBALL_STREAMING_CHECKPOINT_ROOT` to a persistent location
 
 ## Per-version processing
 
-By default (`per_version: true`) the streaming orchestrator processes
-**each Delta CDF version inside a micro-batch separately**. This matches
-the batch `preserve_all_changes` semantics and guarantees that SCD2
-tables record every committed upstream change, even when multiple
-versions for the same key arrive in one trigger interval.
+With `per_version: true`, the streaming orchestrator processes **each Delta CDF
+version inside a micro-batch separately**. This matches batch
+`preserve_all_changes` semantics and retains every upstream SCD2 change when
+multiple versions for one key arrive in one trigger interval.
 
-With `per_version: false` the orchestrator deduplicates the micro-batch
-to the latest change per key and runs a single merge. This is faster but
-may collapse multiple upstream changes into one SCD2 interval.
+The default is `per_version: false`: one merge processes the available
+micro-batch. This is faster but may collapse multiple upstream changes into one
+SCD2 interval. Set the flag explicitly for historization-sensitive streams.
+
+## Contract and temporal state parity
+
+Streaming executes contract DQ rules and, when `contract.temporal` is present,
+compares raw micro-batch events with the persisted per-business-key event-time
+maximum. It stages new maxima, performs the target merge, advances the source
+watermark, and only then commits temporal state. Failed or replayed
+micro-batches therefore cannot move the ordering high-water mark forward.
+
+Findings are appended to `observability.event_table`; state is stored in
+`observability.temporal_state_table`. `observability.write_failure` controls
+whether evidence-storage failure warns or fails the micro-batch.
 
 ## Limitations
 
-1. **No adaptive pruning** — column pruning is not applied. All source
-   columns are passed through to the merger.
+1. **No adaptive pruning**: all selected source columns pass through to the
+   transformation/merger unless user SQL projects them.
 
-2. **No zombie batch recovery** — streaming does not track zombie batches
-   for rollback. Use batch mode for crash-sensitive pipelines.
+2. **No compensating zombie rollback**: checkpoint/idempotent replay and
+   post-merge temporal-state ordering are supported, but streaming does not run
+   batch RESTORE-based zombie recovery.
 
-3. **Single source per query** — each CDF source gets its own streaming
-   query. Multi-source pipelines start one query per CDF source.
+3. **One query per streaming source**: multi-source pipelines start one
+   Structured Streaming query for each enabled CDF source. A target remains a
+   single-writer resource.
 
-4. **Checkpoint state is not portable** — checkpoint directories are tied
-   to the Spark application. Moving or copying them may cause corruption.
+4. **Checkpoint state is not portable**: checkpoint directories are tied to
+   their query/source identity and must live on durable storage.
 
-5. **`available_now` trigger processes all available data then stops** —
-   this is the recommended trigger for most use cases. Use
-   `processing_time` only when you need continuous ingestion.
+5. **Trigger semantics**: `available_now` processes currently available data
+   and stops. Use `processing_time` only for a deliberate continuous service.
 
 ## Running Tests
 

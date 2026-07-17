@@ -1,15 +1,13 @@
 """Tests for merge_helpers functions that are currently untested."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-from pyspark.sql import DataFrame
-from pyspark.sql.types import StringType, LongType, StructType, StructField
+from pyspark.sql.types import LongType, StringType, StructField, StructType
 
 from kimball.processing.merge_helpers import (
-    PYSPARK_EXCEPTION_BASE,
     apply_schema_evolution,
     build_expire_set,
     build_insert_values,
@@ -31,10 +29,15 @@ def _patch_spark_fns(request):
     if getattr(request.instance, "real_spark", False):
         yield
         return
-    with patch("kimball.processing.merge_helpers.col", return_value=MagicMock()), \
-         patch("kimball.processing.merge_helpers.current_timestamp", return_value=MagicMock()), \
-         patch("kimball.processing.merge_helpers.lit", return_value=MagicMock()), \
-         patch("kimball.processing.merge_helpers.when", return_value=MagicMock()):
+    with (
+        patch("kimball.processing.merge_helpers.col", return_value=MagicMock()),
+        patch(
+            "kimball.processing.merge_helpers.current_timestamp",
+            return_value=MagicMock(),
+        ),
+        patch("kimball.processing.merge_helpers.lit", return_value=MagicMock()),
+        patch("kimball.processing.merge_helpers.when", return_value=MagicMock()),
+    ):
         yield
 
 
@@ -143,7 +146,7 @@ class TestGenerateKeys:
         df.withColumn.return_value = df
         with patch("kimball.processing.merge_helpers.HashKeyGenerator") as mock_gen:
             mock_gen.return_value.generate_keys.return_value = df
-            result = generate_keys(df, ["customer_id"], "sk", scd_type=1)
+            generate_keys(df, ["customer_id"], "sk", scd_type=1)
             call_args = mock_gen.call_args
             assert call_args[0][0] == ["customer_id"]
             assert call_args[1]["version_column"] is None
@@ -154,7 +157,9 @@ class TestGenerateKeys:
         df.withColumn.return_value = df
         with patch("kimball.processing.merge_helpers.HashKeyGenerator") as mock_gen:
             mock_gen.return_value.generate_keys.return_value = df
-            result = generate_keys(df, ["customer_id"], "sk", scd_type=2, effective_at_column="updated_at")
+            generate_keys(
+                df, ["customer_id"], "sk", scd_type=2, effective_at_column="updated_at"
+            )
             call_args = mock_gen.call_args
             assert call_args[1]["version_column"] == "updated_at"
 
@@ -164,7 +169,7 @@ class TestGenerateKeys:
         df.withColumn.return_value = df
         with patch("kimball.processing.merge_helpers.HashKeyGenerator") as mock_gen:
             mock_gen.return_value.generate_keys.return_value = df
-            result = generate_keys(df, ["customer_id"], "sk", scd_type=2)
+            generate_keys(df, ["customer_id"], "sk", scd_type=2)
             call_args = mock_gen.call_args
             assert call_args[1]["version_column"] == "__etl_processed_at"
             df.withColumn.assert_called()
@@ -189,6 +194,7 @@ class TestGetValidityCol:
 class TestGetCurrentDf:
     def test_delta_table_filter(self):
         from delta.tables import DeltaTable
+
         filtered = MagicMock()
         dt = MagicMock(spec=DeltaTable)
         dt.toDF.return_value = MagicMock()
@@ -227,7 +233,9 @@ class TestBuildInsertValues:
     def test_include_history_false(self):
         df = MagicMock()
         df.columns = ["customer_id"]
-        result = build_insert_values(df, ["customer_id"], "sk", "source.updated_at", include_history=False)
+        result = build_insert_values(
+            df, ["customer_id"], "sk", "source.updated_at", include_history=False
+        )
         assert "__is_skeleton" not in result
 
 
@@ -236,7 +244,10 @@ class TestApplySchemaEvolution:
 
     @patch("kimball.processing.merge_helpers.get_spark")
     @patch("kimball.processing.merge_helpers.DeltaTable")
-    @patch("kimball.processing.merge_helpers.quote_table_name", return_value="`catalog`.`schema`.`table`")
+    @patch(
+        "kimball.processing.merge_helpers.quote_table_name",
+        return_value="`catalog`.`schema`.`table`",
+    )
     def test_disabled_returns_early(self, mock_quote, mock_dt, mock_get_spark):
         apply_schema_evolution("test.table", enabled=False)
         mock_get_spark.assert_not_called()
@@ -244,8 +255,13 @@ class TestApplySchemaEvolution:
 
     @patch("kimball.processing.merge_helpers.get_spark")
     @patch("kimball.processing.merge_helpers.DeltaTable")
-    @patch("kimball.processing.merge_helpers.quote_table_name", return_value="`catalog`.`schema`.`table`")
-    def test_enabled_sets_tblproperties_and_returns_when_source_none(self, mock_quote, mock_dt, mock_get_spark):
+    @patch(
+        "kimball.processing.merge_helpers.quote_table_name",
+        return_value="`catalog`.`schema`.`table`",
+    )
+    def test_enabled_sets_tblproperties_and_returns_when_source_none(
+        self, mock_quote, mock_dt, mock_get_spark
+    ):
         apply_schema_evolution("test.table", enabled=True, source_df=None)
         mock_get_spark.return_value.sql.assert_called_once_with(
             "ALTER TABLE `catalog`.`schema`.`table` SET TBLPROPERTIES ('delta.schema.autoMerge.enabled' = 'true')"
@@ -254,16 +270,27 @@ class TestApplySchemaEvolution:
 
     @patch("kimball.processing.merge_helpers.get_spark")
     @patch("kimball.processing.merge_helpers.DeltaTable")
-    @patch("kimball.processing.merge_helpers.quote_table_name", return_value="`catalog`.`schema`.`table`")
-    def test_tblproperties_failure_logs_warning(self, mock_quote, mock_dt, mock_get_spark, caplog):
+    @patch(
+        "kimball.processing.merge_helpers.quote_table_name",
+        return_value="`catalog`.`schema`.`table`",
+    )
+    def test_tblproperties_failure_logs_warning(
+        self, mock_quote, mock_dt, mock_get_spark, caplog
+    ):
         from pyspark.errors import PySparkException
-        mock_get_spark.return_value.sql.side_effect = PySparkException("permission denied")
+
+        mock_get_spark.return_value.sql.side_effect = PySparkException(
+            "permission denied"
+        )
         apply_schema_evolution("test.table", enabled=True, source_df=None)
         assert "Could not enable schema auto-merge" in caplog.text
 
     @patch("kimball.processing.merge_helpers.get_spark")
     @patch("kimball.processing.merge_helpers.DeltaTable")
-    @patch("kimball.processing.merge_helpers.quote_table_name", return_value="`catalog`.`schema`.`table`")
+    @patch(
+        "kimball.processing.merge_helpers.quote_table_name",
+        return_value="`catalog`.`schema`.`table`",
+    )
     def test_adds_new_columns(self, mock_quote, mock_dt, mock_get_spark):
         source_df = MagicMock()
         source_df.schema.fields = [
@@ -271,9 +298,11 @@ class TestApplySchemaEvolution:
             StructField("name", StringType(), True),
             StructField("email", StringType(), True),
         ]
-        target_schema = StructType([
-            StructField("id", LongType(), True),
-        ])
+        target_schema = StructType(
+            [
+                StructField("id", LongType(), True),
+            ]
+        )
         target_df = MagicMock()
         target_df.schema = target_schema
         mock_dt.forName.return_value.toDF.return_value = target_df
@@ -291,7 +320,10 @@ class TestApplySchemaEvolution:
 
     @patch("kimball.processing.merge_helpers.get_spark")
     @patch("kimball.processing.merge_helpers.DeltaTable")
-    @patch("kimball.processing.merge_helpers.quote_table_name", return_value="`catalog`.`schema`.`table`")
+    @patch(
+        "kimball.processing.merge_helpers.quote_table_name",
+        return_value="`catalog`.`schema`.`table`",
+    )
     def test_skips_special_columns(self, mock_quote, mock_dt, mock_get_spark):
         source_df = MagicMock()
         source_df.schema.fields = [
@@ -319,17 +351,24 @@ class TestApplySchemaEvolution:
 
     @patch("kimball.processing.merge_helpers.get_spark")
     @patch("kimball.processing.merge_helpers.DeltaTable")
-    @patch("kimball.processing.merge_helpers.quote_table_name", return_value="`catalog`.`schema`.`table`")
-    def test_no_new_columns_skips_add_columns(self, mock_quote, mock_dt, mock_get_spark):
+    @patch(
+        "kimball.processing.merge_helpers.quote_table_name",
+        return_value="`catalog`.`schema`.`table`",
+    )
+    def test_no_new_columns_skips_add_columns(
+        self, mock_quote, mock_dt, mock_get_spark
+    ):
         source_df = MagicMock()
         source_df.schema.fields = [
             StructField("id", LongType(), True),
             StructField("name", StringType(), True),
         ]
-        target_schema = StructType([
-            StructField("id", LongType(), True),
-            StructField("name", StringType(), True),
-        ])
+        target_schema = StructType(
+            [
+                StructField("id", LongType(), True),
+                StructField("name", StringType(), True),
+            ]
+        )
         target_df = MagicMock()
         target_df.schema = target_schema
         mock_dt.forName.return_value.toDF.return_value = target_df
@@ -340,9 +379,15 @@ class TestApplySchemaEvolution:
 
     @patch("kimball.processing.merge_helpers.get_spark")
     @patch("kimball.processing.merge_helpers.DeltaTable")
-    @patch("kimball.processing.merge_helpers.quote_table_name", return_value="`catalog`.`schema`.`table`")
-    def test_add_columns_failure_logs_warning(self, mock_quote, mock_dt, mock_get_spark, caplog):
+    @patch(
+        "kimball.processing.merge_helpers.quote_table_name",
+        return_value="`catalog`.`schema`.`table`",
+    )
+    def test_add_columns_failure_logs_warning(
+        self, mock_quote, mock_dt, mock_get_spark, caplog
+    ):
         from pyspark.errors import PySparkException
+
         source_df = MagicMock()
         source_df.schema.fields = [
             StructField("id", LongType(), True),
@@ -352,7 +397,10 @@ class TestApplySchemaEvolution:
         target_df = MagicMock()
         target_df.schema = target_schema
         mock_dt.forName.return_value.toDF.return_value = target_df
-        mock_get_spark.return_value.sql.side_effect = [None, PySparkException("add column failed")]
+        mock_get_spark.return_value.sql.side_effect = [
+            None,
+            PySparkException("add column failed"),
+        ]
 
         apply_schema_evolution("test.table", enabled=True, source_df=source_df)
 
@@ -362,15 +410,18 @@ class TestApplySchemaEvolution:
 class TestIsConcurrentException:
     def test_concurrent_append_string_match(self):
         from kimball.processing.dispatcher import _is_concurrent_exception
+
         exc = Exception("io.delta.exceptions.ConcurrentAppendException: conflict")
         assert _is_concurrent_exception(exc) is True
 
     def test_write_conflict_string_match(self):
         from kimball.processing.dispatcher import _is_concurrent_exception
+
         exc = Exception("WriteConflictException: table modified")
         assert _is_concurrent_exception(exc) is True
 
     def test_non_concurrent_returns_false(self):
         from kimball.processing.dispatcher import _is_concurrent_exception
+
         exc = ValueError("some other error")
         assert _is_concurrent_exception(exc) is False

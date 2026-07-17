@@ -1,4 +1,5 @@
 # Databricks notebook source
+# ruff: noqa: F821, E402, I001, W291, E712
 # pyright: reportUndefinedVariable=false
 # Kimball Framework - Installation Cell
 # Installs directly from the repo source (no pre-built wheel needed)
@@ -121,6 +122,43 @@ sources:
     cdc_strategy: cdf
     starting_version: 0
     primary_keys: [customer_id]  # Required for CDF deduplication
+    contract:
+      id: demo.crm.customer
+      version: "1.0.0"
+      owner: demo-data-team
+      schema:
+        customer_id: {type: int, nullable: true}
+        first_name: {type: string, nullable: true}
+        last_name: {type: string, nullable: true}
+        email: {type: string, nullable: true}
+        address: {type: string, nullable: true}
+        updated_at: {type: string, nullable: true}
+      cdc:
+        required: true
+        primary_key: [customer_id]
+      quality:
+        - rule: not_null
+          column: customer_id
+          severity: error
+      temporal:
+        event_time_column: updated_at
+        allowed_lateness: "3650 days"
+        late_event_severity: warn
+        out_of_order_severity: error
+      validation:
+        mode: full
+        max_failure_samples: 5
+        max_actions: 8
+observability:
+  enabled: true
+  event_table: etl_data_quality_events
+  temporal_state_table: etl_contract_temporal_state
+  write_failure: warn
+table_description: Type 2 customer dimension with supplier contract monitoring.
+column_descriptions:
+  customer_sk: Surrogate key for one historical customer version.
+  customer_id: Durable CRM customer identifier.
+  updated_at: Supplier business-effective timestamp.
 transformation_sql: |
   SELECT customer_id, first_name, last_name, email, address, updated_at, _change_type FROM c
 audit_columns: true
@@ -141,12 +179,27 @@ sources:
     primary_keys: [product_id]  # Required for CDF deduplication
 transformation_sql: |
   SELECT product_id, name, category, unit_cost, updated_at, _change_type FROM p
+table_description: Current product master dimension.
+column_descriptions:
+  product_sk: Warehouse surrogate key for a product.
+  product_id: Stable source product identifier.
 audit_columns: true
 """
 
 fact_sales_yaml = """table_name: demo_gold.fact_sales
 table_type: fact
 merge_keys: [order_item_id]
+depends_on: [demo_gold.dim_customer, demo_gold.dim_product]
+grain: one row per order item
+fact_pattern: transaction
+degenerate_dimensions: [order_id]
+measures:
+  - name: quantity
+    aggregation: sum
+    additivity: additive
+  - name: sales_amount
+    aggregation: sum
+    additivity: additive
 
 # Kimball-proper: Explicit foreign key declarations
 # Replaces the old naming convention hack (columns ending with '_sk')
@@ -192,6 +245,12 @@ transformation_sql: |
              AND CAST(o.order_date AS DATE) >= CAST(c.__valid_from AS DATE)
              AND (c.__valid_to IS NULL OR CAST(o.order_date AS DATE) < CAST(c.__valid_to AS DATE))
   LEFT JOIN p ON oi.product_id = p.product_id
+table_description: Transaction fact at order-item grain.
+column_descriptions:
+  order_item_id: Durable merge key for one sold line item.
+  order_id: Operational order identifier retained as a degenerate dimension.
+  customer_sk: Point-in-time customer dimension key.
+  product_sk: Product dimension key.
 audit_columns: true
 early_arriving_facts:
   - dimension_table: demo_gold.dim_customer
@@ -209,6 +268,36 @@ print("✓ Configs written to workspace")
 print(f"  - {CONFIG_PATH}/dim_customer.yml")
 print(f"  - {CONFIG_PATH}/dim_product.yml")
 print(f"  - {CONFIG_PATH}/fact_sales.yml")
+
+# Contract checks write supplier-schema and data-quality outcomes to:
+# demo_gold.etl_data_quality_events. Configure KIMBALL_ALERT_WEBHOOK_URL to
+# additionally receive ERROR findings through a generic JSON webhook.
+
+# COMMAND ----------
+
+# Compile the whole project before touching source or target data. Production
+# mode requires explicit dependencies and rejects cycles, missing upstreams,
+# and multiple writers. The manifest is deterministic and secret-free.
+from kimball.common.config import ConfigLoader
+from kimball.planning import ProjectCompiler, build_manifest
+
+demo_config_paths = [
+    f"{CONFIG_PATH}/dim_customer.yml",
+    f"{CONFIG_PATH}/dim_product.yml",
+    f"{CONFIG_PATH}/fact_sales.yml",
+]
+loader = ConfigLoader()
+compiled = ProjectCompiler(profile="production").compile(
+    [(path, loader.load_config(path)) for path in demo_config_paths]
+)
+manifest = build_manifest(compiled)
+print(f"Validated execution levels: {compiled.levels}")
+print(f"Project manifest digest: {manifest['project_digest']}")
+
+# CI/terminal equivalents:
+#   kimball validate examples/configs --profile production
+#   kimball compile examples/configs --output manifest.json
+#   kimball plan examples/configs --previous manifest.json
 
 # COMMAND ----------
 
@@ -240,22 +329,6 @@ def ingest_silver(table_name, data, schema, merge_keys):
             .whenNotMatchedInsertAll()
             .execute()
         )
-
-
-from concurrent.futures import ThreadPoolExecutor
-
-
-def ingest_parallel(tasks):
-    """
-    Executes multiple ingest_silver calls in parallel.
-    tasks: list of tuples (table_name, data, schema, merge_keys)
-    """
-    print(f"Ingesting {len(tasks)} tables in parallel...")
-    with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
-        futures = [executor.submit(ingest_silver, *task) for task in tasks]
-        # Wait for all to complete and raise any exceptions
-        for future in futures:
-            future.result()
 
 
 # COMMAND ----------
@@ -906,3 +979,74 @@ except Exception as e:
     print(f"\n⚠️ Could not save to file ({e})")
     print("Metrics JSON:")
     print(metrics_json)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 9. Advanced Kimball metadata (declarative example)
+# MAGIC
+# MAGIC Role-playing keys are separate fact columns pointing to one physical
+# MAGIC dimension. The bus matrix therefore has one `dim_date` column annotated
+# MAGIC with `order_date` and `ship_date`. The order number stays on the fact as
+# MAGIC a degenerate dimension; low-cardinality flags become a managed junk
+# MAGIC dimension. Tokenization uses keyed HMAC-SHA-256, and YAML contains only
+# MAGIC a secret reference.
+
+# COMMAND ----------
+
+advanced_fact_yaml = """table_name: demo_gold.fact_orders_advanced
+table_type: fact
+merge_keys: [order_id]
+grain: one order
+fact_pattern: transaction
+degenerate_dimensions: [order_number]
+junk_dimensions:
+  - dimension_table: demo_gold.dim_order_flags
+    surrogate_key: order_flags_sk
+    source_columns: [is_gift, is_priority, channel_code]
+foreign_keys:
+  - column: order_date_sk
+    references: demo_gold.dim_date
+    dimension_key: date_sk
+    role_playing: true
+    role: order_date
+  - column: ship_date_sk
+    references: demo_gold.dim_date
+    dimension_key: date_sk
+    role_playing: true
+    role: ship_date
+measures:
+  - name: order_amount
+    aggregation: sum
+    additivity: additive
+pii:
+  columns:
+    - column: buyer_email
+      strategy: tokenize
+      secret_ref: databricks://security/pii_hmac
+table_description: Order fact demonstrating role, junk, degenerate, and secure PII metadata.
+column_descriptions:
+  order_number: Operational order identifier retained without a separate dimension.
+  order_flags_sk: Generated junk-dimension key for low-cardinality flags.
+sources:
+  - name: demo_silver.orders_advanced
+    alias: orders
+    cdc_strategy: full
+transformation_sql: |
+  SELECT order_id, order_number, order_date_sk, ship_date_sk, order_amount,
+         is_gift, is_priority, channel_code, buyer_email
+  FROM orders
+"""
+advanced_path = f"{CONFIG_PATH}/fact_orders_advanced.yml"
+dbutils.fs.put(advanced_path, advanced_fact_yaml, overwrite=True)
+advanced_config = ConfigLoader().load_config(advanced_path)
+assert advanced_config.foreign_keys[0].role == "order_date"
+assert advanced_config.degenerate_dimensions == ["order_number"]
+assert advanced_config.junk_dimensions[0].surrogate_key == "order_flags_sk"
+
+from kimball import generate_bus_matrix
+
+print(generate_bus_matrix(CONFIG_PATH))
+print(
+    "Advanced metadata validates; execution is intentionally outside this sales demo."
+)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any, cast
 
 from delta.tables import DeltaTable
 from pyspark.sql import SparkSession
@@ -62,7 +63,7 @@ class LateArrivingDimensionProcessor:
         )
         delta_table.alias("target").merge(
             source_df.alias("source"), merge_condition
-        ).whenMatchedUpdate(set=update_set).execute()
+        ).whenMatchedUpdate(set=cast(Any, update_set)).execute()
         try:
             metrics = delta_table.history(1).select("operationMetrics").first()
             if metrics and metrics.operationMetrics:

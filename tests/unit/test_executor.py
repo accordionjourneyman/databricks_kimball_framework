@@ -5,7 +5,33 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kimball.orchestration.executor import PipelineExecutor, ExecutionSummary
+from kimball.common.config import SourceConfig, TableConfig
+from kimball.orchestration.executor import (
+    ExecutionSummary,
+    PipelineExecutor,
+    PipelineResult,
+)
+
+
+def _dim_config(name="dim_customer", depends_on=None):
+    return TableConfig(
+        table_name=name,
+        table_type="dimension",
+        surrogate_key="dimension_sk",
+        natural_keys=["id"],
+        depends_on=depends_on or [],
+        sources=[SourceConfig(name=f"silver.{name}", alias="src")],
+    )
+
+
+def _fact_config(name="fact_sales", depends_on=None):
+    return TableConfig(
+        table_name=name,
+        table_type="fact",
+        merge_keys=["id"],
+        depends_on=depends_on or [],
+        sources=[SourceConfig(name="silver.sales", alias="src")],
+    )
 
 
 @pytest.fixture
@@ -18,19 +44,25 @@ def mock_config_loader():
 
 @pytest.fixture
 def mock_get_etl_schema():
-    with patch("kimball.orchestration.executor.get_etl_schema", return_value="test_schema") as mock:
+    with patch(
+        "kimball.orchestration.executor.get_etl_schema", return_value="test_schema"
+    ) as mock:
         yield mock
 
 
 class TestPipelineExecutorInit:
-    def test_watermark_deprecation_warning(self, mock_config_loader, mock_get_etl_schema):
+    def test_watermark_deprecation_warning(
+        self, mock_config_loader, mock_get_etl_schema
+    ):
         with pytest.warns(DeprecationWarning, match="watermark_database"):
             PipelineExecutor(
                 config_paths=[],
                 watermark_database="old_schema",
             )
 
-    def test_watermark_deprecation_sets_etl_schema(self, mock_config_loader, mock_get_etl_schema):
+    def test_watermark_deprecation_sets_etl_schema(
+        self, mock_config_loader, mock_get_etl_schema
+    ):
         with pytest.warns(DeprecationWarning):
             executor = PipelineExecutor(
                 config_paths=[],
@@ -49,13 +81,11 @@ class TestPipelineExecutorInit:
 
 
 class TestCategorizePipelines:
-    def test_categorizes_dimensions_and_facts(self, mock_config_loader, mock_get_etl_schema):
-        dim_config = MagicMock()
-        dim_config.table_name = "dim_customer"
-        dim_config.table_type = "dimension"
-        fact_config = MagicMock()
-        fact_config.table_name = "fact_sales"
-        fact_config.table_type = "fact"
+    def test_categorizes_dimensions_and_facts(
+        self, mock_config_loader, mock_get_etl_schema
+    ):
+        dim_config = _dim_config()
+        fact_config = _fact_config()
         mock_config_loader.load_config.side_effect = [dim_config, fact_config]
 
         executor = PipelineExecutor(config_paths=["dim.yml", "fact.yml"])
@@ -67,6 +97,7 @@ class TestCategorizePipelines:
     def test_raises_on_invalid_config(self, mock_config_loader, mock_get_etl_schema):
         mock_config_loader.load_config.side_effect = Exception("bad config")
         from kimball.common.errors import NonRetriableError
+
         with pytest.raises(NonRetriableError, match="Invalid config file"):
             PipelineExecutor(config_paths=["bad.yml"])
 
@@ -75,9 +106,15 @@ class TestRunSinglePipeline:
     def test_successful_run(self, mock_config_loader, mock_get_etl_schema):
         executor = PipelineExecutor(config_paths=[], etl_schema="test")
         orchestrator = MagicMock()
-        orchestrator.run.return_value = {"rows_read": 10, "rows_written": 5, "batch_id": "b1"}
+        orchestrator.run.return_value = {
+            "rows_read": 10,
+            "rows_written": 5,
+            "batch_id": "b1",
+        }
         executor._create_orchestrator = MagicMock(return_value=orchestrator)
-        result = executor._run_single_pipeline({"path": "p.yml", "table_name": "t", "table_type": "dimension"})
+        result = executor._run_single_pipeline(
+            {"path": "p.yml", "table_name": "t", "table_type": "dimension"}
+        )
         assert result.status == "SUCCESS"
         assert result.rows_read == 10
         assert result.rows_written == 5
@@ -88,7 +125,9 @@ class TestRunSinglePipeline:
         orchestrator = MagicMock()
         orchestrator.run.side_effect = ValueError("pipeline error")
         executor._create_orchestrator = MagicMock(return_value=orchestrator)
-        result = executor._run_single_pipeline({"path": "p.yml", "table_name": "t", "table_type": "dimension"})
+        result = executor._run_single_pipeline(
+            {"path": "p.yml", "table_name": "t", "table_type": "dimension"}
+        )
         assert result.status == "FAILED"
         assert "ValueError" in result.error_message
 
@@ -99,61 +138,70 @@ class TestRunWave:
         result = executor._run_wave("Test", [])
         assert result == []
 
-    def test_sequential_when_max_workers_1(self, mock_config_loader, mock_get_etl_schema):
+    def test_sequential_when_max_workers_1(
+        self, mock_config_loader, mock_get_etl_schema
+    ):
         executor = PipelineExecutor(config_paths=[], etl_schema="test", max_workers=1)
         executor._run_sequential = MagicMock(return_value=[])
         executor._run_wave("Test", [MagicMock()])
         executor._run_sequential.assert_called_once()
 
-    def test_parallel_when_max_workers_gt_1(self, mock_config_loader, mock_get_etl_schema):
+    def test_parallel_when_max_workers_gt_1(
+        self, mock_config_loader, mock_get_etl_schema
+    ):
         executor = PipelineExecutor(config_paths=[], etl_schema="test", max_workers=2)
-        executor._run_parallel = MagicMock(return_value=[])
+        executor._run_sequential = MagicMock(return_value=[])
         executor._run_wave("Test", [MagicMock()])
-        executor._run_parallel.assert_called_once()
+        executor._run_sequential.assert_called_once()
 
 
 class TestRunSequential:
     def test_stops_on_failure(self, mock_config_loader, mock_get_etl_schema):
-        executor = PipelineExecutor(config_paths=[], etl_schema="test", stop_on_failure=True)
-        executor._run_single_pipeline = MagicMock(side_effect=[
-            MagicMock(status="SUCCESS"),
-            MagicMock(status="FAILED", table_name="bad"),
-            MagicMock(status="SUCCESS"),
-        ])
-        results = executor._run_sequential([{"path": "a"}, {"path": "b"}, {"path": "c"}])
+        executor = PipelineExecutor(
+            config_paths=[], etl_schema="test", stop_on_failure=True
+        )
+        executor._run_single_pipeline = MagicMock(
+            side_effect=[
+                MagicMock(status="SUCCESS"),
+                MagicMock(status="FAILED", table_name="bad"),
+                MagicMock(status="SUCCESS"),
+            ]
+        )
+        results = executor._run_sequential(
+            [{"path": "a"}, {"path": "b"}, {"path": "c"}]
+        )
         assert len(results) == 2
 
 
 class TestRunParallel:
-    def test_cancels_on_failure(self, mock_config_loader, mock_get_etl_schema):
-        executor = PipelineExecutor(config_paths=[], etl_schema="test", stop_on_failure=True)
-        with patch("kimball.orchestration.executor.concurrent.futures.ThreadPoolExecutor") as mock_pool:
-            pool_instance = MagicMock()
-            mock_pool.return_value.__enter__.return_value = pool_instance
-            future = MagicMock()
-            future.result.return_value = MagicMock(status="FAILED", table_name="bad")
-            pool_instance.submit.return_value = future
-            from concurrent.futures import as_completed
-            with patch("kimball.orchestration.executor.concurrent.futures.as_completed", return_value=[future]):
-                results = executor._run_parallel([{"path": "a"}])
-            assert len(results) == 1
+    def test_serializes_for_spark_safety(self, mock_config_loader, mock_get_etl_schema):
+        executor = PipelineExecutor(
+            config_paths=[], etl_schema="test", stop_on_failure=True
+        )
+        executor._run_sequential = MagicMock(return_value=[])
+        with pytest.warns(RuntimeWarning, match="share a Spark session"):
+            results = executor._run_parallel([{"path": "a"}])
+        assert results == []
+        executor._run_sequential.assert_called_once()
 
 
 class TestRun:
     def test_full_run(self, mock_config_loader, mock_get_etl_schema):
-        dim_config = MagicMock()
-        dim_config.table_name = "dim_customer"
-        dim_config.table_type = "dimension"
-        fact_config = MagicMock()
-        fact_config.table_name = "fact_sales"
-        fact_config.table_type = "fact"
+        dim_config = _dim_config()
+        fact_config = _fact_config(depends_on=["dim_customer"])
         mock_config_loader.load_config.side_effect = [dim_config, fact_config]
 
-        executor = PipelineExecutor(config_paths=["dim.yml", "fact.yml"])
-        executor._run_wave = MagicMock(side_effect=[
-            [MagicMock(status="SUCCESS", rows_read=10, rows_written=5)],
-            [MagicMock(status="SUCCESS", rows_read=20, rows_written=8)],
-        ])
+        executor = PipelineExecutor(
+            config_paths=["dim.yml", "fact.yml"], profile="production"
+        )
+        executor._run_single_pipeline = MagicMock(
+            side_effect=[
+                PipelineResult(
+                    "dim.yml", "dim_customer", "dimension", "SUCCESS", 10, 5
+                ),
+                PipelineResult("fact.yml", "fact_sales", "fact", "SUCCESS", 20, 8),
+            ]
+        )
         summary = executor.run()
         assert summary.total_pipelines == 2
         assert summary.successful == 2
@@ -161,18 +209,18 @@ class TestRun:
         assert summary.total_rows_written == 13
 
     def test_skips_facts_on_dim_failure(self, mock_config_loader, mock_get_etl_schema):
-        dim_config = MagicMock()
-        dim_config.table_name = "dim_customer"
-        dim_config.table_type = "dimension"
-        fact_config = MagicMock()
-        fact_config.table_name = "fact_sales"
-        fact_config.table_type = "fact"
+        dim_config = _dim_config()
+        fact_config = _fact_config(depends_on=["dim_customer"])
         mock_config_loader.load_config.side_effect = [dim_config, fact_config]
 
-        executor = PipelineExecutor(config_paths=["dim.yml", "fact.yml"])
-        executor._run_wave = MagicMock(return_value=[
-            MagicMock(status="FAILED", table_name="dim_customer")
-        ])
+        executor = PipelineExecutor(
+            config_paths=["dim.yml", "fact.yml"], profile="production"
+        )
+        executor._run_single_pipeline = MagicMock(
+            return_value=PipelineResult(
+                "dim.yml", "dim_customer", "dimension", "FAILED"
+            )
+        )
         summary = executor.run()
         assert summary.skipped == 1
         assert summary.failed == 1
@@ -180,13 +228,13 @@ class TestRun:
 
 class TestDryRun:
     def test_dry_run_logs(self, mock_config_loader, mock_get_etl_schema):
-        dim_config = MagicMock()
-        dim_config.table_name = "dim_customer"
-        dim_config.table_type = "dimension"
+        dim_config = _dim_config()
         mock_config_loader.load_config.return_value = dim_config
 
         executor = PipelineExecutor(config_paths=["dim.yml"])
-        with patch.object(logging.getLogger("kimball.orchestration.executor"), "info") as mock_log:
+        with patch.object(
+            logging.getLogger("kimball.orchestration.executor"), "info"
+        ) as mock_log:
             executor.dry_run()
             assert mock_log.called
 

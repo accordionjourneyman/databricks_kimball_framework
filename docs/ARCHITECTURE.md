@@ -48,6 +48,30 @@
 └──────────────────────────────────────────────────────────┘
 ```
 
+## Compile-time control plane
+
+Configuration, ODCS contracts, project compilation, manifests, plans, CLI, and
+bundle generation import without Spark. Strict Pydantic models reject unknown
+keys and unsupported CDC strategies before data state is touched.
+
+`ProjectCompiler` builds a deterministic DAG from explicit `depends_on` plus
+inferred source/FK relationships. Production compilation rejects undeclared or
+missing upstreams, cycles, duplicate target writers, and conflicts on auxiliary
+tables. `build_manifest` emits a secret-free deployment artifact;
+`diff_manifests` classifies changes and propagates impact to downstream nodes.
+
+In-process execution walks DAG levels serially. Spark sessions are not treated
+as thread isolation. Generated Databricks Jobs are the supported boundary for
+safe task-level parallelism and enforce one concurrent project run.
+
+## Runtime evidence flow
+
+Supplier contract checks run before transformation, DQ checks run on the
+transformed output, and temporal checks inspect raw CDF ordering. Compatible
+DQ metrics share aggregation actions. Findings are append-only events;
+per-business-key temporal maxima are staged and committed only after target
+merge and watermark success. Streaming uses the same post-merge ordering.
+
 ## Core Components
 
 ### ConfigLoader
@@ -176,7 +200,7 @@ See [Streaming CDF](STREAMING.md) for full documentation.
 3. Identify changes (hashdiff mismatch)
 4. Duplicate changed rows (UPDATE + INSERT)
 5. Generate surrogate keys for INSERTs
-6. Execute atomic MERGE
+6. Execute one atomic target-table MERGE
 
 ### SkeletonGenerator
 
@@ -316,7 +340,8 @@ Re-running a batch is safe:
 
 - Watermark not updated until success
 - SCD2 hashdiff prevents duplicate versions
-- MERGE is atomic (all or nothing)
+- The target MERGE is atomic for that target (all or nothing)
+- The target and `etl_control` remain separate Delta transactions
 
 ### Failure Scenarios
 
@@ -325,7 +350,7 @@ Re-running a batch is safe:
 | During source read                 | No data written, retry safe              | FAILED             |
 | During transformation              | No data written, retry safe              | FAILED             |
 | During MERGE                       | Delta ACID rollback, retry safe          | FAILED             |
-| After MERGE, before batch_complete | Data written, re-run is no-op (hashdiff) | RUNNING (stale)    |
+| After MERGE, before batch_complete | Single-writer compensating recovery may RESTORE the tagged target commit; otherwise replay relies on model idempotency | RUNNING (stale) |
 
 ## Performance Considerations
 
@@ -349,13 +374,12 @@ Not currently implemented, but recommended for:
 - Natural keys (for MERGE performance)
 - Common filter columns
 
-## Future Enhancements
+## Deliberate scope boundaries
 
-- [x] ~~Automatic partitioning based on config~~ (Liquid Clustering)
-- [x] ~~Metrics and monitoring~~ (ETL Control Table with row counts)
-- [x] ~~Parallel execution~~ (PipelineExecutor, Databricks Jobs for_each)
-- [ ] Z-ordering optimization
-- [ ] Error bucket for quarantine
-- [ ] Late arriving dimension handling
-- [ ] Factless fact tables
+The framework does not provide Bronze ingestion/connectors, a DQ quarantine
+and remediation product, Unity Catalog grants/tags/row-filter policy, managed
+lineage, a semantic layer, ML lifecycle, or first-class bridge/hierarchy
+engines. SQL examples for periodic and accumulating facts provide business
+transformation patterns; YAML declarations do not infer those business rules.
+See [Framework Features versus SQL Patterns](SQL_PATTERNS.md).
 - [ ] Bridge tables for many-to-many

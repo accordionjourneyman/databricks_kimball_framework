@@ -109,11 +109,13 @@ def _list_test_schemas(ws: Any, catalog: str) -> list[dict]:
     try:
         for schema in ws.schemas.list(catalog_name=catalog):
             if _is_test_schema(schema.name):
-                schemas.append({
-                    "name": f"{catalog}.{schema.name}",
-                    "created_at": str(getattr(schema, "created_at", "unknown")),
-                    "table_count": getattr(schema, "table_count", 0),
-                })
+                schemas.append(
+                    {
+                        "name": f"{catalog}.{schema.name}",
+                        "created_at": str(getattr(schema, "created_at", "unknown")),
+                        "table_count": getattr(schema, "table_count", 0),
+                    }
+                )
     except Exception as e:
         print(f"error: could not list schemas in catalog '{catalog}': {e}")
         sys.exit(1)
@@ -232,7 +234,9 @@ def main() -> int:
             elif age_days >= args.older_than:
                 filtered.append(s)
             else:
-                print(f"  {s['name']}: {age_days:.1f} days old (younger than {args.older_than}d, skipping)")
+                print(
+                    f"  {s['name']}: {age_days:.1f} days old (younger than {args.older_than}d, skipping)"
+                )
         schemas = filtered
 
     if not schemas:
@@ -255,7 +259,9 @@ def main() -> int:
         if args.dry_run:
             print("Dry-run mode.  No schemas will be deleted.")
         else:
-            action = "delete ALL" if args.all else f"delete these {len(schemas)} schema(s)"
+            action = (
+                "delete ALL" if args.all else f"delete these {len(schemas)} schema(s)"
+            )
             if not _confirm(f"Are you sure you want to {action}?"):
                 print("Cancelled.")
                 return 2

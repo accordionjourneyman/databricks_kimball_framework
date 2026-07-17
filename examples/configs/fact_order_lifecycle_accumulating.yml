@@ -1,0 +1,21 @@
+table_name: demo_gold.fact_order_lifecycle
+table_type: fact
+merge_keys: [order_id]
+grain: one order lifecycle
+fact_pattern: accumulating_snapshot
+milestones:
+  - name: ordered
+    column: ordered_at
+    order: 1
+  - name: shipped
+    column: shipped_at
+    order: 2
+  - name: delivered
+    column: delivered_at
+    order: 3
+sources:
+  - name: silver.order_events
+    alias: orders
+transformation_sql: |
+  SELECT order_id, ordered_at, shipped_at, delivered_at
+  FROM silver.order_events

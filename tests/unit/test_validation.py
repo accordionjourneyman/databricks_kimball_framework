@@ -1,11 +1,17 @@
 """Tests for validation.py FK integrity and helper functions."""
+
 from __future__ import annotations
 
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kimball.validation import DataQualityValidator, TestResult, TestSeverity, ValidationReport
+from kimball.validation import (
+    DataQualityValidator,
+    TestResult,
+    TestSeverity,
+    ValidationReport,
+)
 
 
 def _make_validator():
@@ -46,8 +52,10 @@ class TestCheckSingleFk:
         dim_df.select.return_value.distinct.return_value = MagicMock()
         spark.table.return_value = dim_df
         result = validator._check_single_fk(
-            df, {"column": "sk", "dimension_table": "dim", "dimension_key": "sk"},
-            True, TestSeverity.ERROR
+            df,
+            {"column": "sk", "dimension_table": "dim", "dimension_key": "sk"},
+            True,
+            TestSeverity.ERROR,
         )
         assert result is not None
 
@@ -64,8 +72,14 @@ class TestCheckSingleFk:
         spark.table.return_value = dim_df
         result = validator._check_single_fk(
             df,
-            {"column": "sk", "dimension_table": "dim", "dimension_key": "sk", "default_value": -1},
-            True, TestSeverity.ERROR
+            {
+                "column": "sk",
+                "dimension_table": "dim",
+                "dimension_key": "sk",
+                "default_value": -1,
+            },
+            True,
+            TestSeverity.ERROR,
         )
         assert result is not None
 
@@ -83,7 +97,8 @@ class TestCheckSingleFk:
         result = validator._check_single_fk(
             df,
             {"column": "sk", "dimension_table": "dim", "default_value": [-1, -2]},
-            True, TestSeverity.ERROR
+            True,
+            TestSeverity.ERROR,
         )
         assert result is not None
 
@@ -92,8 +107,10 @@ class TestCheckSingleFk:
         df = MagicMock()
         spark.table.side_effect = Exception("table not found")
         result = validator._check_single_fk(
-            df, {"column": "sk", "dimension_table": "dim", "dimension_key": "sk"},
-            True, TestSeverity.ERROR
+            df,
+            {"column": "sk", "dimension_table": "dim", "dimension_key": "sk"},
+            True,
+            TestSeverity.ERROR,
         )
         assert result is not None
         assert result.passed is False
@@ -113,8 +130,10 @@ class TestCheckSingleFk:
         with patch.object(validator, "_count_bad_rows", return_value=5):
             with patch.object(validator, "_dev_total_rows", return_value=-1):
                 result = validator._check_single_fk(
-                    df, {"column": "sk", "dimension_table": "dim", "dimension_key": "sk"},
-                    True, TestSeverity.ERROR
+                    df,
+                    {"column": "sk", "dimension_table": "dim", "dimension_key": "sk"},
+                    True,
+                    TestSeverity.ERROR,
                 )
         assert result is not None
         assert "Found 5 FK values" in result.details
@@ -125,8 +144,12 @@ class TestValidateFactFkIntegrity:
         validator, _ = _make_validator()
         df = MagicMock()
         with patch.object(validator, "_check_single_fk") as mock_check:
-            mock_check.return_value = TestResult("test", True, 0, 10, TestSeverity.ERROR)
-            report = validator.validate_fact_fk_integrity(df, [{"column": "sk", "dimension_table": "dim"}])
+            mock_check.return_value = TestResult(
+                "test", True, 0, 10, TestSeverity.ERROR
+            )
+            report = validator.validate_fact_fk_integrity(
+                df, [{"column": "sk", "dimension_table": "dim"}]
+            )
         assert len(report.results) == 1
         assert report.results[0].passed is True
 
@@ -245,7 +268,9 @@ class TestValidateRelationships:
             col_mock.__eq__ = MagicMock(return_value=MagicMock())
             mock_F.col.return_value = col_mock
             with patch.object(validator, "_build_test_result") as mock_build:
-                mock_build.return_value = TestResult("test", True, 0, 10, TestSeverity.ERROR)
+                mock_build.return_value = TestResult(
+                    "test", True, 0, 10, TestSeverity.ERROR
+                )
                 validator.validate_relationships(df, "sk", "dim", "sk")
         dim_df.filter.assert_called_once()
 
@@ -264,9 +289,19 @@ class TestValidateRelationships:
             col_mock.isNotNull.return_value = MagicMock()
             mock_F.col.return_value = col_mock
             with patch.object(validator, "_build_test_result") as mock_build:
-                def capture(df, bad_df, test_name, severity, sample_size, details_fn, sample_fn=None):
+
+                def capture(
+                    df,
+                    bad_df,
+                    test_name,
+                    severity,
+                    sample_size,
+                    details_fn,
+                    sample_fn=None,
+                ):
                     details = details_fn(3)
                     return TestResult(test_name, True, 0, 10, severity, details=details)
+
                 mock_build.side_effect = capture
                 result = validator.validate_relationships(df, "sk", "dim", "sk")
         assert "Found 3 orphan" in result.details
@@ -286,9 +321,19 @@ class TestValidateRelationships:
             col_mock.isNotNull.return_value = MagicMock()
             mock_F.col.return_value = col_mock
             with patch.object(validator, "_build_test_result") as mock_build:
-                def capture(df, bad_df, test_name, severity, sample_size, details_fn, sample_fn=None):
+
+                def capture(
+                    df,
+                    bad_df,
+                    test_name,
+                    severity,
+                    sample_size,
+                    details_fn,
+                    sample_fn=None,
+                ):
                     details = details_fn(-1)
                     return TestResult(test_name, True, 0, 10, severity, details=details)
+
                 mock_build.side_effect = capture
                 result = validator.validate_relationships(df, "sk", "dim", "sk")
         assert "count skipped" in result.details
@@ -313,7 +358,9 @@ class TestValidateUnique:
         grouped.filter.return_value = bad_df
         df.groupBy.return_value = grouped
         with patch.object(validator, "_build_test_result") as mock_build:
-            mock_build.return_value = TestResult("test", True, 0, 10, TestSeverity.ERROR)
+            mock_build.return_value = TestResult(
+                "test", True, 0, 10, TestSeverity.ERROR
+            )
             result = validator.validate_unique(df, ["id"])
         # The validator must actually run groupBy/agg/filter and delegate the
         # (empty) violation set to _build_test_result with the right test name
@@ -331,9 +378,11 @@ class TestValidateUnique:
         validator, _ = _make_validator()
         df = MagicMock()
         with patch.object(validator, "_build_test_result") as mock_build:
+
             def capture(df, bad_df, test_name, severity, sample_size, details_fn):
                 details = details_fn(3)
                 return TestResult(test_name, True, 0, 10, severity, details=details)
+
             mock_build.side_effect = capture
             result = validator.validate_unique(df, ["id"])
         assert "Found 3 duplicate" in result.details
@@ -342,9 +391,11 @@ class TestValidateUnique:
         validator, _ = _make_validator()
         df = MagicMock()
         with patch.object(validator, "_build_test_result") as mock_build:
+
             def capture(df, bad_df, test_name, severity, sample_size, details_fn):
                 details = details_fn(-1)
                 return TestResult(test_name, True, 0, 10, severity, details=details)
+
             mock_build.side_effect = capture
             result = validator.validate_unique(df, ["id"])
         assert "count skipped" in result.details
@@ -366,7 +417,9 @@ class TestValidateNotNull:
         bad_df.isEmpty.return_value = True
         df.filter.return_value = bad_df
         with patch.object(validator, "_build_test_result") as mock_build:
-            mock_build.return_value = TestResult("test", True, 0, 10, TestSeverity.ERROR)
+            mock_build.return_value = TestResult(
+                "test", True, 0, 10, TestSeverity.ERROR
+            )
             result = validator.validate_not_null(df, ["id"])
         mock_build.assert_called_once()
         assert mock_build.call_args.args[1] is bad_df
@@ -378,9 +431,11 @@ class TestValidateNotNull:
         validator, _ = _make_validator()
         df = MagicMock()
         with patch.object(validator, "_build_test_result") as mock_build:
+
             def capture(df, bad_df, test_name, severity, sample_size, details_fn):
                 details = details_fn(3)
                 return TestResult(test_name, True, 0, 10, severity, details=details)
+
             mock_build.side_effect = capture
             result = validator.validate_not_null(df, ["id"])
         assert "Found 3 rows with NULL" in result.details
@@ -389,9 +444,11 @@ class TestValidateNotNull:
         validator, _ = _make_validator()
         df = MagicMock()
         with patch.object(validator, "_build_test_result") as mock_build:
+
             def capture(df, bad_df, test_name, severity, sample_size, details_fn):
                 details = details_fn(-1)
                 return TestResult(test_name, True, 0, 10, severity, details=details)
+
             mock_build.side_effect = capture
             result = validator.validate_not_null(df, ["id"])
         assert "count skipped" in result.details
@@ -413,7 +470,9 @@ class TestValidateAcceptedValues:
         bad_df.isEmpty.return_value = True
         df.filter.return_value = bad_df
         with patch.object(validator, "_build_test_result") as mock_build:
-            mock_build.return_value = TestResult("test", True, 0, 10, TestSeverity.ERROR)
+            mock_build.return_value = TestResult(
+                "test", True, 0, 10, TestSeverity.ERROR
+            )
             result = validator.validate_accepted_values(df, "status", ["a", "b"])
         mock_build.assert_called_once()
         assert mock_build.call_args.args[1] is bad_df
@@ -425,9 +484,13 @@ class TestValidateAcceptedValues:
         validator, _ = _make_validator()
         df = MagicMock()
         with patch.object(validator, "_build_test_result") as mock_build:
-            def capture(df, bad_df, test_name, severity, sample_size, details_fn, sample_fn=None):
+
+            def capture(
+                df, bad_df, test_name, severity, sample_size, details_fn, sample_fn=None
+            ):
                 details = details_fn(3)
                 return TestResult(test_name, True, 0, 10, severity, details=details)
+
             mock_build.side_effect = capture
             result = validator.validate_accepted_values(df, "status", ["a", "b"])
         assert "Found 3 rows with values" in result.details
@@ -436,9 +499,13 @@ class TestValidateAcceptedValues:
         validator, _ = _make_validator()
         df = MagicMock()
         with patch.object(validator, "_build_test_result") as mock_build:
-            def capture(df, bad_df, test_name, severity, sample_size, details_fn, sample_fn=None):
+
+            def capture(
+                df, bad_df, test_name, severity, sample_size, details_fn, sample_fn=None
+            ):
                 details = details_fn(-1)
                 return TestResult(test_name, True, 0, 10, severity, details=details)
+
             mock_build.side_effect = capture
             result = validator.validate_accepted_values(df, "status", ["a", "b"])
         assert "count skipped" in result.details
@@ -460,7 +527,9 @@ class TestValidateExpression:
         bad_df.isEmpty.return_value = True
         df.filter.return_value = bad_df
         with patch.object(validator, "_build_test_result") as mock_build:
-            mock_build.return_value = TestResult("test", True, 0, 10, TestSeverity.ERROR)
+            mock_build.return_value = TestResult(
+                "test", True, 0, 10, TestSeverity.ERROR
+            )
             result = validator.validate_expression(df, "amount > 0")
         mock_build.assert_called_once()
         assert mock_build.call_args.args[1] is bad_df
@@ -479,9 +548,11 @@ class TestValidateExpression:
         validator, _ = _make_validator()
         df = MagicMock()
         with patch.object(validator, "_build_test_result") as mock_build:
+
             def capture(df, bad_df, test_name, severity, sample_size, details_fn):
                 details = details_fn(3)
                 return TestResult(test_name, True, 0, 10, severity, details=details)
+
             mock_build.side_effect = capture
             result = validator.validate_expression(df, "amount > 0")
         assert "Found 3 rows failing" in result.details
@@ -490,9 +561,11 @@ class TestValidateExpression:
         validator, _ = _make_validator()
         df = MagicMock()
         with patch.object(validator, "_build_test_result") as mock_build:
+
             def capture(df, bad_df, test_name, severity, sample_size, details_fn):
                 details = details_fn(-1)
                 return TestResult(test_name, True, 0, 10, severity, details=details)
+
             mock_build.side_effect = capture
             result = validator.validate_expression(df, "amount > 0")
         assert "count skipped" in result.details
@@ -574,9 +647,16 @@ class TestBuildTestResult:
         bad_df = MagicMock()
         with patch.object(validator, "_dev_total_rows", return_value=100):
             with patch.object(validator, "_count_bad_rows", return_value=5):
-                with patch.object(validator, "_sample_failures", return_value=[{"id": 1}]):
+                with patch.object(
+                    validator, "_sample_failures", return_value=[{"id": 1}]
+                ):
                     result = validator._build_test_result(
-                        df, bad_df, "test", TestSeverity.ERROR, 5, lambda c: f"Found {c}"
+                        df,
+                        bad_df,
+                        "test",
+                        TestSeverity.ERROR,
+                        5,
+                        lambda c: f"Found {c}",
                     )
         assert result.failed_rows == 5
         assert result.total_rows == 100
@@ -606,7 +686,9 @@ class TestRunConfigTests:
         config.foreign_keys = None
         config.tests = None
         with patch.object(validator, "validate_unique") as mock_unique:
-            mock_unique.return_value = TestResult("unique", True, 0, 10, TestSeverity.ERROR)
+            mock_unique.return_value = TestResult(
+                "unique", True, 0, 10, TestSeverity.ERROR
+            )
             validator.run_config_tests(config, df)
         mock_unique.assert_called_once()
 
@@ -636,7 +718,9 @@ class TestRunConfigTests:
         config.foreign_keys = None
         config.tests = None
         with patch.object(validator, "validate_unique_approximate") as mock_approx:
-            mock_approx.return_value = TestResult("approx", True, 0, 10, TestSeverity.WARN)
+            mock_approx.return_value = TestResult(
+                "approx", True, 0, 10, TestSeverity.WARN
+            )
             validator.run_config_tests(config, df, use_approximate_unique=True)
         mock_approx.assert_called_once()
 

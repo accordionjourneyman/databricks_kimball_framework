@@ -5,14 +5,23 @@ import logging
 from datetime import date, datetime
 from typing import Any
 
-from delta.tables import DeltaTable
 from pyspark.sql.types import (
-    BooleanType, DateType, DecimalType, DoubleType, FloatType,
-    IntegerType, LongType, ShortType, StructType, TimestampType,
+    BooleanType,
+    DateType,
+    DecimalType,
+    DoubleType,
+    FloatType,
+    IntegerType,
+    LongType,
+    ShortType,
+    StructType,
+    TimestampType,
 )
 
 from kimball.common.constants import (
-    DEFAULT_START_DATE, DEFAULT_VALID_FROM, DEFAULT_VALID_TO,
+    DEFAULT_START_DATE,
+    DEFAULT_VALID_FROM,
+    DEFAULT_VALID_TO,
 )
 from kimball.common.spark_session import get_spark
 
@@ -66,9 +75,10 @@ def seed_default_rows(
 ) -> None:
     spark = get_spark()
     if not spark.catalog.tableExists(target_table_name):
-        logger.info(f"ensure_defaults: table {target_table_name} does not exist. Skipping.")
+        logger.info(
+            f"ensure_defaults: table {target_table_name} does not exist. Skipping."
+        )
         return
-    delta_table = DeltaTable.forName(spark, target_table_name)
     standard_defaults = {-1: "Unknown", -2: "Not Applicable", -3: "Error"}
     rows_to_insert = []
     for key, label in standard_defaults.items():
@@ -123,7 +133,9 @@ def seed_default_rows(
                         row[cn] = None
         rows_to_insert.append(row)
     if rows_to_insert:
-        logger.info(f"Seeding {len(rows_to_insert)} default rows into {target_table_name}...")
+        logger.info(
+            f"Seeding {len(rows_to_insert)} default rows into {target_table_name}..."
+        )
         # Use Delta MERGE with a temp view to avoid createDataFrame
         # on Databricks Connect (which fails for timestamp columns).
         col_names = [surrogate_key] + [
@@ -146,7 +158,13 @@ def ensure_scd2_defaults(
     surrogate_key: str,
     default_values: dict[str, Any] | None = None,
 ) -> None:
-    seed_default_rows(target_table_name, schema, surrogate_key, default_values, include_history_fields=True)
+    seed_default_rows(
+        target_table_name,
+        schema,
+        surrogate_key,
+        default_values,
+        include_history_fields=True,
+    )
 
 
 def ensure_scd1_defaults(
@@ -155,4 +173,10 @@ def ensure_scd1_defaults(
     surrogate_key: str,
     default_values: dict[str, Any] | None = None,
 ) -> None:
-    seed_default_rows(target_table_name, schema, surrogate_key, default_values, include_history_fields=False)
+    seed_default_rows(
+        target_table_name,
+        schema,
+        surrogate_key,
+        default_values,
+        include_history_fields=False,
+    )

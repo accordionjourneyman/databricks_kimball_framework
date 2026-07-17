@@ -41,7 +41,9 @@ class TestMergeSCD1:
 
         with (
             patch("kimball.processing.scd1.get_spark", return_value=MagicMock()),
-            patch("kimball.processing.scd1.DeltaTable.forName", return_value=delta_table),
+            patch(
+                "kimball.processing.scd1.DeltaTable.forName", return_value=delta_table
+            ),
             patch("kimball.processing.scd1.dedup_cdf", return_value=mock_df),
             patch("kimball.processing.scd1.build_merge_condition", return_value="cond"),
             patch("kimball.processing.scd1.compute_hashdiff", return_value=MagicMock()),
@@ -72,7 +74,9 @@ class TestMergeSCD1:
 
         with (
             patch("kimball.processing.scd1.get_spark", return_value=MagicMock()),
-            patch("kimball.processing.scd1.DeltaTable.forName", return_value=delta_table),
+            patch(
+                "kimball.processing.scd1.DeltaTable.forName", return_value=delta_table
+            ),
             patch("kimball.processing.scd1.dedup_cdf", return_value=mock_df),
             patch("kimball.processing.scd1.build_merge_condition", return_value="cond"),
             patch("kimball.processing.scd1.compute_hashdiff", return_value=MagicMock()),
@@ -84,6 +88,7 @@ class TestMergeSCD1:
 
     def test_handles_pyspark_exception_in_hash_check(self, mock_df):
         from pyspark.errors import PySparkException
+
         mock_df.isEmpty.return_value = False
         mock_df.columns = ["id", "name"]
         delta_table = MagicMock()
@@ -95,7 +100,9 @@ class TestMergeSCD1:
 
         with (
             patch("kimball.processing.scd1.get_spark", return_value=MagicMock()),
-            patch("kimball.processing.scd1.DeltaTable.forName", return_value=delta_table),
+            patch(
+                "kimball.processing.scd1.DeltaTable.forName", return_value=delta_table
+            ),
             patch("kimball.processing.scd1.dedup_cdf", return_value=mock_df),
             patch("kimball.processing.scd1.build_merge_condition", return_value="cond"),
             patch("kimball.processing.scd1.apply_schema_evolution"),
@@ -114,13 +121,17 @@ class TestMergeSCD1:
 
         with (
             patch("kimball.processing.scd1.get_spark", return_value=MagicMock()),
-            patch("kimball.processing.scd1.DeltaTable.forName", return_value=delta_table),
+            patch(
+                "kimball.processing.scd1.DeltaTable.forName", return_value=delta_table
+            ),
             patch("kimball.processing.scd1.dedup_cdf", return_value=mock_df),
             patch("kimball.processing.scd1.build_merge_condition", return_value="cond"),
             patch("kimball.processing.scd1.apply_schema_evolution"),
             patch("kimball.processing.scd1.generate_keys", return_value=mock_df),
         ):
-            merge_scd1(mock_df, target_table_name="t", join_keys=["id"], delete_strategy="soft")
+            merge_scd1(
+                mock_df, target_table_name="t", join_keys=["id"], delete_strategy="soft"
+            )
         merge_builder.execute.assert_called_once()
 
     def test_skips_merge_when_deduped_cdf_is_empty(self, mock_df):
@@ -132,7 +143,9 @@ class TestMergeSCD1:
 
         with (
             patch("kimball.processing.scd1.get_spark", return_value=MagicMock()),
-            patch("kimball.processing.scd1.DeltaTable.forName", return_value=delta_table),
+            patch(
+                "kimball.processing.scd1.DeltaTable.forName", return_value=delta_table
+            ),
             patch("kimball.processing.scd1.dedup_cdf", return_value=empty_df),
             patch("kimball.processing.scd1.build_merge_condition", return_value="cond"),
         ):
@@ -151,7 +164,9 @@ class TestMergeSCD1:
 
         with (
             patch("kimball.processing.scd1.get_spark", return_value=MagicMock()),
-            patch("kimball.processing.scd1.DeltaTable.forName", return_value=delta_table),
+            patch(
+                "kimball.processing.scd1.DeltaTable.forName", return_value=delta_table
+            ),
             patch("kimball.processing.scd1.dedup_cdf", return_value=mock_df),
             patch("kimball.processing.scd1.build_merge_condition", return_value="cond"),
             patch("kimball.processing.scd1.apply_schema_evolution"),
@@ -173,11 +188,15 @@ class TestMergeSCD1AppendOnly:
             patch("kimball.processing.scd1.DeltaTable.forName") as mock_delta_for_name,
             patch("kimball.processing.scd1.dedup_cdf", return_value=mock_df),
         ):
-            merge_scd1(mock_df, target_table_name="t", join_keys=["id"], append_only=True)
+            merge_scd1(
+                mock_df, target_table_name="t", join_keys=["id"], append_only=True
+            )
         mock_delta_for_name.assert_not_called()
         writer.format.assert_called_once_with("delta")
         writer.format.return_value.mode.assert_called_once_with("append")
-        writer.format.return_value.mode.return_value.saveAsTable.assert_called_once_with("t")
+        writer.format.return_value.mode.return_value.saveAsTable.assert_called_once_with(
+            "t"
+        )
 
     def test_append_only_skips_empty_source(self, mock_df):
         empty_df = MagicMock()
@@ -191,7 +210,9 @@ class TestMergeSCD1AppendOnly:
             patch("kimball.processing.scd1.DeltaTable.forName") as mock_delta_for_name,
             patch("kimball.processing.scd1.dedup_cdf", return_value=empty_df),
         ):
-            merge_scd1(mock_df, target_table_name="t", join_keys=["id"], append_only=True)
+            merge_scd1(
+                mock_df, target_table_name="t", join_keys=["id"], append_only=True
+            )
         mock_delta_for_name.assert_not_called()
         empty_df.write.format.assert_not_called()
 
@@ -206,11 +227,15 @@ class TestMergeSCD1AppendOnly:
 
         with (
             patch("kimball.processing.scd1.get_spark", return_value=MagicMock()),
-            patch("kimball.processing.scd1.DeltaTable.forName", return_value=delta_table),
+            patch(
+                "kimball.processing.scd1.DeltaTable.forName", return_value=delta_table
+            ),
             patch("kimball.processing.scd1.dedup_cdf", return_value=mock_df),
             patch("kimball.processing.scd1.build_merge_condition", return_value="cond"),
             patch("kimball.processing.scd1.apply_schema_evolution"),
         ):
-            merge_scd1(mock_df, target_table_name="t", join_keys=["id"], append_only=False)
+            merge_scd1(
+                mock_df, target_table_name="t", join_keys=["id"], append_only=False
+            )
         merge_builder.execute.assert_called_once()
         mock_df.write.format.assert_not_called()

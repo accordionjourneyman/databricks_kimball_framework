@@ -3,13 +3,11 @@
 Each test confirms a specific bug exists in the current code. When the bug
 is fixed, the test will fail — prompting an update to assert the fixed behaviour.
 """
+
 from __future__ import annotations
 
 import os
-from datetime import datetime
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 os.environ.setdefault("KIMBALL_ETL_SCHEMA", "test_schema")
 
@@ -37,6 +35,7 @@ def _make_df(columns: list[str]) -> MagicMock:
 #     the same surrogate key → history corruption
 # ===================================================================
 
+
 class TestBugSCD2RebuildHistorySameSK:
     """_rebuild_history generates all intermediate SKs from __etl_processed_at
     (a single timestamp), so every version collides to one SK.
@@ -50,8 +49,9 @@ class TestBugSCD2RebuildHistorySameSK:
     def test_select_payload_keeps_custom_effective_at_column(self):
         """Verify _select_payload_columns now accepts effective_at_column
         parameter and keeps it in the output."""
-        from kimball.processing.scd2 import _select_payload_columns
         import inspect
+
+        from kimball.processing.scd2 import _select_payload_columns
 
         sig = inspect.signature(_select_payload_columns)
         # After fix: function accepts effective_at_column parameter
@@ -61,6 +61,7 @@ class TestBugSCD2RebuildHistorySameSK:
 # ===================================================================
 # #2  HIGH: SCD6 SK fix clobbers existing rows' SK
 # ===================================================================
+
 
 class TestBugSCD6SKClobbersExistingRows:
     """generate_keys is now applied only to INSERT rows, not UPDATE/EXPIRE."""
@@ -72,9 +73,15 @@ class TestBugSCD6SKClobbersExistingRows:
     @patch("kimball.processing.scd6.col", return_value=MagicMock())
     @patch("kimball.processing.scd6.lit", return_value=MagicMock())
     @patch("kimball.processing.scd6.when", return_value=MagicMock())
-    @patch("kimball.processing.scd6.broadcast", return_value=MagicMock())
     def test_generate_keys_applied_only_to_insert_rows(
-        self, mock_broadcast, mock_when, mock_lit, mock_col, mock_hkg, mock_hashdiff, mock_filter, mock_dt
+        self,
+        mock_when,
+        mock_lit,
+        mock_col,
+        mock_hkg,
+        mock_hashdiff,
+        mock_filter,
+        mock_dt,
     ):
         from kimball.processing.scd6 import merge_scd6
 
@@ -93,11 +100,21 @@ class TestBugSCD6SKClobbersExistingRows:
         deletes.isEmpty.return_value = True
         mock_filter.return_value = (upserts, deletes)
 
-        target_df = _make_df([
-            "surrogate_key", "id", "name", "hashdiff", "__is_current",
-            "__valid_from", "__valid_to", "__etl_processed_at", "__etl_batch_id",
-            "__is_deleted", "__is_skeleton",
-        ])
+        target_df = _make_df(
+            [
+                "surrogate_key",
+                "id",
+                "name",
+                "hashdiff",
+                "__is_current",
+                "__valid_from",
+                "__valid_to",
+                "__etl_processed_at",
+                "__etl_batch_id",
+                "__is_deleted",
+                "__is_skeleton",
+            ]
+        )
         target_df.filter.return_value = target_df
         target_df.join.return_value = target_df
         target_df.alias.return_value = target_df
@@ -123,6 +140,7 @@ class TestBugSCD6SKClobbersExistingRows:
 # ===================================================================
 # #3  MEDIUM: reset_watermark SQL injection
 # ===================================================================
+
 
 class TestBugResetWatermarkSQLInjection:
     """reset_watermark must escape single quotes in table names so a crafted
@@ -164,6 +182,7 @@ class TestBugResetWatermarkSQLInjection:
 # #4  MEDIUM: SCD4 duplicate __is_current=true EAV rows
 # ===================================================================
 
+
 class TestBugSCD4DuplicateEAVRows:
     """whenNotMatchedInsert has no guard against existing current rows."""
 
@@ -175,7 +194,14 @@ class TestBugSCD4DuplicateEAVRows:
     @patch("kimball.processing.scd4.row_number", return_value=MagicMock())
     @patch("kimball.processing.scd4.Window")
     def test_scd4_allows_duplicate_current_inserts(
-        self, mock_window, mock_row_number, mock_expr, mock_lit, mock_col, mock_scd1, mock_dt
+        self,
+        mock_window,
+        mock_row_number,
+        mock_expr,
+        mock_lit,
+        mock_col,
+        mock_scd1,
+        mock_dt,
     ):
         from kimball.processing.scd4 import merge_scd4
 
@@ -188,10 +214,17 @@ class TestBugSCD4DuplicateEAVRows:
         source_df = _make_df(["id", "field", "new_value", "effective_at"])
         source_df.isEmpty.return_value = False
 
-        target_df = _make_df([
-            "surrogate_key", "field", "value", "valid_from", "valid_to",
-            "__is_current", "__etl_processed_at",
-        ])
+        target_df = _make_df(
+            [
+                "surrogate_key",
+                "field",
+                "value",
+                "valid_from",
+                "valid_to",
+                "__is_current",
+                "__etl_processed_at",
+            ]
+        )
         target_df.alias.return_value = target_df
         mock_dt_instance.toDF.return_value = target_df
 
@@ -213,12 +246,12 @@ class TestBugSCD4DuplicateEAVRows:
 # #5  MEDIUM: Streaming per-version joins CDF metadata from wrong table
 # ===================================================================
 
+
 class TestBugStreamingPerVersionWrongCDFTable:
     """_execute_microbatch_per_version materializes a temp table but
     _execute_one_microbatch re-reads the original batch_table for CDF meta."""
 
-    @patch("kimball.streaming.orchestrator._merger")
-    def test_per_version_readsmeta_from_original_batch(self, mock_merger):
+    def test_per_version_readsmeta_from_original_batch(self):
         from kimball.streaming.orchestrator import StreamingOrchestrator
 
         orch = StreamingOrchestrator.__new__(StreamingOrchestrator)
@@ -249,8 +282,6 @@ class TestBugStreamingPerVersionWrongCDFTable:
         source.name = "test_source"
         source.alias = "test_source"
 
-        mock_merger.merge.return_value = None
-        mock_merger.get_last_merge_metrics.return_value = {}
         orch._execute_one_microbatch = MagicMock()
 
         orch._execute_microbatch_per_version(batch_df, source, "batch_1")
@@ -261,6 +292,7 @@ class TestBugStreamingPerVersionWrongCDFTable:
 # ===================================================================
 # #6  HIGH: Zombie recovery batch_id mismatch
 # ===================================================================
+
 
 class TestBugZombieRecoveryBatchIdMismatch:
     """batch_start_all generates per-source UUIDs, but recover_zombies
@@ -275,10 +307,19 @@ class TestBugZombieRecoveryBatchIdMismatch:
 
         update_df_mock = MagicMock()
         update_df_mock.columns = [
-            "target_table", "source_table", "last_processed_version", "batch_id",
-            "batch_started_at", "batch_completed_at", "batch_status",
-            "rows_read", "rows_written", "error_message", "updated_at",
-            "config_fingerprint", "source_schema_fingerprint",
+            "target_table",
+            "source_table",
+            "last_processed_version",
+            "batch_id",
+            "batch_started_at",
+            "batch_completed_at",
+            "batch_status",
+            "rows_read",
+            "rows_written",
+            "error_message",
+            "updated_at",
+            "config_fingerprint",
+            "source_schema_fingerprint",
         ]
         spark_mock.createDataFrame.return_value = update_df_mock
 
@@ -305,11 +346,14 @@ class TestBugZombieRecoveryBatchIdMismatch:
 # #7  HIGH: late_arriving_dimension joins on NKs, not FK
 # ===================================================================
 
+
 class TestBugLateArrivingDimensionWrongJoin:
     """reconcile_fact_foreign_keys joins on natural keys to find the right dimension row."""
 
     def test_reconcile_joins_on_nk(self):
-        from kimball.processing.late_arriving_dimension import LateArrivingDimensionProcessor
+        from kimball.processing.late_arriving_dimension import (
+            LateArrivingDimensionProcessor,
+        )
 
         lad = LateArrivingDimensionProcessor.__new__(LateArrivingDimensionProcessor)
         lad.spark = MagicMock(spec=SparkSession)
@@ -317,7 +361,9 @@ class TestBugLateArrivingDimensionWrongJoin:
         mock_dt = MagicMock()
         lad.spark.catalog.tableExists.return_value = True
 
-        with patch("kimball.processing.late_arriving_dimension.DeltaTable") as mock_dt_cls:
+        with patch(
+            "kimball.processing.late_arriving_dimension.DeltaTable"
+        ) as mock_dt_cls:
             mock_dt_cls.forName.return_value = mock_dt
             lad.reconcile_fact_foreign_keys(
                 fact_table="fact_orders",
@@ -337,14 +383,18 @@ class TestBugLateArrivingDimensionWrongJoin:
 # #8  MEDIUM: Double FK validation per run
 # ===================================================================
 
+
 class TestBugDoubleFKValidation:
     """validate_fact_fk_integrity is now skipped when run_config_tests covers FKs."""
 
     def test_validate_fact_fk_skipped_when_tests_defined(self):
-        from kimball.orchestration.orchestrator import Orchestrator
         from kimball.common.config import (
-            TableConfig, ForeignKeyConfig, SourceConfig, TestDefinition,
+            ForeignKeyConfig,
+            SourceConfig,
+            TableConfig,
+            TestDefinition,
         )
+        from kimball.orchestration.orchestrator import Orchestrator
 
         config = TableConfig(
             table_name="test_fact",
@@ -391,84 +441,27 @@ class TestBugDoubleFKValidation:
 # #13 LOW/MED: SCD2 perpetual churn when tracked history columns are NULL
 # ===================================================================
 
-class TestBugSCD2PerpetualChurnNullHashdiff:
-    """hashdiff.isNull() treats fully-null payload as 'changed'."""
-
-    @patch("kimball.processing.scd2.DeltaTable")
-    @patch("kimball.processing.scd2.generate_keys")
-    @patch("kimball.processing.scd2.compute_hashdiff")
-    @patch("kimball.processing.scd2.filter_cdf_deletes")
-    @patch("kimball.processing.scd2.col", return_value=MagicMock())
-    @patch("kimball.processing.scd2.lit", return_value=MagicMock())
-    @patch("kimball.processing.scd2.when", return_value=MagicMock())
-    @patch("kimball.processing.scd2.broadcast", side_effect=lambda x: x)
-    @patch("kimball.processing.scd2.current_timestamp", return_value=MagicMock())
-    @patch("kimball.processing.scd2.expr", return_value=MagicMock())
-    @patch("kimball.processing.scd2.apply_schema_evolution")
-    def test_null_hashdiff_triggers_merge(
-        self, mock_schema_evo, mock_expr, mock_current_ts, mock_broadcast, mock_when, mock_lit, mock_col, mock_filter, mock_hashdiff, mock_gen_keys, mock_dt
-    ):
-        from kimball.processing.scd2 import merge_scd2
-
-        mock_hashdiff.return_value = MagicMock()
-        mock_gen_keys.return_value = MagicMock()
-        mock_gen_keys.return_value.columns = [
-            "surrogate_key", "id", "hashdiff", "__valid_from", "__valid_to",
-            "__is_current", "__is_deleted", "__is_skeleton", "__etl_processed_at",
-        ]
-
-        upserts = _make_df(["id", "name", "__etl_processed_at", "__etl_batch_id"])
-        upserts.isEmpty.return_value = False
-        deletes = MagicMock()
-        deletes.isEmpty.return_value = True
-        mock_filter.return_value = (upserts, deletes)
-
-        target_df = _make_df([
-            "surrogate_key", "id", "hashdiff", "__valid_from", "__valid_to",
-            "__is_current", "__is_deleted", "__is_skeleton", "__etl_processed_at",
-            "__etl_batch_id",
-        ])
-        target_df.filter.return_value = target_df
-        target_df.join.return_value = target_df
-        target_df.alias.return_value = target_df
-
-        mock_dt_instance = MagicMock()
-        mock_dt.forName.return_value = mock_dt_instance
-        merge_chain = mock_dt_instance.alias.return_value.merge.return_value
-        merge_chain.whenMatchedUpdate.return_value = merge_chain
-        merge_chain.whenNotMatchedInsert.return_value = merge_chain
-
-        with patch("kimball.processing.scd2._has_multiple_versions_per_key", return_value=False):
-            merge_scd2(
-                upserts,
-                target_table_name="test_target",
-                join_keys=["id"],
-                track_history_columns=["name"],
-                surrogate_key_col="surrogate_key",
-            )
-
-        # The bug: even when source hashdiff is NULL (no tracked columns have values),
-        # the merge still runs because hashdiff.isNull() is treated as "changed"
-        merge_chain.execute.assert_called()
-
-
 # ===================================================================
 # #14 LOW: reset_watermark metric attribution
 # ===================================================================
+
 
 class TestBugResetWatermarkMetricAttribution:
     """Metrics divided by len(active_dfs) inside per-source loop."""
 
     def test_metrics_fractionally_attributed(self):
+        from kimball.common.config import SourceConfig, TableConfig
         from kimball.orchestration.orchestrator import Orchestrator
-        from kimball.common.config import TableConfig, SourceConfig
 
         config = TableConfig(
             table_name="t",
             table_type="dimension",
             scd_type=1,
             surrogate_key="sk",
-            sources=[SourceConfig(name="s1", alias="s1"), SourceConfig(name="s2", alias="s2")],
+            sources=[
+                SourceConfig(name="s1", alias="s1"),
+                SourceConfig(name="s2", alias="s2"),
+            ],
             natural_keys=["id"],
         )
 

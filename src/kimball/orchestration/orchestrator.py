@@ -8,6 +8,7 @@ Thin coordinator that delegates to focused service classes:
   - FingerprintService: config/source fingerprint caching
   - RecoveryService: zombie recovery, full reload
 """
+
 from __future__ import annotations
 
 import logging
@@ -15,24 +16,30 @@ import os
 import time
 import uuid
 import warnings
-from typing import Any
+from typing import Any, cast
 
 from pyspark.errors import AnalysisException, PySparkException
 from pyspark.sql import SparkSession
 
 from kimball.common.config import ConfigLoader, TableConfig
 from kimball.common.constants import (
-    SPARK_CONF_AQE_COALESCE, SPARK_CONF_AQE_ENABLED, SPARK_CONF_AQE_SKEW_JOIN,
-    SPARK_CONF_SHUFFLE_PARTITIONS, SPARK_CONF_SKEW_FACTOR, SPARK_CONF_SKEW_SIZE_THRESHOLD,
+    SPARK_CONF_AQE_COALESCE,
+    SPARK_CONF_AQE_ENABLED,
+    SPARK_CONF_AQE_SKEW_JOIN,
+    SPARK_CONF_SHUFFLE_PARTITIONS,
+    SPARK_CONF_SKEW_FACTOR,
+    SPARK_CONF_SKEW_SIZE_THRESHOLD,
 )
 from kimball.common.errors import NonRetriableError, RetriableError
 from kimball.common.runtime import RuntimeOptions
 from kimball.common.spark_session import get_spark
-from kimball.common.utils import quote_table_name
 from kimball.observability.resilience import (
     PipelineCheckpoint,  # noqa: F401 — kept for test patch compatibility
-    QueryMetricsCollector, StagingCleanupManager, _feature_enabled,
+    QueryMetricsCollector,
+    StagingCleanupManager,
+    _feature_enabled,
 )
+from kimball.observability.temporal_state import commit_temporal_state_updates
 from kimball.orchestration.services.context import PipelineContext
 from kimball.orchestration.services.fingerprint import FingerprintService
 from kimball.orchestration.services.merge_executor import MergeExecutor
@@ -42,11 +49,12 @@ from kimball.orchestration.services.source_loader import SourceLoader
 from kimball.orchestration.services.transform_validator import TransformValidator
 from kimball.orchestration.transaction import TransactionManager
 from kimball.orchestration.watermark import ETLControlManager, get_etl_schema
-from kimball.processing import merger as _merger  # noqa: F401 — kept for test patch compatibility
+from kimball.processing import (
+    merger as _merger,  # noqa: F401 — kept for test patch compatibility
+)
 from kimball.processing.loader import DataLoader
 from kimball.processing.skeleton_generator import SkeletonGenerator
 from kimball.processing.table_creator import TableCreator
-from kimball.orchestration.validation import DataQualityValidator
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +91,8 @@ class Orchestrator:
         if watermark_database is not None:
             warnings.warn(
                 "The 'watermark_database' parameter is deprecated. Use 'etl_schema' instead.",
-                DeprecationWarning, stacklevel=2,
+                DeprecationWarning,
+                stacklevel=2,
             )
             if etl_schema is None:
                 etl_schema = watermark_database
@@ -108,9 +117,9 @@ class Orchestrator:
             self.spark.sparkContext.setCheckpointDir(checkpoint_root)
 
         self.etl_control = etl_control or ETLControlManager(
-            etl_schema=etl_schema, spark_session=spark
+            etl_schema=etl_schema, spark_session=self.spark
         )
-        self.loader = loader or DataLoader(spark_session=spark)
+        self.loader = loader or DataLoader(spark_session=self.spark)
         self.transaction_manager = transaction_manager or TransactionManager(self.spark)
 
         self.metrics_collector = (
@@ -128,7 +137,8 @@ class Orchestrator:
         self._source_loader = SourceLoader()
         if skeleton_generator is None:
             from kimball.processing.skeleton_generator import SkeletonGenerator
-            skeleton_generator = SkeletonGenerator(spark_session=spark)
+
+            skeleton_generator = SkeletonGenerator(spark_session=self.spark)
         self._skeleton_manager = SkeletonManager(skeleton_generator)
         self._transform_validator = TransformValidator()
         self._merge_executor = MergeExecutor(table_creator)
@@ -147,7 +157,9 @@ class Orchestrator:
 
     @property
     def skeleton_generator(self):
-        return getattr(getattr(self, "_skeleton_manager", None), "skeleton_generator", None)
+        return getattr(
+            getattr(self, "_skeleton_manager", None), "skeleton_generator", None
+        )
 
     @skeleton_generator.setter
     def skeleton_generator(self, value):
@@ -168,7 +180,9 @@ class Orchestrator:
     def _transform_and_validate(self, active_dfs):
         ctx = self._make_context_safe()
         ctx.active_dfs = active_dfs
-        fp_service = getattr(self, "_fingerprint_service", None) or FingerprintService(getattr(self, "config_loader", ConfigLoader()))
+        fp_service = getattr(self, "_fingerprint_service", None) or FingerprintService(
+            getattr(self, "config_loader", ConfigLoader())
+        )
         tv = getattr(self, "_transform_validator", None) or TransformValidator()
         return tv.transform_and_validate(ctx, active_dfs, fp_service)
 
@@ -180,12 +194,16 @@ class Orchestrator:
 
     def _should_skip_validation(self, table_name: str) -> bool:
         ctx = self._make_context_safe()
-        fp_service = getattr(self, "_fingerprint_service", None) or FingerprintService(getattr(self, "config_loader", ConfigLoader()))
+        fp_service = getattr(self, "_fingerprint_service", None) or FingerprintService(
+            getattr(self, "config_loader", ConfigLoader())
+        )
         return fp_service.should_skip_validation(ctx)
 
     def _save_fingerprints(self, table_name: str) -> None:
         ctx = self._make_context_safe()
-        fp_service = getattr(self, "_fingerprint_service", None) or FingerprintService(getattr(self, "config_loader", ConfigLoader()))
+        fp_service = getattr(self, "_fingerprint_service", None) or FingerprintService(
+            getattr(self, "config_loader", ConfigLoader())
+        )
         fp_service.save_fingerprints(ctx)
 
     def _recover_zombies(self) -> bool:
@@ -198,11 +216,13 @@ class Orchestrator:
 
     def _make_context_safe(self, batch_id: str = "") -> PipelineContext:
         return PipelineContext(
-            spark=getattr(self, "spark", None),
-            config=getattr(self, "config", None),
-            etl_control=getattr(self, "etl_control", None),
-            loader=getattr(self, "loader", None),
-            runtime_options=getattr(self, "runtime_options", RuntimeOptions.from_environment()),
+            spark=cast(SparkSession, getattr(self, "spark", None)),
+            config=cast(TableConfig, getattr(self, "config", None)),
+            etl_control=cast(ETLControlManager, getattr(self, "etl_control", None)),
+            loader=cast(DataLoader, getattr(self, "loader", None)),
+            runtime_options=getattr(
+                self, "runtime_options", RuntimeOptions.from_environment()
+            ),
             batch_id=batch_id,
         )
 
@@ -221,7 +241,9 @@ class Orchestrator:
             return
         if not self.config.transformation_sql:
             return
-        issues = self.config_loader.validate_transformation_sql(self.config, spark=self.spark)
+        issues = self.config_loader.validate_transformation_sql(
+            self.config, spark=self.spark
+        )
         if issues:
             raise ValueError(
                 f"Compile-time SQL validation failed for {self.config.table_name}:\n"
@@ -243,7 +265,9 @@ class Orchestrator:
                 SPARK_CONF_SKEW_SIZE_THRESHOLD,
                 f"{self.runtime_options.skew_threshold_mb}MB",
             )
-            spark.conf.set(SPARK_CONF_SKEW_FACTOR, str(self.runtime_options.skew_factor))
+            spark.conf.set(
+                SPARK_CONF_SKEW_FACTOR, str(self.runtime_options.skew_factor)
+            )
         except (PySparkException, AnalysisException) as e:
             logger.debug(f"Could not set Spark configs: {e}")
 
@@ -268,7 +292,9 @@ class Orchestrator:
 
     def _run_full_reload(self) -> dict[str, Any]:
         ctx = self._make_context_safe()
-        rs = getattr(self, "_recovery_service", None) or RecoveryService(getattr(self, "transaction_manager", None))
+        rs = getattr(self, "_recovery_service", None) or RecoveryService(
+            getattr(self, "transaction_manager", None)
+        )
         rs.run_full_reload(ctx)
         return self._run_pipeline_once()
 
@@ -278,7 +304,9 @@ class Orchestrator:
         source_versions: dict[str, int] = {}
         for source in self.config.sources:
             if source.cdc_strategy == "cdf":
-                source_versions[source.name] = self.loader.get_latest_version(source.name)
+                source_versions[source.name] = self.loader.get_latest_version(
+                    source.name
+                )
 
         while iteration < max_iterations:
             iteration += 1
@@ -286,7 +314,9 @@ class Orchestrator:
             for source in self.config.sources:
                 if source.cdc_strategy == "cdf":
                     source_version = source_versions[source.name]
-                    wm = self.etl_control.get_watermark(self.config.table_name, source.name)
+                    wm = self.etl_control.get_watermark(
+                        self.config.table_name, source.name
+                    )
                     if wm is None or wm < source_version:
                         all_caught_up = False
                         break
@@ -313,11 +343,15 @@ class Orchestrator:
         self._recovery_service.recover_zombies(ctx)
         source_names = [s.name for s in self.config.sources if s.cdc_strategy != "full"]
         if source_names:
-            self.etl_control.batch_start_all(self.config.table_name, source_names, run_batch_id=batch_id)
+            self.etl_control.batch_start_all(
+                self.config.table_name, source_names, run_batch_id=batch_id
+            )
 
         active_dfs: dict[str, Any] = {}
         try:
-            with self.transaction_manager.table_transaction(self.config.table_name, batch_id):
+            with self.transaction_manager.table_transaction(
+                self.config.table_name, batch_id
+            ):
                 source_versions, active_dfs = self._source_loader.load(ctx)
                 ctx.source_versions = source_versions
                 ctx.active_dfs = active_dfs
@@ -333,10 +367,14 @@ class Orchestrator:
                     merge_executed = False
                 else:
                     merge_executed = True
-                    table_created = self._merge_executor.ensure_target_table(ctx, transformed_df)
+                    table_created = self._merge_executor.ensure_target_table(
+                        ctx, transformed_df
+                    )
                     self._merge_executor.seed_defaults(ctx, table_created)
 
-                    source_df = self._merge_executor.prepare_source_df(ctx, transformed_df)
+                    source_df = self._merge_executor.prepare_source_df(
+                        ctx, transformed_df
+                    )
 
                     if self.config.table_type == "fact":
                         join_keys = self.config.merge_keys or []
@@ -374,6 +412,17 @@ class Orchestrator:
                             rows_written=total_rows_written,
                         )
                     self._fingerprint_service.save_fingerprints(ctx)
+                    try:
+                        commit_temporal_state_updates(ctx)
+                    except Exception:
+                        observability = self.config.observability
+                        if observability and observability.write_failure == "error":
+                            raise
+                        logger.warning(
+                            "Temporal observability state could not be persisted; "
+                            "the target load remains successful",
+                            exc_info=True,
+                        )
                 else:
                     logger.info(
                         "Merge skipped — no rows after transformation. "
@@ -396,6 +445,7 @@ class Orchestrator:
                 "rows_read": total_rows_read,
                 "rows_written": total_rows_written,
                 "metrics": metrics_summary,
+                "validation_metrics": ctx.validation_metrics,
             }
 
         except Exception as e:
@@ -405,7 +455,9 @@ class Orchestrator:
             logger.info(f"Pipeline failed: {error_msg}")
             for source in self.config.sources:
                 try:
-                    self.etl_control.batch_fail(self.config.table_name, source.name, error_msg)
+                    self.etl_control.batch_fail(
+                        self.config.table_name, source.name, error_msg
+                    )
                 except PySparkException as batch_err:
                     logger.debug(f"Could not mark batch as failed: {batch_err}")
             raise e
@@ -436,7 +488,9 @@ class Orchestrator:
                 last_error = e
                 if attempt <= max_retries:
                     wait_time = backoff_seconds * (2 ** (attempt - 1))
-                    logger.info(f"Retriable error: {e}. Waiting {wait_time}s before retry {attempt}/{max_retries}")
+                    logger.info(
+                        f"Retriable error: {e}. Waiting {wait_time}s before retry {attempt}/{max_retries}"
+                    )
                     time.sleep(wait_time)
                 else:
                     raise

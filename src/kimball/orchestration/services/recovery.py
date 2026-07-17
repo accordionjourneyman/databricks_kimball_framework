@@ -17,9 +17,7 @@ class RecoveryService:
         if not getattr(ctx.config, "enable_crash_recovery", True):
             return True
         try:
-            ctx.spark.conf.set(
-                "spark.databricks.delta.commitInfo.userMetadata", "test"
-            )
+            ctx.spark.conf.set("spark.databricks.delta.commitInfo.userMetadata", "test")
             ctx.spark.conf.unset("spark.databricks.delta.commitInfo.userMetadata")
         except Exception:
             logger.info(

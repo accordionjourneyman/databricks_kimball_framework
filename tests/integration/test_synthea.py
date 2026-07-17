@@ -168,8 +168,14 @@ transformation_sql: |
   FROM e
 """)
 
-        assert Orchestrator(dim_config, spark=spark, etl_schema=test_db).run()["status"] == "SUCCESS"
-        assert Orchestrator(fact_config, spark=spark, etl_schema=test_db).run()["status"] == "SUCCESS"
+        assert (
+            Orchestrator(dim_config, spark=spark, etl_schema=test_db).run()["status"]
+            == "SUCCESS"
+        )
+        assert (
+            Orchestrator(fact_config, spark=spark, etl_schema=test_db).run()["status"]
+            == "SUCCESS"
+        )
 
         rows = spark.table(f"{test_db}.fact_encounters").collect()
         assert len(rows) == 3, f"Expected 3 encounters, got {len(rows)}"

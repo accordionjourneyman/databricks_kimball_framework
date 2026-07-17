@@ -35,7 +35,6 @@ class TestSCD1DedupBug:
     and raises a clear ValueError if no ordering column is available.
     """
 
-    @patch("kimball.processing.scd1.broadcast", lambda x: x)
     @patch("kimball.processing.scd1.generate_keys")
     @patch("kimball.processing.scd1.dedup_cdf")
     @patch("kimball.processing.scd1.DeltaTable")
@@ -85,7 +84,6 @@ class TestSCD1DedupBug:
             delete_strategy="hard",
             schema_evolution=False,
             surrogate_key_col="sk",
-            
         )
 
         # FIX VERIFIED: "_rn" IS added, meaning dedup ran with fallback column
@@ -127,7 +125,6 @@ class TestSCD1DedupBug:
                 delete_strategy="hard",
                 schema_evolution=False,
                 surrogate_key_col="sk",
-                
             )
 
 
@@ -138,7 +135,6 @@ class TestSCD2DeleteDedupBug:
     if available, else dropDuplicates) before the expire MERGE.
     """
 
-    @patch("kimball.processing.scd2.broadcast", lambda x: x)
     @patch("kimball.processing.scd2.filter_cdf_deletes")
     @patch("kimball.processing.scd2.row_number")
     @patch("kimball.processing.scd2.Window")
@@ -153,7 +149,20 @@ class TestSCD2DeleteDedupBug:
     @patch("kimball.processing.scd2.DeltaTable")
     @patch("kimball.processing.scd2.get_spark")
     def test_scd2_delete_rows_are_deduplicated(
-        self, mock_get_spark, mock_delta_table, mock_gen_keys, mock_schema_evo, mock_hashdiff, mock_current_ts, mock_expr, mock_when, mock_lit, mock_col, mock_window, mock_row_number, mock_filter
+        self,
+        mock_get_spark,
+        mock_delta_table,
+        mock_gen_keys,
+        mock_schema_evo,
+        mock_hashdiff,
+        mock_current_ts,
+        mock_expr,
+        mock_when,
+        mock_lit,
+        mock_col,
+        mock_window,
+        mock_row_number,
+        mock_filter,
     ):
         """delete_rows should be deduplicated by join_keys before MERGE."""
         from kimball.processing.scd2 import merge_scd2
@@ -180,13 +189,18 @@ class TestSCD2DeleteDedupBug:
             "_change_type",
             "__etl_processed_at",
         ]
+        source_df.filter.return_value.isEmpty.return_value = True
 
         delete_rows = MagicMock()
         delete_rows.isEmpty.return_value = False
         delete_rows.count.return_value = 1
         delete_rows.alias.return_value = delete_rows
         delete_rows.columns = [
-            "id", "val", "_change_type", "__etl_processed_at", "_commit_version",
+            "id",
+            "val",
+            "_change_type",
+            "__etl_processed_at",
+            "_commit_version",
         ]
         delete_rows.withColumn.return_value = delete_rows
         delete_rows.filter.return_value = delete_rows
@@ -765,13 +779,11 @@ class TestFullSnapshotSCD2DeleteDetection:
     def test_scd2_has_full_snapshot_delete_detection(self):
         """SCD2 merge should have anti-join delete detection for
         full snapshot mode (no _change_type column)."""
-        from kimball.processing.scd2 import _merge_classic
+        from kimball.processing.scd2 import _merge_single_pass
 
-        source_code = inspect.getsource(_merge_classic)
+        source_code = inspect.getsource(_merge_single_pass)
 
-        assert (
-            "filter_cdf_deletes" in source_code or "left_anti" in source_code
-        ), (
+        assert "filter_cdf_deletes" in source_code or "left_anti" in source_code, (
             "BUG-DP-004 regression: SCD2 should have delete detection "
             "for full snapshot mode (when _change_type is absent)."
         )
@@ -842,7 +854,9 @@ class TestSCD2HashdiffInInsertValues:
 
         df = MagicMock()
         df.columns = ["id", "val", "hashdiff", "__etl_processed_at", "__etl_batch_id"]
-        result = build_insert_values(df, ["id"], "sk", "source.updated_at", include_history=True)
+        result = build_insert_values(
+            df, ["id"], "sk", "source.updated_at", include_history=True
+        )
         assert "hashdiff" in result, (
             "BUG-DP-007 regression: hashdiff should be in insert_values "
             "so the target table stores it for future change detection."
@@ -892,11 +906,16 @@ class TestSCD1SoftDeleteBug:
 
     def test_scd1_soft_delete_includes_batch_id(self):
         """Soft delete update set should include __etl_batch_id."""
-        from kimball.processing.scd1 import merge_scd1
         import inspect
 
+        from kimball.processing.scd1 import merge_scd1
+
         source_code = inspect.getsource(merge_scd1)
-        soft_delete_section = source_code.split("delete_strategy == \"soft\"")[1].split("elif")[0] if "delete_strategy == \"soft\"" in source_code else ""
+        soft_delete_section = (
+            source_code.split('delete_strategy == "soft"')[1].split("elif")[0]
+            if 'delete_strategy == "soft"' in source_code
+            else ""
+        )
         assert "__etl_batch_id" in soft_delete_section, (
             "BUG-SCD1-002 regression: SCD1 soft delete should include "
             "__etl_batch_id in the update set for audit trail."

@@ -25,3 +25,5 @@ class PipelineContext:
     merge_executed: bool = False
     total_rows_read: int = 0
     total_rows_written: int = 0
+    pending_temporal_state: list[Any] = field(default_factory=list)
+    validation_metrics: list[dict[str, Any]] = field(default_factory=list)

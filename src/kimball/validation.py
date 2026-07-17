@@ -3,6 +3,7 @@
 existing ``from kimball.validation import ...`` and
 ``patch("kimball.validation.F")`` calls continue to work.
 """
+
 from kimball.orchestration.validation import (  # noqa: F401
     DataQualityValidator,
     TestResult,

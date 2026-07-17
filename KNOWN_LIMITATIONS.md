@@ -15,16 +15,18 @@ This document outlines known limitations, design choices, and potential edge cas
 
 **Hard Delete Option**: `delete_strategy: hard` removes rows (use for GDPR compliance, not general ETL).
 
-## 2. Crash Consistency (Atomic Batch Recovery)
+## 2. Crash Consistency (Single-Writer Compensating Rollback)
 
 - **Risk:** A driver crash occurring after the Delta `MERGE` but before the Watermark/Audit commit (`batch_complete`) can leave the system in an inconsistent state (Data committed, Watermark stale).
-- **Remediation:** The framework implements **Transactional Recovery**:
+- **Remediation:** The framework implements a **compensating rollback protocol**:
   - Commits are tagged with `batch_id`.
   - On startup, `Orchestrator` checks for "RUNNING" (zombie) batches.
   - If found, it performs a **Rollback** (`RESTORE TABLE`) to the state prior to the crashed batch using Delta Time Travel.
 - **Limitation:** If `VACUUM` has removed the history required for rollback, manual intervention is required.
+- **Not atomic across tables:** the target Delta commit and `etl_control` watermark are separate transactions. Recovery compensates after failure; it cannot provide cross-table ACID.
+- **Single-writer contract:** safety requires one active writer for each target and no unrelated commit between the failed write and `RESTORE`. Compiled Databricks jobs set `max_concurrent_runs: 1`; external schedulers must enforce the same rule.
 - **Serverless Limitation:** On Databricks Serverless, setting `spark.databricks.delta.commitInfo.userMetadata` is restricted.
-  - **Impact:** Crashed batches cannot be tagged, so Zombie Recovery will not find them to rollback automatically. The pipeline will proceed safely but without this protection.
+  - **Impact:** Crashed batches cannot be tagged, so zombie recovery cannot identify their commits automatically. The pipeline continues without compensating rollback protection.
 
 ## 3. Concurrency & Locking
 
@@ -44,7 +46,7 @@ This document outlines known limitations, design choices, and potential edge cas
 ## 6. Surrogate Key Generation
 
 - **Implementation:** All surrogate keys are generated via `xxhash64(natural_keys)` (SCD1/SCD4/SCD6) or `xxhash64(natural_keys + version_column)` (SCD2). This is deterministic, distributed-safe, and idempotent.
-- **Collision Risk:** `xxhash64` produces a 64-bit signed BIGINT. Birthday-paradox collisions become statistically significant above ~4 billion distinct values per table. For most dimension tables this is negligible. A full reload self-heals any collision by re-deriving all keys.
+- **Collision Risk:** `xxhash64` produces a 64-bit signed BIGINT. Birthday-paradox collisions become statistically significant at very large cardinalities. A full reload does not heal a deterministic collision. Managed junk dimensions detect conflicting combinations; general dimensions require collision monitoring or an identity/key-registry design where the risk is unacceptable.
 - **Negative values:** `xxhash64` produces signed BIGINTs, so roughly half of all keys are negative. This is expected and does not affect correctness.
 
 ## 7. Idempotency Contracts
@@ -96,6 +98,9 @@ the following limitations compared to the batch path:
 | Multi-source pipelines | ✅ Single run | ✅ One query per CDF source |
 | `transformation_sql` | ✅ `spark.sql()` | ✅ `spark.sql()` inside `foreachBatch` |
 
+| Contract DQ checks | Supported | Supported per micro-batch |
+| Cross-batch temporal state | Post-merge/watermark commit | Post-merge/watermark commit |
+
 **When to use streaming:**
 - Sub-minute freshness requirements
 - Continuous ingestion pipelines
@@ -104,7 +109,6 @@ the following limitations compared to the batch path:
 **When to stay on batch:**
 - One-off backfills or historical loads
 - Schema changes are frequent
-- You need FK validation or fingerprint caching
 - You need zombie batch recovery
 
 **Checkpoint portability:**

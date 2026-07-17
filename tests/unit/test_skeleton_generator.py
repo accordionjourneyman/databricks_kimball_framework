@@ -12,7 +12,11 @@ def test_skeleton_generator_table_not_exists():
 
     fact_df = MagicMock()
     gen.generate_skeletons(
-        fact_df, "dim_customer", "customer_id", "customer_id", "customer_sk",
+        fact_df,
+        "dim_customer",
+        "customer_id",
+        "customer_id",
+        "customer_sk",
         batch_id="test-batch",
     )
 
@@ -63,7 +67,11 @@ def test_skeleton_generator_logic(mock_generate_keys):
 
         gen = SkeletonGenerator(spark)
         gen.generate_skeletons(
-            fact_df, "dim_customer", "customer_id", "customer_id", "customer_sk",
+            fact_df,
+            "dim_customer",
+            "customer_id",
+            "customer_id",
+            "customer_sk",
             batch_id="test-batch",
         )
 
@@ -77,7 +85,11 @@ def test_skeleton_generator_logic(mock_generate_keys):
         skeletons.select.return_value = skeletons
 
         gen.generate_skeletons(
-            fact_df, "dim_customer", "customer_id", "customer_id", "customer_sk",
+            fact_df,
+            "dim_customer",
+            "customer_id",
+            "customer_id",
+            "customer_sk",
             batch_id="test-batch",
         )
 

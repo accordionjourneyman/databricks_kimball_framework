@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 
+from pyspark.errors import PySparkException as PYSPARK_EXCEPTION_BASE
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import count as spark_count
 
@@ -12,19 +13,18 @@ from kimball.orchestration.services.context import PipelineContext
 from kimball.processing import merger as _merger
 from kimball.processing.table_creator import TableCreator
 
-try:
-    from pyspark.errors import PySparkException as PYSPARK_EXCEPTION_BASE
-except ImportError:
-    try:
-        from pyspark.sql.utils import AnalysisException as PYSPARK_EXCEPTION_BASE
-    except ImportError:
-        PYSPARK_EXCEPTION_BASE = Exception
-
 logger = logging.getLogger(__name__)
 
 SYSTEM_COLUMNS = {
-    "__is_current", "__valid_from", "__valid_to", "__etl_processed_at",
-    "__is_deleted", "__etl_batch_id", "__is_skeleton", "hashdiff", "__merge_action",
+    "__is_current",
+    "__valid_from",
+    "__valid_to",
+    "__etl_processed_at",
+    "__is_deleted",
+    "__etl_batch_id",
+    "__is_skeleton",
+    "hashdiff",
+    "__merge_action",
 }
 CDF_COLUMNS = {"_change_type", "_commit_version", "_commit_timestamp"}
 
@@ -33,7 +33,9 @@ class MergeExecutor:
     def __init__(self, table_creator: TableCreator | None = None):
         self.table_creator = table_creator or TableCreator()
 
-    def ensure_target_table(self, ctx: PipelineContext, transformed_df: DataFrame) -> bool:
+    def ensure_target_table(
+        self, ctx: PipelineContext, transformed_df: DataFrame
+    ) -> bool:
         if ctx.spark.catalog.tableExists(ctx.config.table_name):
             return False
         logger.info(f"Creating table {ctx.config.table_name}...")
@@ -42,7 +44,9 @@ class MergeExecutor:
             self.table_creator.create_history_table(ctx.config.history_table)
         return True
 
-    def _create_target_table(self, ctx: PipelineContext, transformed_df: DataFrame) -> None:
+    def _create_target_table(
+        self, ctx: PipelineContext, transformed_df: DataFrame
+    ) -> None:
         schema_df = self.table_creator.add_system_columns(
             transformed_df.limit(0),
             ctx.config.scd_type,
@@ -85,7 +89,9 @@ class MergeExecutor:
                 ctx.config.default_rows,
             )
 
-    def prepare_source_df(self, ctx: PipelineContext, transformed_df: DataFrame) -> DataFrame:
+    def prepare_source_df(
+        self, ctx: PipelineContext, transformed_df: DataFrame
+    ) -> DataFrame:
         if getattr(ctx.config, "enable_lineage_truncation", False):
             logger.info("Creating DataFrame checkpoint for merge operation...")
             try:
@@ -133,7 +139,11 @@ class MergeExecutor:
         for c in df.columns:
             if c in target_columns or c in protection_set:
                 cols_to_keep.append(c)
-                if c not in target_columns and c not in SYSTEM_COLUMNS and c not in CDF_COLUMNS:
+                if (
+                    c not in target_columns
+                    and c not in SYSTEM_COLUMNS
+                    and c not in CDF_COLUMNS
+                ):
                     cols_added_to_target.append(c)
             else:
                 cols_dropped.append(c)
@@ -149,7 +159,9 @@ class MergeExecutor:
             return df.select(*cols_to_keep)
         return df
 
-    def _evolve_target_schema(self, ctx: PipelineContext, new_columns: list[str]) -> None:
+    def _evolve_target_schema(
+        self, ctx: PipelineContext, new_columns: list[str]
+    ) -> None:
         try:
             target_df = ctx.spark.table(ctx.config.table_name)
             target_fields = {f.name: f.dataType for f in target_df.schema.fields}
@@ -166,18 +178,24 @@ class MergeExecutor:
                         f"ALTER TABLE {quote_table_name(ctx.config.table_name)} "
                         f"ADD COLUMNS ({col_name} {src_type.simpleString()})"
                     )
-                    logger.info(f"Added column {col_name} ({src_type.simpleString()}) to target")
+                    logger.info(
+                        f"Added column {col_name} ({src_type.simpleString()}) to target"
+                    )
                 except PYSPARK_EXCEPTION_BASE as e:
                     logger.warning(f"Could not add column {col_name}: {e}")
         except PYSPARK_EXCEPTION_BASE as e:
             logger.warning(f"Schema evolution failed: {e}")
 
-    def validate_grain(self, ctx: PipelineContext, source_df: DataFrame, join_keys: list[str]) -> None:
+    def validate_grain(
+        self, ctx: PipelineContext, source_df: DataFrame, join_keys: list[str]
+    ) -> None:
         if not join_keys:
             return
         grain_mode = getattr(ctx.config, "grain_validation", "error")
         if grain_mode == "skip":
-            logger.info(f"Grain validation skipped for {ctx.config.table_name} (grain_validation=skip)")
+            logger.info(
+                f"Grain validation skipped for {ctx.config.table_name} (grain_validation=skip)"
+            )
             return
         append_only = getattr(ctx.config, "append_only", False)
         if append_only is True:
@@ -207,7 +225,9 @@ class MergeExecutor:
             else:
                 raise ValueError(msg)
 
-    def execute_merge(self, ctx: PipelineContext, source_df: DataFrame, join_keys: list[str]) -> None:
+    def execute_merge(
+        self, ctx: PipelineContext, source_df: DataFrame, join_keys: list[str]
+    ) -> None:
         _merger.merge(
             target_table_name=ctx.config.table_name,
             source_df=source_df,
@@ -224,9 +244,26 @@ class MergeExecutor:
             append_only=ctx.config.append_only,
         )
 
+        from kimball.orchestration.services.descriptions import DescriptionManager
+
+        try:
+            DescriptionManager().sync(
+                ctx.spark,
+                ctx.config.table_name,
+                ctx.config.table_description,
+                ctx.config.column_descriptions,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Description metadata sync failed for %s: %s",
+                ctx.config.table_name,
+                exc,
+            )
         if ctx.config.optimize_after_merge:
             if os.environ.get("KIMBALL_ENABLE_INLINE_OPTIMIZE") == "1":
-                _merger.optimize_table(ctx.config.table_name, ctx.config.cluster_by or [])
+                _merger.optimize_table(
+                    ctx.config.table_name, ctx.config.cluster_by or []
+                )
             else:
                 logger.info(
                     "Skipping inline OPTIMIZE. "
@@ -234,7 +271,9 @@ class MergeExecutor:
                 )
 
     def get_merge_metrics(self, ctx: PipelineContext) -> dict[str, int]:
-        metrics = _merger.get_last_merge_metrics(ctx.config.table_name, batch_id=ctx.batch_id)
+        metrics = _merger.get_last_merge_metrics(
+            ctx.config.table_name, batch_id=ctx.batch_id
+        )
         return {
             "rows_read": int(metrics.get("numSourceRows", 0)),
             "rows_written": int(metrics.get("numTargetRowsInserted", 0))

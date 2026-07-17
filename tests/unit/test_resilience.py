@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from kimball.observability.resilience import (
     PipelineCheckpoint,
     QueryMetricsCollector,
@@ -51,7 +49,9 @@ class TestEnsureDeltaTable:
         spark.catalog.tableExists.return_value = False
         with patch("kimball.observability.resilience.get_spark", return_value=spark):
             _ensure_delta_table("t", MagicMock(), partition_by="p")
-        spark.createDataFrame.return_value.write.format.return_value.partitionBy.assert_called_once_with("p")
+        spark.createDataFrame.return_value.write.format.return_value.partitionBy.assert_called_once_with(
+            "p"
+        )
 
 
 class TestSafeDropTable:
@@ -65,7 +65,9 @@ class TestSafeDropTable:
         spark = MagicMock()
         result = _safe_drop_table(spark, "catalog.schema.table")
         assert result is True
-        spark.sql.assert_called_once_with("DROP TABLE IF EXISTS `catalog`.`schema`.`table`")
+        spark.sql.assert_called_once_with(
+            "DROP TABLE IF EXISTS `catalog`.`schema`.`table`"
+        )
 
 
 class TestQueryMetricsCollector:
@@ -84,6 +86,7 @@ class TestQueryMetricsCollector:
 
     def test_add_metric_with_dataframe(self):
         from pyspark.sql import DataFrame
+
         c = QueryMetricsCollector()
         df = MagicMock(spec=DataFrame)
         c.add_operation_metric("test_op", df=df)
@@ -123,7 +126,9 @@ class TestStagingCleanupManager:
         assert m.registry_table == "custom.registry"
 
     def test_ensure_registry_table(self):
-        with patch("kimball.observability.resilience._ensure_delta_table") as mock_ensure:
+        with patch(
+            "kimball.observability.resilience._ensure_delta_table"
+        ) as mock_ensure:
             m = StagingCleanupManager.__new__(StagingCleanupManager)
             m.registry_table = "test.registry"
             m._ensure_registry_table()
@@ -161,7 +166,9 @@ class TestStagingCleanupManager:
         row = MagicMock()
         row.staging_table = "staging_tbl"
         spark.table.return_value.limit.return_value.collect.return_value = [row]
-        with patch("kimball.observability.resilience._safe_drop_table", return_value=True):
+        with patch(
+            "kimball.observability.resilience._safe_drop_table", return_value=True
+        ):
             with patch("kimball.observability.resilience._ensure_delta_table"):
                 m = StagingCleanupManager("test.registry")
                 m.unregister_staging_table = MagicMock()
@@ -194,7 +201,9 @@ class TestStagingCleanupManager:
         row = MagicMock()
         row.staging_table = "staging_tbl"
         spark.table.return_value.limit.return_value.collect.return_value = [row]
-        with patch("kimball.observability.resilience._safe_drop_table", return_value=False):
+        with patch(
+            "kimball.observability.resilience._safe_drop_table", return_value=False
+        ):
             with patch("kimball.observability.resilience._ensure_delta_table"):
                 m = StagingCleanupManager("test.registry")
                 cleaned, failed = m.cleanup_staging_tables(spark, max_age_hours=0)
@@ -206,7 +215,10 @@ class TestStagingCleanupManager:
         row = MagicMock()
         row.staging_table = "staging_tbl"
         spark.table.return_value.limit.return_value.collect.return_value = [row]
-        with patch("kimball.observability.resilience._safe_drop_table", side_effect=Exception("boom")):
+        with patch(
+            "kimball.observability.resilience._safe_drop_table",
+            side_effect=Exception("boom"),
+        ):
             with patch("kimball.observability.resilience._ensure_delta_table"):
                 m = StagingCleanupManager("test.registry")
                 cleaned, failed = m.cleanup_staging_tables(spark, max_age_hours=0)
@@ -237,7 +249,9 @@ class TestStagingTableManager:
         cm = MagicMock()
         m = StagingTableManager(cm)
         m.staging_tables = ["staging_tbl"]
-        with patch("kimball.observability.resilience._safe_drop_table", return_value=True):
+        with patch(
+            "kimball.observability.resilience._safe_drop_table", return_value=True
+        ):
             m.__exit__(None, None, None)
         cm.unregister_staging_table.assert_called_once_with("staging_tbl")
 
@@ -245,7 +259,10 @@ class TestStagingTableManager:
         cm = MagicMock()
         m = StagingTableManager(cm)
         m.staging_tables = ["staging_tbl"]
-        with patch("kimball.observability.resilience._safe_drop_table", side_effect=Exception("boom")):
+        with patch(
+            "kimball.observability.resilience._safe_drop_table",
+            side_effect=Exception("boom"),
+        ):
             m.__exit__(None, None, None)
         cm.unregister_staging_table.assert_not_called()
 
@@ -262,7 +279,9 @@ class TestPipelineCheckpoint:
         assert p.checkpoint_table == "custom.checkpoints"
 
     def test_ensure_checkpoint_table(self):
-        with patch("kimball.observability.resilience._ensure_delta_table") as mock_ensure:
+        with patch(
+            "kimball.observability.resilience._ensure_delta_table"
+        ) as mock_ensure:
             p = PipelineCheckpoint.__new__(PipelineCheckpoint)
             p.checkpoint_table = "test.ckpt"
             p._ensure_checkpoint_table()
@@ -281,7 +300,9 @@ class TestPipelineCheckpoint:
     def test_load_checkpoint_found(self):
         spark = MagicMock()
         row = MagicMock()
-        row.__getitem__.side_effect = lambda k: '{"key": "val"}' if k == "state" else None
+        row.__getitem__.side_effect = lambda k: (
+            '{"key": "val"}' if k == "state" else None
+        )
         spark.table.return_value.filter.return_value.orderBy.return_value.limit.return_value.first.return_value = row
         with patch("kimball.observability.resilience.get_spark", return_value=spark):
             with patch("kimball.observability.resilience._ensure_delta_table"):
@@ -300,7 +321,9 @@ class TestPipelineCheckpoint:
 
     def test_load_checkpoint_exception(self):
         spark = MagicMock()
-        spark.table.return_value.filter.return_value.orderBy.return_value.limit.return_value.first.side_effect = Exception("boom")
+        spark.table.return_value.filter.return_value.orderBy.return_value.limit.return_value.first.side_effect = Exception(
+            "boom"
+        )
         with patch("kimball.observability.resilience.get_spark", return_value=spark):
             with patch("kimball.observability.resilience._ensure_delta_table"):
                 p = PipelineCheckpoint("test.ckpt")
@@ -320,7 +343,7 @@ class TestPipelineCheckpoint:
         with patch("kimball.observability.resilience.get_spark", return_value=spark):
             with patch("kimball.observability.resilience._ensure_delta_table"):
                 p = PipelineCheckpoint("test.ckpt")
-                df = p.list_checkpoints()
+                p.list_checkpoints()
         spark.table.assert_called_once_with("test.ckpt")
 
     def test_list_checkpoints_filtered(self):
@@ -328,5 +351,5 @@ class TestPipelineCheckpoint:
         with patch("kimball.observability.resilience.get_spark", return_value=spark):
             with patch("kimball.observability.resilience._ensure_delta_table"):
                 p = PipelineCheckpoint("test.ckpt")
-                df = p.list_checkpoints(pipeline_id="p1")
+                p.list_checkpoints(pipeline_id="p1")
         spark.table.return_value.filter.assert_called_once()

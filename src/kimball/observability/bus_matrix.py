@@ -98,11 +98,17 @@ def analyze_dependencies(
                     if fk.references:
                         dims.add(fk.references)
 
+            # Managed junk dimensions are physical dimensions referenced by the fact.
+            for junk in config.junk_dimensions:
+                dims.add(junk.dimension_table)
+
             # Strategy B: Source Dependency
             for src in config.sources:
                 if src.name in known_dimensions:
                     dims.add(src.name)
-                elif src.name.lower().startswith("dim_") or src.name.lower().endswith("_dim"):
+                elif src.name.lower().startswith("dim_") or src.name.lower().endswith(
+                    "_dim"
+                ):
                     dims.add(src.name)
 
             matrix_data[config.table_name] = dims
@@ -113,8 +119,28 @@ def analyze_dependencies(
     return sorted_facts, matrix_data, sorted_dims
 
 
+def analyze_role_playing_dimensions(
+    configs: list[TableConfig],
+) -> dict[str, dict[str, set[str]]]:
+    """Return fact -> physical dimension -> declared role names."""
+    roles: dict[str, dict[str, set[str]]] = {}
+    for config in configs:
+        if config.table_type != "fact":
+            continue
+        by_dimension: dict[str, set[str]] = defaultdict(set)
+        for fk in config.foreign_keys or []:
+            if fk.references and fk.role_playing and fk.role:
+                by_dimension[fk.references].add(fk.role)
+        if by_dimension:
+            roles[config.table_name] = by_dimension
+    return roles
+
+
 def render_markdown(
-    sorted_facts: list[str], matrix_data: MatrixData, sorted_dims: list[str]
+    sorted_facts: list[str],
+    matrix_data: MatrixData,
+    sorted_dims: list[str],
+    role_data: dict[str, dict[str, set[str]]] | None = None,
 ) -> str:
     """Render the bus matrix as a Markdown table."""
     if not sorted_dims:
@@ -130,7 +156,8 @@ def render_markdown(
         fact_dims = matrix_data.get(fact, set())
         for dim in sorted_dims:
             if dim in fact_dims:
-                row += " X |"
+                roles = sorted((role_data or {}).get(fact, {}).get(dim, set()))
+                row += " X (" + ", ".join(roles) + ") |" if roles else " X |"
             else:
                 row += "   |"
         md += row + "\n"
@@ -153,4 +180,6 @@ def generate_bus_matrix(config_dir: str) -> str:
         logger.warning(warning)
 
     sorted_facts, matrix_data, sorted_dims = analyze_dependencies(configs)
-    return render_markdown(sorted_facts, matrix_data, sorted_dims)
+    return render_markdown(
+        sorted_facts, matrix_data, sorted_dims, analyze_role_playing_dimensions(configs)
+    )

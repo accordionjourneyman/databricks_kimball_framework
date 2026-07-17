@@ -89,6 +89,7 @@ def spark():
     if not _is_databricks_runtime():
         session.stop()
         import shutil
+
         shutil.rmtree(warehouse_dir, ignore_errors=True)
 
 

@@ -145,12 +145,14 @@ class TestLoadActiveSources:
         orchestrator.loader.get_latest_version.return_value = 10
         mock_df = MagicMock()
         orchestrator.loader.load_cdf.return_value = mock_df
+        orchestrator.loader.deduplicate_cdf.return_value = mock_df
 
         source_versions, active_dfs = orchestrator._load_active_sources("batch-1")
 
         orchestrator.loader.load_cdf.assert_called_once_with(
-            "src1", starting_version=0, deduplicate_keys=["id"], ending_version=10
+            "src1", starting_version=0, deduplicate_keys=None, ending_version=10
         )
+        orchestrator.loader.deduplicate_cdf.assert_called_once_with(mock_df, ["id"])
         assert source_versions == {"src1": 10}
         assert active_dfs == {"src1": mock_df}
 
@@ -255,6 +257,7 @@ class TestGenerateSkeletons:
             surrogate_key_col="customer_sk",
             batch_id="batch-1",
             effective_at_column=orchestrator.config.effective_at,
+            create=True,
         )
 
 

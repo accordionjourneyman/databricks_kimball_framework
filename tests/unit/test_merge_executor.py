@@ -58,7 +58,9 @@ class TestEnsureTargetTable:
         executor._create_target_table = MagicMock()
         executor.table_creator.create_history_table = MagicMock()
         executor.ensure_target_table(ctx, MagicMock())
-        executor.table_creator.create_history_table.assert_called_once_with("test_history")
+        executor.table_creator.create_history_table.assert_called_once_with(
+            "test_history"
+        )
 
 
 class TestCreateTargetTable:
@@ -70,10 +72,15 @@ class TestCreateTargetTable:
         executor.table_creator.add_system_columns.return_value = MagicMock()
         executor.table_creator.create_table_with_clustering = MagicMock()
 
-        with patch("kimball.orchestration.services.merge_executor._feature_enabled", return_value=True):
+        with patch(
+            "kimball.orchestration.services.merge_executor._feature_enabled",
+            return_value=True,
+        ):
             executor._create_target_table(ctx, MagicMock())
 
-        call_kwargs = executor.table_creator.create_table_with_clustering.call_args.kwargs
+        call_kwargs = (
+            executor.table_creator.create_table_with_clustering.call_args.kwargs
+        )
         assert call_kwargs["cluster_by"] == ["nk1", "nk2"]
 
     def test_auto_cluster_no_natural_keys(self, executor, ctx):
@@ -84,10 +91,15 @@ class TestCreateTargetTable:
         executor.table_creator.add_system_columns.return_value = MagicMock()
         executor.table_creator.create_table_with_clustering = MagicMock()
 
-        with patch("kimball.orchestration.services.merge_executor._feature_enabled", return_value=True):
+        with patch(
+            "kimball.orchestration.services.merge_executor._feature_enabled",
+            return_value=True,
+        ):
             executor._create_target_table(ctx, MagicMock())
 
-        call_kwargs = executor.table_creator.create_table_with_clustering.call_args.kwargs
+        call_kwargs = (
+            executor.table_creator.create_table_with_clustering.call_args.kwargs
+        )
         assert call_kwargs["cluster_by"] == []
 
 
@@ -105,7 +117,9 @@ class TestSeedDefaults:
         ctx.config.scd_type = 2
         ctx.config.surrogate_key = "sk"
         ctx.spark.table.return_value.schema = MagicMock()
-        with patch("kimball.orchestration.services.merge_executor._merger.ensure_scd2_defaults") as mock_fn:
+        with patch(
+            "kimball.orchestration.services.merge_executor._merger.ensure_scd2_defaults"
+        ) as mock_fn:
             executor.seed_defaults(ctx, table_created=True)
             mock_fn.assert_called_once()
 
@@ -113,7 +127,9 @@ class TestSeedDefaults:
         ctx.config.scd_type = 1
         ctx.config.surrogate_key = "sk"
         ctx.spark.table.return_value.schema = MagicMock()
-        with patch("kimball.orchestration.services.merge_executor._merger.ensure_scd1_defaults") as mock_fn:
+        with patch(
+            "kimball.orchestration.services.merge_executor._merger.ensure_scd1_defaults"
+        ) as mock_fn:
             executor.seed_defaults(ctx, table_created=True)
             mock_fn.assert_called_once()
 
@@ -141,6 +157,7 @@ class TestPrepareSourceDF:
 
     def test_lineage_truncation_checkpoint_exception(self, executor, ctx):
         from pyspark.errors import PySparkException
+
         ctx.config.enable_lineage_truncation = True
         ctx.spark.sparkContext.getCheckpointDir.return_value = "/checkpoint"
         transformed_df = MagicMock()
@@ -167,7 +184,7 @@ class TestPrepareSourceDF:
         target_schema.fields = [MagicMock(name="col1")]
         ctx.spark.table.return_value.schema = target_schema
         executor._apply_adaptive_pruning = MagicMock(return_value=transformed_df)
-        result = executor.prepare_source_df(ctx, transformed_df)
+        executor.prepare_source_df(ctx, transformed_df)
         executor._apply_adaptive_pruning.assert_called_once()
 
 
@@ -176,7 +193,7 @@ class TestApplyAdaptivePruning:
         df = MagicMock()
         df.columns = ["col1", "col2", "col3"]
         target_columns = {"col1"}
-        result = executor._apply_adaptive_pruning(ctx, df, target_columns)
+        executor._apply_adaptive_pruning(ctx, df, target_columns)
         df.select.assert_called_once()
         selected = df.select.call_args[0]
         assert "col1" in selected
@@ -193,7 +210,7 @@ class TestApplyAdaptivePruning:
         df = MagicMock()
         df.columns = ["nk", "mk", "sk", "thc", "cvc", "fk_col", "extra"]
         target_columns = set()
-        result = executor._apply_adaptive_pruning(ctx, df, target_columns)
+        executor._apply_adaptive_pruning(ctx, df, target_columns)
         df.select.assert_called_once()
 
     def test_schema_evolution_adds_new_columns(self, executor, ctx):
@@ -204,7 +221,7 @@ class TestApplyAdaptivePruning:
         df.columns = ["new_col", "existing"]
         target_columns = {"existing"}
         executor._evolve_target_schema = MagicMock()
-        result = executor._apply_adaptive_pruning(ctx, df, target_columns)
+        executor._apply_adaptive_pruning(ctx, df, target_columns)
         executor._evolve_target_schema.assert_called_once()
 
     def test_no_drop_returns_same_df(self, executor, ctx):
@@ -239,6 +256,7 @@ class TestEvolveTargetSchema:
 
     def test_handles_exception_gracefully(self, executor, ctx):
         from pyspark.errors import PySparkException
+
         ctx.spark.table.side_effect = PySparkException("boom")
         executor._evolve_target_schema(ctx, ["new_col"])
 
@@ -269,11 +287,14 @@ class TestValidateGrain:
         source_df.groupBy.return_value = grouped
         # spark_count("*") is a real pyspark call that needs a SparkContext;
         # mock it so this unit test does not depend on a live session.
-        with patch(
-            "kimball.orchestration.services.merge_executor.spark_count"
-        ) as mock_count, patch(
-            "kimball.orchestration.services.merge_executor.logger"
-        ) as mock_logger:
+        with (
+            patch(
+                "kimball.orchestration.services.merge_executor.spark_count"
+            ) as mock_count,
+            patch(
+                "kimball.orchestration.services.merge_executor.logger"
+            ) as mock_logger,
+        ):
             mock_count.return_value = MagicMock()
             # Warn mode must log a warning and NOT raise, even with violations.
             executor.validate_grain(ctx, source_df, ["key"])
@@ -301,7 +322,9 @@ class TestValidateGrain:
 class TestExecuteMerge:
     def test_execute_merge_calls_merger(self, executor, ctx):
         source_df = MagicMock()
-        with patch("kimball.orchestration.services.merge_executor._merger.merge") as mock_merge:
+        with patch(
+            "kimball.orchestration.services.merge_executor._merger.merge"
+        ) as mock_merge:
             executor.execute_merge(ctx, source_df, ["key"])
             mock_merge.assert_called_once()
 
@@ -310,8 +333,13 @@ class TestExecuteMerge:
         source_df = MagicMock()
         with (
             patch("kimball.orchestration.services.merge_executor._merger.merge"),
-            patch("kimball.orchestration.services.merge_executor.os.environ.get", return_value="1"),
-            patch("kimball.orchestration.services.merge_executor._merger.optimize_table") as mock_opt,
+            patch(
+                "kimball.orchestration.services.merge_executor.os.environ.get",
+                return_value="1",
+            ),
+            patch(
+                "kimball.orchestration.services.merge_executor._merger.optimize_table"
+            ) as mock_opt,
         ):
             executor.execute_merge(ctx, source_df, ["key"])
             mock_opt.assert_called_once()
@@ -320,9 +348,16 @@ class TestExecuteMerge:
         ctx.config.optimize_after_merge = True
         source_df = MagicMock()
         with (
-            patch("kimball.orchestration.services.merge_executor._merger.merge") as mock_merge,
-            patch("kimball.orchestration.services.merge_executor.os.environ.get", return_value="0"),
-            patch("kimball.orchestration.services.merge_executor._merger.optimize_table") as mock_opt,
+            patch(
+                "kimball.orchestration.services.merge_executor._merger.merge"
+            ) as mock_merge,
+            patch(
+                "kimball.orchestration.services.merge_executor.os.environ.get",
+                return_value="0",
+            ),
+            patch(
+                "kimball.orchestration.services.merge_executor._merger.optimize_table"
+            ) as mock_opt,
         ):
             executor.execute_merge(ctx, source_df, ["key"])
         # The merge still runs, but optimize_table must be skipped when
@@ -334,7 +369,14 @@ class TestExecuteMerge:
 
 class TestGetMergeMetrics:
     def test_returns_metrics(self, executor, ctx):
-        with patch("kimball.orchestration.services.merge_executor._merger.get_last_merge_metrics", return_value={"numSourceRows": "10", "numTargetRowsInserted": "5", "numTargetRowsUpdated": "3"}) as mock_metrics:
+        with patch(
+            "kimball.orchestration.services.merge_executor._merger.get_last_merge_metrics",
+            return_value={
+                "numSourceRows": "10",
+                "numTargetRowsInserted": "5",
+                "numTargetRowsUpdated": "3",
+            },
+        ):
             result = executor.get_merge_metrics(ctx)
             assert result["rows_read"] == 10
             assert result["rows_written"] == 8

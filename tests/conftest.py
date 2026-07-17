@@ -27,7 +27,6 @@ if os.path.exists(_dotenv_path):
 # Then only mock the sdk.runtime submodule (which is not importable
 # outside Databricks runtime).
 import databricks  # noqa: F401, E402
-from unittest.mock import MagicMock
 
 mock_db_sdk = MagicMock()
 mock_db_sdk.spark = MagicMock()
@@ -124,7 +123,10 @@ def _create_local_spark_session(warehouse_dir: str | None = None) -> SparkSessio
             pass  # delta-spark not installed — tests that need it will fail
     return (
         builder.config("spark.sql.ansi.enabled", "true")
-        .config("spark.sql.warehouse.dir", warehouse_dir or tempfile.mkdtemp(prefix="spark-warehouse-kimball-tests-"))
+        .config(
+            "spark.sql.warehouse.dir",
+            warehouse_dir or tempfile.mkdtemp(prefix="spark-warehouse-kimball-tests-"),
+        )
         .getOrCreate()
     )
 
@@ -173,6 +175,7 @@ def spark():
         spark.stop()
         # Clean up the warehouse directory after stopping the session
         import shutil
+
         shutil.rmtree(warehouse_dir, ignore_errors=True)
 
 
@@ -190,6 +193,7 @@ def test_catalog() -> str:
 # ---------------------------------------------------------------------------
 # Shared fixtures for integration tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def test_db(spark: SparkSession, request: pytest.FixtureRequest):
@@ -223,6 +227,7 @@ def test_db(spark: SparkSession, request: pytest.FixtureRequest):
 def config_loader():
     """Provide a ConfigLoader instance for integration tests."""
     from kimball.common.config import ConfigLoader
+
     return ConfigLoader()
 
 

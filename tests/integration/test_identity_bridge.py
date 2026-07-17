@@ -88,9 +88,7 @@ class TestIdentityBridgeResolution:
         assert rows["E"] == 300, f"D should resolve to E, got {rows}"
         # The vals 100 and 200 both survive (one under C); collect them to prove
         # no source row was silently dropped during resolution.
-        vals_for_c = {
-            r.val for r in resolved.filter("business_key = 'C'").collect()
-        }
+        vals_for_c = {r.val for r in resolved.filter("business_key = 'C'").collect()}
         assert vals_for_c == {100, 200}, (
             f"Both source rows should resolve to C keeping their vals, got {vals_for_c}"
         )
@@ -113,9 +111,7 @@ class TestIdentityBridgeResolution:
             target_column="target_key",
         )
         # X has no mapping in the bridge -> must pass through unchanged.
-        source = spark.createDataFrame(
-            [("X", 300)], "business_key string, val int"
-        )
+        source = spark.createDataFrame([("X", 300)], "business_key string, val int")
 
         resolved = SkeletonManager().apply_identity_bridge(_ctx(spark, bridge), source)
         rows = resolved.collect()
@@ -183,9 +179,7 @@ class TestIdentityBridgeResolution:
         by_key = {r.business_key: r.val for r in resolved.collect()}
 
         assert by_key.get("C") == 100, f"A should resolve to C, got {by_key}"
-        assert by_key.get("B") == 200, (
-            f"B should pass through unmapped, got {by_key}"
-        )
+        assert by_key.get("B") == 200, f"B should pass through unmapped, got {by_key}"
         assert "A" not in by_key, f"A should not survive unresolved, got {by_key}"
 
         spark.sql(f"DROP TABLE IF EXISTS {test_db}.bridge")
@@ -249,11 +243,7 @@ transformation_sql: |
         # The dimension must be keyed by the RESOLVED canonical ids (1/2/3).
         # If the bridge were not wired into the pipeline, these would be the
         # unresolved producer ids (100/200/300).
-        dim = (
-            spark.table(f"{test_db}.dim_seller")
-            .filter("producer_id > 0")
-            .collect()
-        )
+        dim = spark.table(f"{test_db}.dim_seller").filter("producer_id > 0").collect()
         by_id = {r.producer_id: r for r in dim}
         assert set(by_id) == {1, 2, 3}, (
             f"Bridge did not resolve producer ids to canonical seller ids: {set(by_id)}"

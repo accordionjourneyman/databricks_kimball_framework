@@ -28,6 +28,7 @@ import argparse
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 
 def parse_args() -> argparse.Namespace:
@@ -234,7 +235,9 @@ def main() -> None:
         if cleanup_result.returncode != 0:
             print("warning: cleanup reported errors (see above)")
     elif args.cleanup and args.target == "local":
-        print("\nnote: --cleanup is only meaningful with --target databricks (local temp dirs are auto-cleaned)")
+        print(
+            "\nnote: --cleanup is only meaningful with --target databricks (local temp dirs are auto-cleaned)"
+        )
 
     sys.exit(result.returncode)
 

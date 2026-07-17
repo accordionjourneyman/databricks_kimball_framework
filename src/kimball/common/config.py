@@ -1,14 +1,20 @@
 import hashlib
 import os
 import re
+from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError, model_validator
-from pyspark.errors import PySparkException
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 
-class StreamingSourceConfig(BaseModel):
+class StrictConfigModel(BaseModel):
+    """Base for configuration objects where typos must fail closed."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class StreamingSourceConfig(StrictConfigModel):
     """Optional streaming configuration for a CDF source.
 
     When set on a ``SourceConfig``, the framework consumes CDF through a
@@ -54,7 +60,7 @@ class StreamingSourceConfig(BaseModel):
         return self
 
 
-class ContractColumnConfig(BaseModel):
+class ContractColumnConfig(StrictConfigModel):
     """A supplier column expectation used by a consumer pipeline."""
 
     type: str
@@ -62,22 +68,24 @@ class ContractColumnConfig(BaseModel):
     required: bool = True
 
 
-class ContractCDCConfig(BaseModel):
+class ContractCDCConfig(StrictConfigModel):
     required: bool = False
     primary_key: list[str] = Field(default_factory=list)
 
 
-class ContractFreshnessConfig(BaseModel):
+class ContractFreshnessConfig(StrictConfigModel):
     max_age: str
 
     @model_validator(mode="after")
     def validate_duration(self) -> "ContractFreshnessConfig":
-        if not re.match(r"^\d+\s*(s|m|h|d|seconds?|minutes?|hours?|days?)$", self.max_age, re.I):
+        if not re.match(
+            r"^\d+\s*(s|m|h|d|seconds?|minutes?|hours?|days?)$", self.max_age, re.I
+        ):
             raise ValueError("freshness.max_age must be a duration such as '2 hours'")
         return self
 
 
-class ContractQualityRule(BaseModel):
+class ContractQualityRule(StrictConfigModel):
     name: str | None = None
     rule: Literal["not_null", "unique", "null_rate", "accepted_values", "expression"]
     column: str | None = None
@@ -87,8 +95,26 @@ class ContractQualityRule(BaseModel):
     expression: str | None = None
     severity: Literal["warn", "error"] = "error"
 
+    @model_validator(mode="after")
+    def validate_rule_shape(self) -> "ContractQualityRule":
+        if self.rule in {"not_null", "null_rate", "accepted_values"}:
+            if not self.column:
+                raise ValueError(f"{self.rule} requires column")
+        if self.rule == "null_rate" and self.max_ratio is None:
+            raise ValueError("null_rate requires max_ratio")
+        if self.rule == "accepted_values" and self.values is None:
+            raise ValueError("accepted_values requires values")
+        if self.rule == "expression" and not (self.expression or "").strip():
+            raise ValueError("expression requires expression")
+        if self.rule == "unique":
+            if self.column and self.columns:
+                raise ValueError("unique accepts either column or columns")
+            if not self.column and not self.columns:
+                raise ValueError("unique requires column or columns")
+        return self
 
-class ContractTemporalConfig(BaseModel):
+
+class ContractTemporalConfig(StrictConfigModel):
     event_time_column: str
     allowed_lateness: str = "0 hours"
     late_event_severity: Literal["warn", "error"] = "warn"
@@ -96,12 +122,35 @@ class ContractTemporalConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_duration(self) -> "ContractTemporalConfig":
-        if not re.match(r"^\d+\s*(s|m|h|d|seconds?|minutes?|hours?|days?)$", self.allowed_lateness, re.I):
-            raise ValueError("temporal.allowed_lateness must be a duration such as '24 hours'")
+        if not re.match(
+            r"^\d+\s*(s|m|h|d|seconds?|minutes?|hours?|days?)$",
+            self.allowed_lateness,
+            re.I,
+        ):
+            raise ValueError(
+                "temporal.allowed_lateness must be a duration such as '24 hours'"
+            )
         return self
 
 
-class SourceContractConfig(BaseModel):
+class ContractValidationPolicy(StrictConfigModel):
+    """Execution budget for runtime consumer-side contract checks."""
+
+    mode: Literal["full", "sampled", "approximate"] = "full"
+    sample_fraction: float | None = Field(default=None, gt=0, le=1)
+    sample_seed: int = 17
+    max_sample_rows: int | None = Field(default=None, gt=0)
+    max_failure_samples: int = Field(default=5, ge=0, le=100)
+    max_actions: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_sampling(self) -> "ContractValidationPolicy":
+        if self.mode == "sampled" and self.sample_fraction is None:
+            raise ValueError("validation.sample_fraction is required in sampled mode")
+        return self
+
+
+class SourceContractConfig(StrictConfigModel):
     """Executable, consumer-side contract for one upstream source."""
 
     id: str
@@ -113,9 +162,12 @@ class SourceContractConfig(BaseModel):
     freshness: ContractFreshnessConfig | None = None
     quality: list[ContractQualityRule] = Field(default_factory=list)
     temporal: ContractTemporalConfig | None = None
+    validation: ContractValidationPolicy = Field(
+        default_factory=ContractValidationPolicy
+    )
 
 
-class SourceConfig(BaseModel):
+class SourceConfig(StrictConfigModel):
     name: str
     alias: str
     format: str = "delta"
@@ -126,6 +178,7 @@ class SourceConfig(BaseModel):
     starting_version: int = Field(default=0, ge=0)
     streaming: StreamingSourceConfig | None = Field(default=None)
     contract: SourceContractConfig | None = None
+    contract_ref: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -134,27 +187,48 @@ class SourceConfig(BaseModel):
             data["alias"] = data.get("name", "").split(".")[-1]
         return data
 
+    @model_validator(mode="after")
+    def reject_unsupported_cdc_strategy(self) -> "SourceConfig":
+        if self.cdc_strategy == "timestamp":
+            raise ValueError(
+                "cdc_strategy='timestamp' is not implemented; use 'cdf' or 'full'"
+            )
+        if self.contract and self.contract_ref:
+            raise ValueError("contract and contract_ref are mutually exclusive")
+        return self
 
-class ForeignKeyConfig(BaseModel):
+
+class ForeignKeyConfig(StrictConfigModel):
     column: str
     references: str | None = Field(default=None)
     dimension_key: str | None = Field(default=None)
     default_value: int = Field(default=-1)
+    role: str | None = None
+    role_playing: bool = False
 
 
-class PIIColumnConfig(BaseModel):
+class PIIColumnConfig(StrictConfigModel):
     """Per-column PII masking declaration.
 
     See CONFIGURATION.md > PII Masking for full documentation.
     """
 
     column: str
-    strategy: Literal["hash", "mask", "null", "drop"] = "mask"
+    strategy: Literal["tokenize", "fast_hash", "hash", "mask", "null", "drop"] = "mask"
+    secret_ref: str | None = None
     reveal_prefix: int = Field(default=0, ge=0)
     mask_char: str = Field(default="*", max_length=1)
 
+    @model_validator(mode="after")
+    def validate_security_strategy(self) -> "PIIColumnConfig":
+        if self.strategy == "tokenize" and not self.secret_ref:
+            raise ValueError("tokenize requires secret_ref")
+        if self.strategy != "tokenize" and self.secret_ref is not None:
+            raise ValueError("secret_ref is only valid for tokenize")
+        return self
 
-class PIIPolicy(BaseModel):
+
+class PIIPolicy(StrictConfigModel):
     """Container for PII column policies declared in the ``pii`` YAML block.
 
     Applied by ``orchestrator._transform_and_validate`` after
@@ -162,6 +236,7 @@ class PIIPolicy(BaseModel):
     ``TableCreator._apply_pii_masks`` also emits Delta ``MASK`` clauses
     for role-based read-time enforcement.
     """
+
     columns: list[PIIColumnConfig] = Field(default_factory=list)
 
     @property
@@ -173,19 +248,55 @@ class PIIPolicy(BaseModel):
         return [c.column for c in self.columns if c.strategy == "drop"]
 
 
-class TestDefinition(BaseModel):
+class TestDefinition(StrictConfigModel):
     column: str
     tests: list[str | dict[str, Any]] = Field(default_factory=list)
     severity: Literal["error", "warn"] = "error"
 
 
-class IdentityBridgeConfig(BaseModel):
+class FactMeasureConfig(StrictConfigModel):
+    name: str
+    aggregation: Literal["sum", "avg", "min", "max", "count", "count_distinct"]
+    additivity: Literal["additive", "semi_additive", "non_additive"]
+    non_additive_dimensions: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_additivity(self) -> "FactMeasureConfig":
+        if self.additivity == "semi_additive" and not self.non_additive_dimensions:
+            raise ValueError("semi_additive measures require non_additive_dimensions")
+        if self.additivity != "semi_additive" and self.non_additive_dimensions:
+            raise ValueError(
+                "non_additive_dimensions is only valid for semi_additive measures"
+            )
+        return self
+
+
+class FactMilestoneConfig(StrictConfigModel):
+    name: str
+    column: str
+    order: int = Field(ge=1)
+
+
+class JunkDimensionConfig(StrictConfigModel):
+    dimension_table: str
+    surrogate_key: str
+    source_columns: list[str] = Field(min_length=1)
+
+
+class ConformedDimensionConfig(StrictConfigModel):
+    canonical_name: str
+    owner: str
+    grain: str
+    shared_attributes: list[str] = Field(default_factory=list)
+
+
+class IdentityBridgeConfig(StrictConfigModel):
     table: str
     join_on: str
     target_column: str
 
 
-class EarlyArrivingDimensionConfig(BaseModel):
+class EarlyArrivingDimensionConfig(StrictConfigModel):
     fact_key: str
     dimension_table: str
     dimension_key: str
@@ -194,17 +305,24 @@ class EarlyArrivingDimensionConfig(BaseModel):
     severity: Literal["warn", "error"] = "warn"
 
 
-class ObservabilityConfig(BaseModel):
+def _default_alert_on() -> list[Literal["warn", "error"]]:
+    return ["error"]
+
+
+class ObservabilityConfig(StrictConfigModel):
     enabled: bool = True
     event_table: str = "etl_data_quality_events"
     state_table: str = "etl_contract_monitor_state"
+    temporal_state_table: str = "etl_contract_temporal_state"
+    write_failure: Literal["warn", "error"] = "warn"
     webhook_env: str = "KIMBALL_ALERT_WEBHOOK_URL"
-    alert_on: list[Literal["warn", "error"]] = Field(default_factory=lambda: ["error"])
+    alert_on: list[Literal["warn", "error"]] = Field(default_factory=_default_alert_on)
 
 
-class TableConfig(BaseModel):
+class TableConfig(StrictConfigModel):
     table_name: str
     table_type: Literal["dimension", "fact"]
+    depends_on: list[str] = Field(default_factory=list)
     surrogate_key: str | None = None
     natural_keys: list[str] = Field(default_factory=list)
     sources: list[SourceConfig]
@@ -233,6 +351,18 @@ class TableConfig(BaseModel):
     pii: PIIPolicy | None = None
     append_only: bool = False
     observability: ObservabilityConfig | None = None
+    grain: str | None = None
+    fact_pattern: (
+        Literal["transaction", "periodic_snapshot", "accumulating_snapshot"] | None
+    ) = None
+    snapshot_period: Literal["day", "week", "month", "quarter", "year"] | None = None
+    measures: list[FactMeasureConfig] = Field(default_factory=list)
+    milestones: list[FactMilestoneConfig] = Field(default_factory=list)
+    conformed_dimension: ConformedDimensionConfig | None = None
+    degenerate_dimensions: list[str] = Field(default_factory=list)
+    junk_dimensions: list[JunkDimensionConfig] = Field(default_factory=list)
+    table_description: str | None = None
+    column_descriptions: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -243,6 +373,7 @@ class TableConfig(BaseModel):
                 for field_name in ("surrogate_key", "natural_keys"):
                     if field_name in keys:
                         data[field_name] = keys[field_name]
+                data.pop("keys", None)
         return data
 
     @model_validator(mode="after")
@@ -254,10 +385,73 @@ class TableConfig(BaseModel):
                 raise ValueError("Dimensions require keys.natural_keys")
         if self.table_type == "fact" and not self.merge_keys:
             raise ValueError("fact tables require merge_keys")
+        if self.table_type == "fact" and self.fact_pattern and not self.grain:
+            raise ValueError("facts require a declared grain")
+        if self.table_description is not None and not self.table_description.strip():
+            raise ValueError("table_description must not be empty")
+        if any(
+            not name or not description.strip()
+            for name, description in self.column_descriptions.items()
+        ):
+            raise ValueError(
+                "column_descriptions requires non-empty column names and descriptions"
+            )
+        if self.table_type != "fact" and (
+            self.fact_pattern
+            or self.snapshot_period
+            or self.measures
+            or self.milestones
+            or self.degenerate_dimensions
+            or self.junk_dimensions
+        ):
+            raise ValueError("fact pattern metadata is only valid for fact tables")
+        if self.fact_pattern == "periodic_snapshot" and not self.snapshot_period:
+            raise ValueError("periodic_snapshot facts require snapshot_period")
+        if self.fact_pattern == "accumulating_snapshot":
+            if len(self.milestones) < 2:
+                raise ValueError(
+                    "accumulating_snapshot facts require at least two milestones"
+                )
+            orders = [m.order for m in self.milestones]
+            if len(orders) != len(set(orders)):
+                raise ValueError(
+                    "accumulating_snapshot milestones must have unique order values"
+                )
+        for fk in self.foreign_keys or []:
+            if fk.role_playing and not fk.role:
+                raise ValueError("role_playing foreign keys require role")
+            if fk.role_playing and not fk.references:
+                raise ValueError(
+                    "role_playing foreign keys require references to a physical dimension"
+                )
+        junk_keys = [junk.surrogate_key for junk in self.junk_dimensions]
+        if len(junk_keys) != len(set(junk_keys)):
+            raise ValueError("junk dimension surrogate_key values must be unique")
+        if set(self.degenerate_dimensions).intersection(junk_keys):
+            raise ValueError(
+                "a column cannot be both a degenerate and junk dimension key"
+            )
+        roles = [fk.role for fk in self.foreign_keys or [] if fk.role_playing]
+        if len(roles) != len(set(roles)):
+            raise ValueError("role_playing foreign key roles must be unique")
+        measure_names = [measure.name for measure in self.measures]
+        if len(measure_names) != len(set(measure_names)):
+            raise ValueError("fact measure names must be unique")
+        milestone_names = [milestone.name for milestone in self.milestones]
+        milestone_columns = [milestone.column for milestone in self.milestones]
+        if len(milestone_names) != len(set(milestone_names)):
+            raise ValueError("fact milestone names must be unique")
+        if len(milestone_columns) != len(set(milestone_columns)):
+            raise ValueError("fact milestone columns must be unique")
         if self.append_only and self.table_type != "fact":
             raise ValueError("append_only is only valid for fact tables")
-        if any(s.cdc_strategy == "append" for s in self.sources) and not self.append_only:
-            raise ValueError("cdc_strategy='append' requires append_only=true for the target table")
+        if (
+            any(s.cdc_strategy == "append" for s in self.sources)
+            and not self.append_only
+        ):
+            raise ValueError(
+                "cdc_strategy='append' requires append_only=true for the target table"
+            )
         if self.scd_type == 2 and not self.effective_at:
             raise ValueError(
                 "SCD Type 2 requires 'effective_at' for idempotent history tracking. "
@@ -272,7 +466,11 @@ class TableConfig(BaseModel):
         for source in self.sources:
             if source.contract and source.contract.cdc:
                 contract_keys = source.contract.cdc.primary_key
-                if contract_keys and source.primary_keys and contract_keys != source.primary_keys:
+                if (
+                    contract_keys
+                    and source.primary_keys
+                    and contract_keys != source.primary_keys
+                ):
                     raise ValueError(
                         f"Source '{source.name}' primary_keys must match contract.cdc.primary_key"
                     )
@@ -300,11 +498,39 @@ class ConfigLoader:
                 .render(self.env_vars)
             )
         try:
-            return TableConfig(**yaml.safe_load(rendered))
+            config = TableConfig(**yaml.safe_load(rendered))
+            return self.resolve_contract_refs(config, file_path)
         except ValidationError as e:
             raise ValueError(
                 f"Configuration validation error in {file_path}: {e}"
             ) from e
+
+    def resolve_contract_refs(
+        self, config: TableConfig, config_path: str | Path
+    ) -> TableConfig:
+        """Resolve exact ODCS pins relative to the pipeline configuration."""
+
+        from kimball.contracts.odcs import (
+            ODCSContractLoader,
+            adapt_odcs_to_source_contract,
+        )
+
+        base = Path(config_path).parent
+        loader = ODCSContractLoader()
+        sources = []
+        for source in config.sources:
+            if not source.contract_ref:
+                sources.append(source)
+                continue
+            ref_path = Path(source.contract_ref)
+            if not ref_path.is_absolute():
+                ref_path = base / ref_path
+            contract = loader.load_file(ref_path)
+            runtime_contract = adapt_odcs_to_source_contract(
+                contract, object_name=source.name
+            )
+            sources.append(source.model_copy(update={"contract": runtime_contract}))
+        return config.model_copy(update={"sources": sources})
 
     def validate_transformation_sql(
         self,
@@ -330,7 +556,7 @@ class ConfigLoader:
             try:
                 self._explain_dry_run(config, spark)
                 return []
-            except PySparkException as e:
+            except Exception as e:
                 issues.append(f"SQL dry-run failed: {e}")
                 return issues
 
@@ -379,7 +605,7 @@ class ConfigLoader:
                         f"CREATE OR REPLACE TEMP VIEW {source.alias} AS SELECT * FROM {view_name}"
                     )
                     views.append(source.alias)
-            except PySparkException:
+            except Exception:
                 pass
         try:
             spark.sql(f"EXPLAIN {config.transformation_sql}").collect()
@@ -387,7 +613,7 @@ class ConfigLoader:
             for v in set(views):
                 try:
                     spark.catalog.dropTempView(v)
-                except PySparkException:
+                except Exception:
                     pass
 
     def compute_fingerprint(
@@ -413,10 +639,14 @@ class ConfigLoader:
             ],
             "foreign_keys": sorted(
                 [
-                    {"column": fk.column, "references": fk.references, "dimension_key": fk.dimension_key}
+                    {
+                        "column": fk.column,
+                        "references": fk.references,
+                        "dimension_key": fk.dimension_key,
+                    }
                     for fk in (config.foreign_keys or [])
                 ],
-                key=lambda x: x["column"],
+                key=lambda x: str(x["column"]),
             ),
             "delete_strategy": config.delete_strategy,
             "schema_evolution": config.schema_evolution,

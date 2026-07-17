@@ -6,7 +6,9 @@ from kimball.orchestration.orchestrator import Orchestrator
 pytestmark = pytest.mark.usefixtures("spark")
 
 
-def test_schema_evolution_with_new_column(spark: SparkSession, test_db: str, tmp_config):
+def test_schema_evolution_with_new_column(
+    spark: SparkSession, test_db: str, tmp_config
+):
     """
     Integration test for schema evolution: Add a new column to source and verify
     SCD2 merge handles it gracefully with hash-based surrogate keys.
@@ -56,9 +58,7 @@ transformation_sql: |
 
     ddl_rows = spark.sql(f"DESCRIBE EXTENDED {test_db}.dim_customer").collect()
     ddl_text = "\n".join([row[0] for row in ddl_rows])
-    assert "customer_sk" in ddl_text, (
-        f"Expected customer_sk column, got:\n{ddl_text}"
-    )
+    assert "customer_sk" in ddl_text, f"Expected customer_sk column, got:\n{ddl_text}"
 
     evolved_config = f"""
 table_name: {test_db}.dim_customer
@@ -102,9 +102,7 @@ transformation_sql: |
     assert result["status"] == "SUCCESS"
 
     evolved_schema = spark.table(f"{test_db}.dim_customer").schema
-    email_field = next(
-        (f for f in evolved_schema.fields if f.name == "email"), None
-    )
+    email_field = next((f for f in evolved_schema.fields if f.name == "email"), None)
     assert email_field is not None
 
     data = spark.table(f"{test_db}.dim_customer").collect()

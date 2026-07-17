@@ -31,9 +31,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from kimball.common.errors import DataQualityError
-
 from pyspark.sql import functions as F
+
+from kimball.common.errors import DataQualityError
 
 if TYPE_CHECKING:
     from pyspark.sql import DataFrame, SparkSession
@@ -409,7 +409,9 @@ class DataQualityValidator:
                 df.select(*[F.col(c) for c in columns])
                 .agg(
                     F.count("*").alias("_total"),
-                    F.approx_count_distinct(*columns).alias("_distinct"),
+                    F.approx_count_distinct(
+                        F.struct(*[F.col(column) for column in columns])
+                    ).alias("_distinct"),
                 )
                 .first()
             )
@@ -417,7 +419,7 @@ class DataQualityValidator:
             distinct = int(stats["_distinct"]) if stats else 0
             if distinct < 0:
                 return self._test_error(
-                    test_name, severity, "approx_count_distinct failed"
+                    test_name, severity, RuntimeError("approx_count_distinct failed")
                 )
             ratio = distinct / total if total > 0 else 1.0
             passed = ratio >= 0.99
@@ -553,7 +555,9 @@ class DataQualityValidator:
                 duplicates_check = (
                     df.groupBy(*natural_keys).count().filter(F.col("count") > 1)
                 )
-                duplicate_count: int | None = None if duplicates_check.limit(1).isEmpty() is False else 0
+                duplicate_count: int | None = (
+                    None if duplicates_check.limit(1).isEmpty() is False else 0
+                )
                 total_rows = None
             details = None
             sample_failures: list[dict[str, Any]] = []
@@ -591,6 +595,8 @@ class DataQualityValidator:
         dim_key = fk.get("dimension_key", fk_column)
         if not fk_column or not dim_table:
             return None
+        if not dim_key:
+            dim_key = fk_column
         test_name = f"fk_integrity({fk_column} -> {dim_table}.{dim_key})"
         try:
             raw_default = fk.get("default_value")
@@ -615,7 +621,6 @@ class DataQualityValidator:
             orphans = fact_fks.join(
                 valid_sks, fact_fks[fk_column] == valid_sks[dim_key], "left_anti"
             )
-            is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
 
             def details(count):
                 if count > 0:

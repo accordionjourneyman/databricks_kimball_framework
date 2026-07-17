@@ -1,0 +1,2 @@
+# Keep repository text stable across Windows, Linux CI, and Databricks containers.
+* text=auto eol=lf

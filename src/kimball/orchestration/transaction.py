@@ -19,12 +19,15 @@ if TYPE_CHECKING:
 
 class TransactionManager:
     """
-    Manages ensuring ACID-like properties for ETL pipelines using Delta Time Travel.
+    Single-table compensating rollback using retained Delta history.
 
     Provides:
-    - Context manager for atomic table operations (RESTORE on failure).
+    - A failure boundary that attempts RESTORE after a committed table write.
     - Commit tagging with batch_ID for traceability.
     - Zombie recovery for rolling back crashed driver commits.
+
+    This is not a transaction spanning the target and ETL control tables. It
+    requires a single writer, retained history, and commit metadata.
     """
 
     def __init__(self, spark_session: SparkSession | None = None) -> None:
@@ -121,7 +124,7 @@ class TransactionManager:
         self, table_name: str, batch_id: str
     ) -> Generator[None, None, None]:
         """
-        Context manager that wraps execution in a robust transaction.
+        Context manager implementing best-effort compensating rollback.
 
         1. Captures start version.
         2. Sets Spark commit metadata (batch_id).

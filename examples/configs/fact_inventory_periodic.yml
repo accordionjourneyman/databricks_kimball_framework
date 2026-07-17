@@ -1,0 +1,18 @@
+table_name: demo_gold.fact_inventory_daily
+table_type: fact
+merge_keys: [snapshot_date, product_id, warehouse_id]
+grain: one product per warehouse per snapshot day
+fact_pattern: periodic_snapshot
+snapshot_period: day
+measures:
+  - name: on_hand_quantity
+    aggregation: sum
+    additivity: semi_additive
+    non_additive_dimensions: [snapshot_date]
+sources:
+  - name: silver.inventory_movements
+    alias: inventory
+transformation_sql: |
+  SELECT snapshot_date, product_id, warehouse_id, SUM(on_hand_quantity) AS on_hand_quantity
+  FROM silver.inventory_movements
+  GROUP BY snapshot_date, product_id, warehouse_id

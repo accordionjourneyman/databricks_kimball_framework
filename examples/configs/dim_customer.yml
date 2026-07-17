@@ -15,9 +15,9 @@ track_history_columns:
   - email
   - address
 
-# Optional: Business-time SCD2 - use source timestamp for __valid_from/__valid_to
-# If not set, uses processing time (__etl_processed_at)
-# effective_at: updated_at
+# Required business-time SCD2 boundary. Replays use this source timestamp rather
+# than processing time, so the same input produces the same history chain.
+effective_at: updated_at
 
 # Default rows to seed into the dimension
 default_rows:
@@ -33,6 +33,21 @@ sources:
     alias: c
     cdc_strategy: cdf
     primary_keys: [customer_id]  # Required for CDF deduplication
+    # Exact producer contract pin. CI rejects incompatible version evolution;
+    # runtime adapts the same ODCS object into schema/CDC/DQ checks.
+    contract_ref: ../../contracts/customer-contract/1.0.0.odcs.yaml
+
+observability:
+  enabled: true
+  event_table: etl_data_quality_events
+  temporal_state_table: etl_contract_temporal_state
+  write_failure: warn
+
+table_description: Type 2 customer dimension governed by the CRM supplier contract.
+column_descriptions:
+  customer_sk: Warehouse surrogate key for a customer version.
+  customer_id: Stable CRM customer identifier.
+  updated_at: Supplier business-effective timestamp for this version.
 
 transformation_sql: |
   SELECT

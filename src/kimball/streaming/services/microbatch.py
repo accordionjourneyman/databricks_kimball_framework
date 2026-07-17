@@ -7,8 +7,12 @@ from pyspark.sql import DataFrame
 from pyspark.sql.functions import broadcast
 from pyspark.sql.functions import count as spark_count
 
-from kimball.common.config import ConfigLoader
-from kimball.observability.data_quality import DataQualityEventWriter
+from kimball.common.config import ConfigLoader, SourceContractConfig
+from kimball.observability.data_quality import (
+    DataQualityEventSink,
+    DataQualityEventWriter,
+)
+from kimball.observability.temporal_state import TemporalStateStore
 from kimball.orchestration.services.contracts import ContractValidator
 from kimball.orchestration.validation import DataQualityValidator
 from kimball.orchestration.watermark import compute_source_schema_fingerprint
@@ -97,26 +101,69 @@ class StreamingMicroBatchProcessor:
             source_df = batch_df
 
         if self.config.pii and self.config.pii.columns:
-            logger.info(f"Applying PII masking to {len(self.config.pii.columns)} column(s)")
+            logger.info(
+                f"Applying PII masking to {len(self.config.pii.columns)} column(s)"
+            )
             source_df = apply_pii_masking(source_df, self.config.pii)
 
-        if source.contract:
+        pending_temporal_state: tuple[TemporalStateStore, DataFrame] | None = None
+        if isinstance(source.contract, SourceContractConfig):
             obs = self.config.observability
-            writer = DataQualityEventWriter(
-                self.spark, self.etl_schema, obs.event_table if obs else "etl_data_quality_events"
+            writer = DataQualityEventSink(
+                self.spark,
+                self.etl_schema,
+                obs.event_table if obs else "etl_data_quality_events",
+                failure_mode=obs.write_failure if obs else "warn",
+                writer_type=DataQualityEventWriter,
             )
-            findings = ContractValidator(self.spark).validate_data(source_df, source)
+            validator = ContractValidator(self.spark)
+            findings = validator.validate_data(source_df, source)
+            if source.contract.temporal:
+                state_store = TemporalStateStore(
+                    self.spark,
+                    self.etl_schema,
+                    obs.temporal_state_table if obs else "etl_contract_temporal_state",
+                )
+                prior_state = state_store.existing(
+                    self.config.table_name, source.name, source.contract.id
+                )
+                findings.extend(
+                    validator.validate_temporal(
+                        batch_df, source, prior_state=prior_state
+                    )
+                )
+                pending_temporal_state = (
+                    state_store,
+                    state_store.prepare(
+                        batch_df,
+                        pipeline_table=self.config.table_name,
+                        source=source,
+                    ),
+                )
             for finding in findings:
                 writer.write(
-                    pipeline_table=self.config.table_name, source=source, finding=finding,
-                    run_id=str(batch_id), action="blocked" if not finding.passed and finding.severity.value == "error" else "recorded",
+                    pipeline_table=self.config.table_name,
+                    source=source,
+                    finding=finding,
+                    run_id=str(batch_id),
+                    action=(
+                        "blocked"
+                        if not finding.passed and finding.severity.value == "error"
+                        else "accepted_late"
+                        if finding.category == "temporal_contract"
+                        else "recorded"
+                    ),
                 )
             ContractValidator.raise_for_errors(findings)
 
         cdf_meta_cols = [
             c for c in ("_commit_version", "_commit_timestamp") if c in batch_df.columns
         ]
-        if cdf_meta_cols and self.config.transformation_sql and "_commit_version" not in source_df.columns:
+        if (
+            cdf_meta_cols
+            and self.config.transformation_sql
+            and "_commit_version" not in source_df.columns
+        ):
             batch_table_name = (
                 f"{self.etl_schema}._kimball_batch_{source.alias}_{batch_id}"
             )
@@ -161,6 +208,18 @@ class StreamingMicroBatchProcessor:
                 rows_read=0,
                 rows_written=rows_written,
             )
+        if pending_temporal_state is not None:
+            state_store, state_df = pending_temporal_state
+            try:
+                state_store.commit(state_df, str(batch_id))
+            except Exception as exc:
+                obs = self.config.observability
+                if obs and obs.write_failure == "error":
+                    raise
+                logger.warning(
+                    "Temporal contract state append failed (%s); merge result retained",
+                    type(exc).__name__,
+                )
 
     def _validate_fks(self, source_df: DataFrame) -> None:
         if self.config.table_type != "fact" or not self.config.foreign_keys:

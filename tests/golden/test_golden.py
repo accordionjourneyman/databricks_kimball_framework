@@ -128,10 +128,7 @@ def _read_csv(spark: SparkSession, csv_path: Path, schema: StructType):
 
     is_remote = bool(
         os.environ.get("SPARK_REMOTE")
-        or (
-            os.environ.get("DATABRICKS_HOST")
-            and os.environ.get("DATABRICKS_TOKEN")
-        )
+        or (os.environ.get("DATABRICKS_HOST") and os.environ.get("DATABRICKS_TOKEN"))
     )
     if is_remote:
         import csv as csv_mod
@@ -147,7 +144,7 @@ def _read_csv(spark: SparkSession, csv_path: Path, schema: StructType):
             rows = []
             for row in reader:
                 converted = {}
-                for fn, sf in zip(field_names, schema.fields):
+                for fn, sf in zip(field_names, schema.fields, strict=True):
                     val = row[fn]
                     converter = type_map.get(type(sf.dataType), str)
                     converted[fn] = converter(val) if val else None
@@ -482,7 +479,11 @@ def test_append_only_fact_loads(
     event_count = spark.table(_q(day1_data, out_schema, "fact_events")).count()
     assert event_count == 3, f"Expected 3 events, got {event_count}"
 
-    rows = spark.table(_q(day1_data, out_schema, "fact_events")).orderBy("event_id").collect()
+    rows = (
+        spark.table(_q(day1_data, out_schema, "fact_events"))
+        .orderBy("event_id")
+        .collect()
+    )
     assert [r.event_id for r in rows] == [9001, 9002, 9003]
 
 

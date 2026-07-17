@@ -52,8 +52,16 @@ def _merge_history(
 ) -> None:
     spark = source_df.sparkSession
     if track_history_columns == ["*"]:
-        exclude = {surrogate_key_col, effective_at_column, "_change_type", "__etl_processed_at", "__etl_batch_id"}
-        track_cols = [c for c in source_df.columns if c not in exclude and not c.startswith("__")]
+        exclude = {
+            surrogate_key_col,
+            effective_at_column,
+            "_change_type",
+            "__etl_processed_at",
+            "__etl_batch_id",
+        }
+        track_cols = [
+            c for c in source_df.columns if c not in exclude and not c.startswith("__")
+        ]
     else:
         track_cols = track_history_columns
 
@@ -66,7 +74,7 @@ def _merge_history(
     if "_change_type" in source_df.columns:
         select_cols.append("_change_type")
     else:
-        select_cols.append(lit("insert").alias("_change_type"))
+        select_cols.append("'insert' as _change_type")
     unpivoted = source_df.selectExpr(*select_cols)
 
     history = spark.table(history_table_name).filter("__is_current = true")
@@ -74,26 +82,43 @@ def _merge_history(
         unpivoted.alias("src")
         .join(
             history.alias("tgt"),
-            (col("src." + surrogate_key_col) == col("tgt.surrogate_key")) & (col("src.field") == col("tgt.field")),
+            (col("src." + surrogate_key_col) == col("tgt.surrogate_key"))
+            & (col("src.field") == col("tgt.field")),
             "left",
         )
-        .filter(col("tgt.value").isNull() | (col("tgt.value") != col("src.value")) | (col("src._change_type") == "delete"))
+        .filter(
+            col("tgt.value").isNull()
+            | (col("tgt.value") != col("src.value"))
+            | (col("src._change_type") == "delete")
+        )
         .select(col("src.*"), col("tgt.value").alias("old_value"))
     )
     inserts = compared.filter(col("_change_type") != "delete").select(
-        col(surrogate_key_col).alias("surrogate_key"), col("field"), col("value"),
+        col(surrogate_key_col).alias("surrogate_key"),
+        col("field"),
+        col("value"),
         col("effective_at").alias("valid_from"),
         lit("9999-12-31 23:59:59").cast("timestamp").alias("valid_to"),
-        lit(True).alias("__is_current"), lit("INSERT").alias("__action"),
+        lit(True).alias("__is_current"),
+        lit("INSERT").alias("__action"),
     )
     expires = compared.filter(col("old_value").isNotNull()).select(
-        col(surrogate_key_col).alias("surrogate_key"), col("field"), col("old_value").alias("value"),
+        col(surrogate_key_col).alias("surrogate_key"),
+        col("field"),
+        col("old_value").alias("value"),
         lit(None).cast("timestamp").alias("valid_from"),
         (col("effective_at") - expr("INTERVAL 1 MICROSECOND")).alias("valid_to"),
-        lit(False).alias("__is_current"), lit("EXPIRE").alias("__action"),
+        lit(False).alias("__is_current"),
+        lit("EXPIRE").alias("__action"),
     )
-    dedup_window = Window.partitionBy("surrogate_key", "field", "value").orderBy(col("valid_from").desc())
-    inserts_deduped = inserts.withColumn("_rn", row_number().over(dedup_window)).filter(col("_rn") == 1).drop("_rn")
+    dedup_window = Window.partitionBy("surrogate_key", "field", "value").orderBy(
+        col("valid_from").desc()
+    )
+    inserts_deduped = (
+        inserts.withColumn("_rn", row_number().over(dedup_window))
+        .filter(col("_rn") == 1)
+        .drop("_rn")
+    )
     staged = inserts_deduped.unionByName(expires)
     DeltaTable.forName(spark, history_table_name).alias("target").merge(
         staged.alias("source"),

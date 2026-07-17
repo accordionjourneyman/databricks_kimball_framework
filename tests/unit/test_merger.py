@@ -54,7 +54,9 @@ def test_merge_uses_correct_merge_condition(
     mock_dedup.return_value = mock_df
     mock_generate_keys.return_value = mock_df
 
-    merge_scd1(mock_df, target_table_name="target", join_keys=["id"], delete_strategy="hard")
+    merge_scd1(
+        mock_df, target_table_name="target", join_keys=["id"], delete_strategy="hard"
+    )
 
     merge_args = mock_dt.merge.call_args
     condition = merge_args.args[1]
@@ -74,9 +76,13 @@ def test_hard_delete_emits_when_matched_delete(
     mock_dedup.return_value = mock_df
     mock_generate_keys.return_value = mock_df
 
-    merge_scd1(mock_df, target_table_name="target", join_keys=["id"], delete_strategy="hard")
+    merge_scd1(
+        mock_df, target_table_name="target", join_keys=["id"], delete_strategy="hard"
+    )
 
-    mock_dt.whenMatchedDelete.assert_called_once_with(condition="source._change_type = 'delete'")
+    mock_dt.whenMatchedDelete.assert_called_once_with(
+        condition="source._change_type = 'delete'"
+    )
 
 
 @patch("kimball.processing.scd1.generate_keys")
@@ -92,7 +98,9 @@ def test_update_and_insert_maps_mark_not_deleted(
     mock_dedup.return_value = mock_df
     mock_generate_keys.return_value = mock_df
 
-    merge_scd1(mock_df, target_table_name="target", join_keys=["id"], delete_strategy="hard")
+    merge_scd1(
+        mock_df, target_table_name="target", join_keys=["id"], delete_strategy="hard"
+    )
 
     update_call = mock_dt.whenMatchedUpdate.call_args
     assert update_call.kwargs["condition"] == "source._change_type != 'delete'"
@@ -126,7 +134,9 @@ def test_soft_delete_emits_update_not_delete(
     mock_dedup.return_value = mock_df
     mock_generate_keys.return_value = mock_df
 
-    merge_scd1(mock_df, target_table_name="target", join_keys=["id"], delete_strategy="soft")
+    merge_scd1(
+        mock_df, target_table_name="target", join_keys=["id"], delete_strategy="soft"
+    )
 
     mock_dt.whenMatchedDelete.assert_not_called()
     # Soft delete calls whenMatchedUpdate twice: first the tombstone (delete
@@ -150,7 +160,9 @@ def test_no_change_type_skips_delete_clause(
     mock_dedup.return_value = mock_df
     mock_generate_keys.return_value = mock_df
 
-    merge_scd1(mock_df, target_table_name="target", join_keys=["id"], delete_strategy="hard")
+    merge_scd1(
+        mock_df, target_table_name="target", join_keys=["id"], delete_strategy="hard"
+    )
 
     mock_dt.whenMatchedDelete.assert_not_called()
     update_call = mock_dt.whenMatchedUpdate.call_args

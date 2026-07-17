@@ -119,7 +119,9 @@ class TestTableConfigValidation:
         assert config.history_table == "hist_table"
 
     def test_scd6_requires_current_value_columns(self):
-        with pytest.raises(ValueError, match="SCD Type 6 requires 'current_value_columns'"):
+        with pytest.raises(
+            ValueError, match="SCD Type 6 requires 'current_value_columns'"
+        ):
             TableConfig(
                 table_name="dim_test",
                 table_type="dimension",
@@ -188,7 +190,9 @@ class TestTableConfigValidation:
         assert config.append_only is True
 
     def test_append_only_rejected_for_dimension(self):
-        with pytest.raises(ValueError, match="append_only is only valid for fact tables"):
+        with pytest.raises(
+            ValueError, match="append_only is only valid for fact tables"
+        ):
             TableConfig(
                 table_name="dim_test",
                 table_type="dimension",
@@ -209,7 +213,9 @@ class TestTableConfigValidation:
         assert config.sources[0].cdc_strategy == "append"
 
     def test_cdc_strategy_append_requires_append_only(self):
-        with pytest.raises(ValueError, match="cdc_strategy='append' requires append_only=true"):
+        with pytest.raises(
+            ValueError, match="cdc_strategy='append' requires append_only=true"
+        ):
             TableConfig(
                 table_name="fact_test",
                 table_type="fact",
@@ -319,12 +325,15 @@ class TestValidateTransformationSql:
 
     def test_with_spark_dry_run_failure(self):
         from pyspark.errors import PySparkException
+
         config = MagicMock(spec=TableConfig)
         config.transformation_sql = "SELECT bad"
         config.sources = []
         spark = MagicMock()
         loader = ConfigLoader()
-        with patch.object(loader, "_explain_dry_run", side_effect=PySparkException("bad SQL")):
+        with patch.object(
+            loader, "_explain_dry_run", side_effect=PySparkException("bad SQL")
+        ):
             issues = loader.validate_transformation_sql(config, spark)
             assert any("bad SQL" in i for i in issues)
 
@@ -385,7 +394,8 @@ class TestExplainDryRun:
         loader._explain_dry_run(config, spark)
 
         alias_sql_calls = [
-            c for c in spark.sql.call_args_list
+            c
+            for c in spark.sql.call_args_list
             if "CREATE OR REPLACE TEMP VIEW my_alias" in c[0][0]
         ]
         assert len(alias_sql_calls) == 1
@@ -409,6 +419,7 @@ class TestExplainDryRun:
 
     def test_explain_dry_run_cleanup_on_exception(self):
         from pyspark.errors import PySparkException
+
         config = MagicMock(spec=TableConfig)
         config.transformation_sql = "SELECT bad"
         s = MagicMock()
@@ -429,6 +440,7 @@ class TestExplainDryRun:
 
     def test_explain_dry_run_source_exception_does_not_block(self):
         from pyspark.errors import PySparkException
+
         config = MagicMock(spec=TableConfig)
         config.transformation_sql = "SELECT 1 AS x"
         s1 = MagicMock()

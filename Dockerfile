@@ -19,6 +19,9 @@
 
 FROM python:3.11-bookworm
 
+LABEL org.opencontainers.image.title="Kimball framework integration-test image" \
+      org.opencontainers.image.description="Local Spark/Delta test image; not a production runtime image"
+
 # Install Java 17 (required for PySpark)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -66,6 +69,11 @@ RUN SPARK_JARS_DIR=/usr/local/lib/python3.11/site-packages/pyspark/jars && \
 
 # Install the framework package itself (without remote/databricks extras)
 RUN pip install --no-cache-dir --no-deps -e .
+
+# Tests do not need root. Keeping this image non-privileged also catches code
+# that accidentally assumes writable system directories.
+RUN useradd --create-home --uid 10001 kimball && chown -R kimball:kimball /app
+USER kimball
 
 # Default command runs all tests locally
 CMD ["python", "-m", "pytest", "tests/", "-v", "--tb=short"]

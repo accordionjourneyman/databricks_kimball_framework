@@ -136,7 +136,6 @@ def build_spark() -> tuple[SparkSession, str]:
         Tuple of (SparkSession, warehouse_dir_path).
         Caller should clean up warehouse_dir after stopping the session.
     """
-    import tempfile
 
     warehouse_dir = tempfile.mkdtemp(prefix="spark-warehouse-bench-")
     session = (
@@ -480,6 +479,7 @@ def main() -> None:
     finally:
         spark.stop()
         import shutil
+
         shutil.rmtree(_warehouse_dir, ignore_errors=True)
 
     # Write results

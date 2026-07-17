@@ -5,6 +5,7 @@ verify actual DataFrame output (hashing, dedup, PII masking) rather than
 mock call counts. Skipped on Databricks and when Java is unavailable, so
 the suite still runs in environments without a JVM.
 """
+
 from __future__ import annotations
 
 import os
@@ -34,9 +35,12 @@ def spark():
         pytest.skip("Skipping local-Spark unit test on Databricks")
     if not _has_java():
         pytest.skip("Java is not available — skipping Spark-dependent unit test")
-    builder = SparkSession.builder.appName("KimballUnit")
     if _is_remote_only():
-        builder = builder.remote("local[2]")
-    else:
-        builder = builder.master("local[2]")
-    return builder.getOrCreate()
+        pytest.skip("Databricks Connect is remote-only; local Spark is unavailable")
+    builder = SparkSession.builder.appName("KimballUnit").master("local[2]")
+    try:
+        return builder.getOrCreate()
+    except RuntimeError as exc:
+        if "Only remote Spark sessions" in str(exc):
+            pytest.skip("Databricks Connect cannot create a local Spark session")
+        raise

@@ -6,10 +6,10 @@ Run inside Docker:
 
 import tempfile
 import time
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, concat_ws, lit, when, sha2, xxhash64
 
 from delta import configure_spark_with_delta_pip
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, concat_ws, lit, sha2, when, xxhash64
 
 _NULL_SENTINEL = "__NULL_SENTINEL_12345678123456781234567812345678__"
 
@@ -21,7 +21,10 @@ def build_spark() -> tuple[SparkSession, str]:
         SparkSession.builder.appName("HashPlanCompare")
         .master("local[2]")
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+        .config(
+            "spark.sql.catalog.spark_catalog",
+            "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+        )
         .config("spark.sql.shuffle.partitions", "8")
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.driver.memory", "4g")
@@ -102,15 +105,18 @@ def main():
 
     joined_xx = (
         source_xx.alias("s")
-        .join(target_pruned.alias("t"), col("s.product_id").eqNullSafe(col("t.product_id")), "left")
+        .join(
+            target_pruned.alias("t"),
+            col("s.product_id").eqNullSafe(col("t.product_id")),
+            "left",
+        )
         .select(
             col("s.*"),
             col("t.hashdiff").alias("target_hashdiff"),
         )
     )
     changed_xx = joined_xx.filter(
-        col("target_hashdiff").isNull()
-        | (col("hashdiff") != col("target_hashdiff"))
+        col("target_hashdiff").isNull() | (col("hashdiff") != col("target_hashdiff"))
     )
 
     changed_xx.explain(mode="formatted")
@@ -127,15 +133,18 @@ def main():
 
     joined_sha = (
         source_sha.alias("s")
-        .join(target_pruned2.alias("t"), col("s.product_id").eqNullSafe(col("t.product_id")), "left")
+        .join(
+            target_pruned2.alias("t"),
+            col("s.product_id").eqNullSafe(col("t.product_id")),
+            "left",
+        )
         .select(
             col("s.*"),
             col("t.hashdiff").alias("target_hashdiff"),
         )
     )
     changed_sha = joined_sha.filter(
-        col("target_hashdiff").isNull()
-        | (col("hashdiff") != col("target_hashdiff"))
+        col("target_hashdiff").isNull() | (col("hashdiff") != col("target_hashdiff"))
     )
 
     changed_sha.explain(mode="formatted")
@@ -167,7 +176,7 @@ def main():
 
     # Run 3 rounds, alternating, to eliminate warm/cold bias
     results = {"xxhash64_str": [], "sha256": []}
-    for round_num in range(3):
+    for _round_num in range(3):
         spark.catalog.clearCache()
         wide.cache()
         wide.count()  # re-warm
@@ -194,23 +203,28 @@ def main():
         results["sha256"].append(t_sha)
         df_sha.unpersist()
 
-    print(f"  Round  | xxhash64_str | sha256       | ratio")
-    print(f"  -------|--------------|--------------|------")
+    print("  Round  | xxhash64_str | sha256       | ratio")
+    print("  -------|--------------|--------------|------")
     for i in range(3):
         xx = results["xxhash64_str"][i]
         sha = results["sha256"][i]
-        print(f"  {i+1}      | {xx*1000:>10.0f}ms | {sha*1000:>10.0f}ms | {sha/xx:.2f}x")
+        print(
+            f"  {i + 1}      | {xx * 1000:>10.0f}ms | {sha * 1000:>10.0f}ms | {sha / xx:.2f}x"
+        )
 
     avg_xx = sum(results["xxhash64_str"]) / 3
     avg_sha = sum(results["sha256"]) / 3
-    print(f"  -------|--------------|--------------|------")
-    print(f"  avg    | {avg_xx*1000:>10.0f}ms | {avg_sha*1000:>10.0f}ms | {avg_sha/avg_xx:.2f}x")
+    print("  -------|--------------|--------------|------")
+    print(
+        f"  avg    | {avg_xx * 1000:>10.0f}ms | {avg_sha * 1000:>10.0f}ms | {avg_sha / avg_xx:.2f}x"
+    )
 
     # Cleanup
     wide.unpersist()
     spark.sql(f"DROP DATABASE IF EXISTS {db} CASCADE")
     spark.stop()
     import shutil
+
     shutil.rmtree(warehouse_dir, ignore_errors=True)
 
 

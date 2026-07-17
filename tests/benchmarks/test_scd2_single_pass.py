@@ -1,38 +1,46 @@
-"""Benchmark single-pass vs two-phase SCD2 MERGE on real Spark.
+"""Benchmark canonical single-pass SCD2 MERGE on real Spark.
 
 Runs on Databricks Connect (requires DATABRICKS_HOST + DATABRICKS_TOKEN).
-Creates a Delta table, runs both approaches, and compares timing + output.
+Creates a Delta table and measures canonical SCD2 execution and correctness.
 """
+
 from __future__ import annotations
 
-import os
 import sys
 import time
 import uuid
-from unittest.mock import MagicMock
 from typing import Any
+from unittest.mock import MagicMock
 
 from databricks.connect import DatabricksSession
+
 _spark = DatabricksSession.builder.serverless().getOrCreate()
 mock_runtime = MagicMock()
 mock_runtime.spark = _spark
 sys.modules["databricks.sdk.runtime"] = mock_runtime
 
-from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.types import IntegerType, StringType, StructField, StructType
+from pyspark.sql import DataFrame, SparkSession  # noqa: E402
+from pyspark.sql.types import (  # noqa: E402
+    IntegerType,
+    StringType,
+    StructField,
+    StructType,
+)
 
-from kimball.processing.scd2 import _merge_single_pass, merge_scd2
+from kimball.processing.scd2 import _merge_single_pass, merge_scd2  # noqa: E402
 
 TABLE = "dim_test"
 
-CUSTOMER_SCHEMA = StructType([
-    StructField("customer_id", IntegerType(), False),
-    StructField("name", StringType(), False),
-    StructField("email", StringType(), False),
-    StructField("updated_at", StringType(), False),
-    StructField("_change_type", StringType(), True),
-    StructField("_commit_version", IntegerType(), True),
-])
+CUSTOMER_SCHEMA = StructType(
+    [
+        StructField("customer_id", IntegerType(), False),
+        StructField("name", StringType(), False),
+        StructField("email", StringType(), False),
+        StructField("updated_at", StringType(), False),
+        StructField("_change_type", StringType(), True),
+        StructField("_commit_version", IntegerType(), True),
+    ]
+)
 
 
 def _create_schema(spark: SparkSession, run_id: str) -> str:
@@ -105,57 +113,136 @@ def _reset_table(spark: SparkSession, schema: str) -> None:
 
 def _run_single_pass(spark: SparkSession, schema: str, source: DataFrame) -> None:
     _merge_single_pass(
-        source, target_table_name=f"{schema}.{TABLE}",
-        join_keys=["customer_id"], track_history_columns=["name", "email"],
-        surrogate_key_col="customer_sk", effective_at_column="updated_at",
+        source,
+        target_table_name=f"{schema}.{TABLE}",
+        join_keys=["customer_id"],
+        track_history_columns=["name", "email"],
+        surrogate_key_col="customer_sk",
+        effective_at_column="updated_at",
         schema_evolution=False,
     )
 
 
 def _run_two_phase(spark: SparkSession, schema: str, source: DataFrame) -> None:
     merge_scd2(
-        source, target_table_name=f"{schema}.{TABLE}",
-        join_keys=["customer_id"], track_history_columns=["name", "email"],
-        surrogate_key_col="customer_sk", effective_at_column="updated_at",
+        source,
+        target_table_name=f"{schema}.{TABLE}",
+        join_keys=["customer_id"],
+        track_history_columns=["name", "email"],
+        surrogate_key_col="customer_sk",
+        effective_at_column="updated_at",
         schema_evolution=False,
     )
 
 
 # Test data generators
 def _gen_single_version():
-    return _make_source(_spark, [
-        {"customer_id": 1, "name": "Alice", "email": "alice@x.com", "updated_at": "2024-01-01"},
-    ])
+    return _make_source(
+        _spark,
+        [
+            {
+                "customer_id": 1,
+                "name": "Alice",
+                "email": "alice@x.com",
+                "updated_at": "2024-01-01",
+            },
+        ],
+    )
 
 
 def _gen_two_versions():
-    return _make_source(_spark, [
-        {"customer_id": 1, "name": "Alice", "email": "alice@x.com", "updated_at": "2024-01-01"},
-        {"customer_id": 1, "name": "Alice", "email": "alice@y.com", "updated_at": "2024-06-01"},
-    ])
+    return _make_source(
+        _spark,
+        [
+            {
+                "customer_id": 1,
+                "name": "Alice",
+                "email": "alice@x.com",
+                "updated_at": "2024-01-01",
+            },
+            {
+                "customer_id": 1,
+                "name": "Alice",
+                "email": "alice@y.com",
+                "updated_at": "2024-06-01",
+            },
+        ],
+    )
 
 
 def _gen_three_versions():
-    return _make_source(_spark, [
-        {"customer_id": 1, "name": "Alice", "email": "alice@x.com", "updated_at": "2024-01-01"},
-        {"customer_id": 1, "name": "Alice", "email": "alice@y.com", "updated_at": "2024-06-01"},
-        {"customer_id": 1, "name": "Alice", "email": "alice@z.com", "updated_at": "2024-09-01"},
-    ])
+    return _make_source(
+        _spark,
+        [
+            {
+                "customer_id": 1,
+                "name": "Alice",
+                "email": "alice@x.com",
+                "updated_at": "2024-01-01",
+            },
+            {
+                "customer_id": 1,
+                "name": "Alice",
+                "email": "alice@y.com",
+                "updated_at": "2024-06-01",
+            },
+            {
+                "customer_id": 1,
+                "name": "Alice",
+                "email": "alice@z.com",
+                "updated_at": "2024-09-01",
+            },
+        ],
+    )
 
 
 def _gen_mixed_keys():
-    return _make_source(_spark, [
-        {"customer_id": 1, "name": "Alice", "email": "alice@x.com", "updated_at": "2024-01-01"},
-        {"customer_id": 1, "name": "Alice", "email": "alice@y.com", "updated_at": "2024-06-01"},
-        {"customer_id": 2, "name": "Bob", "email": "bob@x.com", "updated_at": "2024-01-01"},
-        {"customer_id": 3, "name": "Carol", "email": "carol@x.com", "updated_at": "2024-01-01"},
-        {"customer_id": 3, "name": "Carol", "email": "carol@y.com", "updated_at": "2024-06-01"},
-        {"customer_id": 3, "name": "Carol", "email": "carol@z.com", "updated_at": "2024-09-01"},
-    ])
+    return _make_source(
+        _spark,
+        [
+            {
+                "customer_id": 1,
+                "name": "Alice",
+                "email": "alice@x.com",
+                "updated_at": "2024-01-01",
+            },
+            {
+                "customer_id": 1,
+                "name": "Alice",
+                "email": "alice@y.com",
+                "updated_at": "2024-06-01",
+            },
+            {
+                "customer_id": 2,
+                "name": "Bob",
+                "email": "bob@x.com",
+                "updated_at": "2024-01-01",
+            },
+            {
+                "customer_id": 3,
+                "name": "Carol",
+                "email": "carol@x.com",
+                "updated_at": "2024-01-01",
+            },
+            {
+                "customer_id": 3,
+                "name": "Carol",
+                "email": "carol@y.com",
+                "updated_at": "2024-06-01",
+            },
+            {
+                "customer_id": 3,
+                "name": "Carol",
+                "email": "carol@z.com",
+                "updated_at": "2024-09-01",
+            },
+        ],
+    )
 
 
 def _gen_large_batch(n_keys: int = 100, max_versions: int = 5):
     import random
+
     random.seed(42)
     data = []
     for key_id in range(1, n_keys + 1):
@@ -163,12 +250,14 @@ def _gen_large_batch(n_keys: int = 100, max_versions: int = 5):
         for v in range(n_versions):
             month = (v % 12) + 1
             year = 2024 + (v // 12)
-            data.append({
-                "customer_id": key_id,
-                "name": f"Customer_{key_id}",
-                "email": f"customer_{key_id}_v{v}@x.com",
-                "updated_at": f"{year}-{month:02d}-01",
-            })
+            data.append(
+                {
+                    "customer_id": key_id,
+                    "name": f"Customer_{key_id}",
+                    "email": f"customer_{key_id}_v{v}@x.com",
+                    "updated_at": f"{year}-{month:02d}-01",
+                }
+            )
     return _make_source(_spark, data)
 
 
@@ -217,7 +306,7 @@ def test_benchmark(spark: SparkSession) -> None:
             # Compare outputs
             match = sp_rows == tp_rows
 
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"Scenario: {name} ({n_source_rows} source rows)")
             print(f"  Single-pass: {sp_time:.2f}s, {sp_count} rows")
             if tp_error:
@@ -228,19 +317,23 @@ def test_benchmark(spark: SparkSession) -> None:
                 if not match:
                     print(f"    SP: {sp_rows}")
                     print(f"    TP: {tp_rows}")
-            ratio = f"{tp_time/sp_time:.2f}x" if sp_time > 0 and tp_time > 0 else "N/A"
+            ratio = (
+                f"{tp_time / sp_time:.2f}x" if sp_time > 0 and tp_time > 0 else "N/A"
+            )
             print(f"  Speed ratio:  {ratio} (two-phase / single-pass)")
 
-            results.append({
-                "scenario": name,
-                "source_rows": n_source_rows,
-                "sp_time": sp_time,
-                "tp_time": tp_time,
-                "sp_count": sp_count,
-                "tp_count": tp_count,
-                "match": match,
-                "tp_error": tp_error,
-            })
+            results.append(
+                {
+                    "scenario": name,
+                    "source_rows": n_source_rows,
+                    "sp_time": sp_time,
+                    "tp_time": tp_time,
+                    "sp_count": sp_count,
+                    "tp_count": tp_count,
+                    "match": match,
+                    "tp_error": tp_error,
+                }
+            )
 
         # Correctness gate: the benchmark is only meaningful if single-pass
         # produces the SAME output as the reference two-phase implementation.
@@ -257,15 +350,21 @@ def test_benchmark(spark: SparkSession) -> None:
             )
 
         # Summary
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print("SUMMARY")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         print(f"{'Scenario':<30} {'SP (s)':>8} {'TP (s)':>8} {'Ratio':>8} {'Match':>6}")
         print("-" * 60)
         for r in results:
-            ratio = f"{r['tp_time']/r['sp_time']:.2f}x" if r['sp_time'] > 0 and r['tp_time'] > 0 else "N/A"
+            ratio = (
+                f"{r['tp_time'] / r['sp_time']:.2f}x"
+                if r["sp_time"] > 0 and r["tp_time"] > 0
+                else "N/A"
+            )
             match = "YES" if r["match"] else "ERR" if r["tp_error"] else "NO"
-            print(f"{r['scenario']:<30} {r['sp_time']:>8.2f} {r['tp_time']:>8.2f} {ratio:>8} {match:>6}")
+            print(
+                f"{r['scenario']:<30} {r['sp_time']:>8.2f} {r['tp_time']:>8.2f} {ratio:>8} {match:>6}"
+            )
 
     finally:
         _drop_schema(spark, schema)

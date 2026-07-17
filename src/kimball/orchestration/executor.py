@@ -1,6 +1,7 @@
-"""Wave-based pipeline executor for Kimball ETL."""
+"""Dependency-aware, single-process pipeline executor for Kimball ETL."""
 
-import concurrent.futures
+from __future__ import annotations
+
 import logging
 import time
 import warnings
@@ -13,6 +14,7 @@ from kimball.common.config import ConfigLoader
 from kimball.common.errors import NonRetriableError
 from kimball.orchestration.orchestrator import Orchestrator
 from kimball.orchestration.watermark import get_etl_schema
+from kimball.planning.compiler import Profile, ProjectCompiler, ProjectValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +36,7 @@ class PipelineResult:
 
 @dataclass
 class ExecutionSummary:
-    """Summary of the entire execution run."""
+    """Summary of an execution run."""
 
     total_pipelines: int
     successful: int
@@ -47,7 +49,7 @@ class ExecutionSummary:
 
     def __str__(self) -> str:
         return (
-            f"Execution Summary:\n"
+            "Execution Summary:\n"
             f"  Total Pipelines: {self.total_pipelines}\n"
             f"  Successful: {self.successful}\n"
             f"  Failed: {self.failed}\n"
@@ -59,7 +61,13 @@ class ExecutionSummary:
 
 
 class PipelineExecutor:
-    # Wave-based parallel executor: dimensions first, then facts.
+    """Execute a compiled DAG without sharing Spark across worker threads.
+
+    Generated Databricks Jobs provide safe cross-pipeline parallelism. This
+    in-process executor runs ready nodes serially because a shared Spark session
+    is not an isolation boundary for concurrent DDL/DML.
+    """
+
     def __init__(
         self,
         config_paths: list[str],
@@ -68,11 +76,12 @@ class PipelineExecutor:
         max_workers: int = 4,
         stop_on_failure: bool = True,
         watermark_database: str | None = None,
+        profile: Profile = "dev",
     ):
         if watermark_database is not None:
             warnings.warn(
-                "The 'watermark_database' parameter is deprecated. Use 'etl_schema' instead, "
-                "or set KIMBALL_ETL_SCHEMA environment variable.",
+                "The 'watermark_database' parameter is deprecated. Use 'etl_schema' "
+                "instead, or set KIMBALL_ETL_SCHEMA.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -81,7 +90,6 @@ class PipelineExecutor:
 
         if etl_schema is None:
             etl_schema = get_etl_schema()
-
         if etl_schema is None:
             raise ValueError(
                 "ETL schema must be specified via one of:\n"
@@ -93,6 +101,7 @@ class PipelineExecutor:
         self.etl_schema = etl_schema
         self.max_workers = max_workers
         self.stop_on_failure = stop_on_failure
+        self.profile: Profile = profile
         self.config_loader = ConfigLoader()
         self.spark = spark
         self._categorize_pipelines()
@@ -101,28 +110,37 @@ class PipelineExecutor:
         return Orchestrator(config_path, spark=self.spark, etl_schema=self.etl_schema)
 
     def _categorize_pipelines(self) -> None:
-        self.dimensions: list[dict[str, Any]] = []
-        self.facts: list[dict[str, Any]] = []
-
+        entries = []
         for path in self.config_paths:
             try:
-                config = self.config_loader.load_config(path)
-                pipeline_info = {
-                    "path": path,
-                    "table_name": config.table_name,
-                    "table_type": config.table_type,
-                }
+                entries.append((path, self.config_loader.load_config(path)))
+            except Exception as exc:
+                logger.error("FATAL: Could not load config %s: %s", path, exc)
+                raise NonRetriableError(f"Invalid config file: {path}") from exc
 
-                if config.table_type == "dimension":
-                    self.dimensions.append(pipeline_info)
-                else:
-                    self.facts.append(pipeline_info)
-            except Exception as e:
-                logger.error(f"FATAL: Could not load config {path}: {e}")
-                raise NonRetriableError(f"Invalid config file: {path}") from e
+        try:
+            self.project = ProjectCompiler(profile=self.profile).compile(entries)
+        except ProjectValidationError as exc:
+            logger.error("FATAL: Invalid pipeline project: %s", exc)
+            raise NonRetriableError(f"Invalid pipeline project: {exc}") from exc
 
+        self.pipeline_by_table: dict[str, dict[str, Any]] = {}
+        self.dimensions: list[dict[str, Any]] = []
+        self.facts: list[dict[str, Any]] = []
+        for table_name, node in self.project.nodes.items():
+            info = {
+                "path": node.config_path,
+                "table_name": table_name,
+                "table_type": node.table_type,
+                "dependencies": list(node.dependencies),
+            }
+            self.pipeline_by_table[table_name] = info
+            (self.dimensions if node.table_type == "dimension" else self.facts).append(
+                info
+            )
+
+    @staticmethod
     def _failed_result(
-        self,
         path: str,
         table_name: str,
         table_type: str,
@@ -143,15 +161,11 @@ class PipelineExecutor:
         table_name = pipeline_info["table_name"]
         table_type = pipeline_info["table_type"]
         start_time = time.time()
-
         try:
-            logger.info(f"  Starting: {table_name}")
-            orchestrator = self._create_orchestrator(path)
-            result = orchestrator.run()
+            logger.info("  Starting: %s", table_name)
+            result = self._create_orchestrator(path).run()
             duration = time.time() - start_time
-            logger.info(
-                f"  ✓ Completed: {table_name} ({duration:.1f}s, {result.get('rows_written', 0)} rows)"
-            )
+            logger.info("  Completed: %s (%.1fs)", table_name, duration)
             return PipelineResult(
                 config_path=path,
                 table_name=table_name,
@@ -162,25 +176,13 @@ class PipelineExecutor:
                 duration_seconds=duration,
                 batch_id=result.get("batch_id"),
             )
-        except Exception as e:
+        except Exception as exc:
             duration = time.time() - start_time
-            error_msg = f"{type(e).__name__}: {str(e)}"
-            logger.info(f"  ✗ Failed: {table_name} - {error_msg}")
+            error_msg = f"{type(exc).__name__}: {exc}"
+            logger.info("  Failed: %s - %s", table_name, error_msg)
             return self._failed_result(
                 path, table_name, table_type, duration, error_msg
             )
-
-    def _run_wave(
-        self, wave_name: str, pipelines: list[dict[str, Any]]
-    ) -> list[PipelineResult]:
-        if not pipelines:
-            return []
-        logger.info(f"\n{'=' * 60}")
-        logger.info(f"Wave: {wave_name} ({len(pipelines)} pipelines)")
-        logger.info(f"{'=' * 60}")
-        if self.max_workers == 1:
-            return self._run_sequential(pipelines)
-        return self._run_parallel(pipelines)
 
     def _run_sequential(self, pipelines: list[dict[str, Any]]) -> list[PipelineResult]:
         results = []
@@ -188,107 +190,87 @@ class PipelineExecutor:
             result = self._run_single_pipeline(pipeline)
             results.append(result)
             if result.status == "FAILED" and self.stop_on_failure:
-                logger.info(f"\n⚠ Stopping due to failure in {result.table_name}")
                 break
         return results
 
     def _run_parallel(self, pipelines: list[dict[str, Any]]) -> list[PipelineResult]:
-        results = []
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=self.max_workers
-        ) as executor:
-            future_to_pipeline = {
-                executor.submit(self._run_single_pipeline, p): p for p in pipelines
-            }
-            for future in concurrent.futures.as_completed(future_to_pipeline):
-                result = future.result()
-                results.append(result)
-                if result.status == "FAILED" and self.stop_on_failure:
-                    logger.info(
-                        f"\n⚠ Failure detected in {result.table_name}. Cancelling remaining..."
-                    )
-                    cancelled = 0
-                    for f in future_to_pipeline:
-                        if f.cancel():
-                            cancelled += 1
-                    logger.info(f"Cancelled {cancelled} unstarted pipelines")
-                    break
-        return results
+        warnings.warn(
+            "In-process parallel pipelines would share a Spark session; executing "
+            "serially. Use generated Databricks job tasks for safe parallelism.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return self._run_sequential(pipelines)
+
+    def _run_wave(
+        self, wave_name: str, pipelines: list[dict[str, Any]]
+    ) -> list[PipelineResult]:
+        """Backward-compatible serial wave helper; DAG execution uses ``run``."""
+
+        if not pipelines:
+            return []
+        logger.info("Legacy wave %s (%s pipelines)", wave_name, len(pipelines))
+        return self._run_sequential(pipelines)
 
     def run(self) -> ExecutionSummary:
         overall_start = time.time()
         all_results: list[PipelineResult] = []
-        wave_failed = False
+        results_by_table: dict[str, PipelineResult] = {}
 
-        logger.info(f"\n{'#' * 60}")
-        logger.info("# Kimball Pipeline Executor")
-        logger.info(f"# Dimensions: {len(self.dimensions)}, Facts: {len(self.facts)}")
-        logger.info(f"# Max Workers: {self.max_workers}")
-        logger.info(f"{'#' * 60}")
-
-        dim_results = self._run_wave("Dimensions", self.dimensions)
-        all_results.extend(dim_results)
-
-        dim_failures = [r for r in dim_results if r.status == "FAILED"]
-        if dim_failures and self.stop_on_failure:
-            wave_failed = True
-            logger.info(
-                f"\n⚠ {len(dim_failures)} dimension(s) failed. Skipping facts wave."
-            )
-
-            for fact in self.facts:
-                all_results.append(
-                    PipelineResult(
-                        config_path=fact["path"],
-                        table_name=fact["table_name"],
-                        table_type=fact["table_type"],
+        logger.info(
+            "Kimball DAG executor: %s pipelines in %s levels",
+            len(self.pipeline_by_table),
+            len(self.project.levels),
+        )
+        for level_number, level in enumerate(self.project.levels, 1):
+            logger.info("Dependency level %s: %s", level_number, ", ".join(level))
+            for table_name in level:
+                node = self.project.nodes[table_name]
+                pipeline = self.pipeline_by_table[table_name]
+                failed_dependencies = [
+                    dependency
+                    for dependency in node.dependencies
+                    if results_by_table[dependency].status != "SUCCESS"
+                ]
+                if failed_dependencies:
+                    result = PipelineResult(
+                        config_path=pipeline["path"],
+                        table_name=table_name,
+                        table_type=pipeline["table_type"],
                         status="SKIPPED",
-                        error_message="Skipped due to dimension failure",
+                        error_message=(
+                            "Skipped because upstream did not succeed: "
+                            + ", ".join(failed_dependencies)
+                        ),
                     )
-                )
-
-        if not wave_failed:
-            fact_results = self._run_wave("Facts", self.facts)
-            all_results.extend(fact_results)
-
-        overall_duration = time.time() - overall_start
+                else:
+                    result = self._run_single_pipeline(pipeline)
+                results_by_table[table_name] = result
+                all_results.append(result)
 
         summary = ExecutionSummary(
             total_pipelines=len(all_results),
-            successful=len([r for r in all_results if r.status == "SUCCESS"]),
-            failed=len([r for r in all_results if r.status == "FAILED"]),
-            skipped=len([r for r in all_results if r.status == "SKIPPED"]),
+            successful=sum(r.status == "SUCCESS" for r in all_results),
+            failed=sum(r.status == "FAILED" for r in all_results),
+            skipped=sum(r.status == "SKIPPED" for r in all_results),
             total_rows_read=sum(r.rows_read for r in all_results),
             total_rows_written=sum(r.rows_written for r in all_results),
-            total_duration_seconds=overall_duration,
+            total_duration_seconds=time.time() - overall_start,
             results=all_results,
         )
-
-        logger.info(f"\n{'=' * 60}")
         logger.info(summary)
-        logger.info(f"{'=' * 60}\n")
-
         return summary
 
     def dry_run(self) -> None:
-        logger.info(f"\n{'#' * 60}")
-        logger.info("# Kimball Pipeline Executor - DRY RUN")
-        logger.info("# (No pipelines will be executed)")
-        logger.info(f"{'#' * 60}")
-
-        logger.info(f"\nWave 1: Dimensions ({len(self.dimensions)} pipelines)")
-        for i, dim in enumerate(self.dimensions, 1):
-            logger.info(f"  {i}. {dim['table_name']} ({dim['path']})")
-
-        logger.info(f"\nWave 2: Facts ({len(self.facts)} pipelines)")
-        for i, fact in enumerate(self.facts, 1):
-            logger.info(f"  {i}. {fact['table_name']} ({fact['path']})")
-
-        logger.info("\nExecution Order:")
-        logger.info(
-            f"  1. All dimensions run in parallel (max {self.max_workers} workers)"
-        )
-        logger.info("  2. After ALL dimensions complete, facts run in parallel")
-        if self.stop_on_failure:
-            logger.info("  3. If any dimension fails, facts wave is skipped")
-        logger.info()
+        logger.info("Kimball Pipeline Executor - DRY RUN")
+        for number, level in enumerate(self.project.levels, 1):
+            logger.info("Level %s: %s", number, ", ".join(level))
+            for table_name in level:
+                node = self.project.nodes[table_name]
+                logger.info(
+                    "  %s (%s) depends_on=%s",
+                    table_name,
+                    node.config_path,
+                    list(node.dependencies),
+                )
+        logger.info("In-process execution is serialized for Spark session safety.")

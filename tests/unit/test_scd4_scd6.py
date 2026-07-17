@@ -13,18 +13,36 @@ class TestCreateMergeStrategy:
     @patch("kimball.processing.dispatcher.current_timestamp")
     def test_create_scd4_requires_history_table(self, _mock_ts):
         with pytest.raises(ValueError, match="requires history_table"):
-            merge(MagicMock(), scd_type=4, target_table_name="dim_product", join_keys=["product_id"])
+            merge(
+                MagicMock(),
+                scd_type=4,
+                target_table_name="dim_product",
+                join_keys=["product_id"],
+                surrogate_key_col="product_sk",
+            )
 
     @patch("kimball.processing.dispatcher.current_timestamp")
     def test_create_scd6_requires_current_value_columns(self, _mock_ts):
         with pytest.raises(ValueError, match="requires current_value_columns"):
-            merge(MagicMock(), scd_type=6, target_table_name="dim_customer", join_keys=["customer_id"])
+            merge(
+                MagicMock(),
+                scd_type=6,
+                target_table_name="dim_customer",
+                join_keys=["customer_id"],
+                surrogate_key_col="customer_sk",
+            )
 
     @patch("kimball.processing.dispatcher.current_timestamp")
     def test_create_scd4_dispatches_to_merge_scd4(self, _mock_ts):
         with patch("kimball.processing.dispatcher.merge_scd4") as mock_scd4:
-            merge(MagicMock(), scd_type=4, target_table_name="dim_product",
-                  join_keys=["product_id"], history_table="dim_product_history")
+            merge(
+                MagicMock(),
+                scd_type=4,
+                target_table_name="dim_product",
+                join_keys=["product_id"],
+                history_table="dim_product_history",
+                surrogate_key_col="product_sk",
+            )
             # merge() dispatches to merge_scd4 with the configured table/keys --
             # verify it actually wired the history table through (not just that
             # something was called).
@@ -37,8 +55,14 @@ class TestCreateMergeStrategy:
     @patch("kimball.processing.dispatcher.current_timestamp")
     def test_create_scd6_dispatches_to_merge_scd6(self, _mock_ts):
         with patch("kimball.processing.dispatcher.merge_scd6") as mock_scd6:
-            merge(MagicMock(), scd_type=6, target_table_name="dim_customer",
-                  join_keys=["customer_id"], current_value_columns=["city", "status"])
+            merge(
+                MagicMock(),
+                scd_type=6,
+                target_table_name="dim_customer",
+                join_keys=["customer_id"],
+                current_value_columns=["city", "status"],
+                surrogate_key_col="customer_sk",
+            )
             mock_scd6.assert_called_once()
             kwargs = mock_scd6.call_args.kwargs
             assert kwargs["target_table_name"] == "dim_customer"
@@ -73,7 +97,10 @@ class TestSCD6Function:
 
         with (
             patch("kimball.processing.scd6.DeltaTable") as mock_dt,
-            patch("kimball.processing.scd6.filter_cdf_deletes", return_value=(mock_df, None)),
+            patch(
+                "kimball.processing.scd6.filter_cdf_deletes",
+                return_value=(mock_df, None),
+            ),
             patch("kimball.processing.scd6.compute_hashdiff", return_value="hash"),
             patch("kimball.processing.scd6.col", return_value=MagicMock()),
             patch("kimball.processing.scd6.lit", return_value=MagicMock()),

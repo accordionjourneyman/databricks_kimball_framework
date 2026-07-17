@@ -22,7 +22,7 @@ import os
 
 from delta.tables import DeltaTable
 
-from kimball import Orchestrator, StreamingOrchestrator
+from kimball import ContractMonitor, Orchestrator, StreamingOrchestrator
 
 _nb_path = (
     dbutils.notebook.entry_point.getDbutils()
@@ -72,7 +72,7 @@ print(f"✓ ETL schema: {os.environ['KIMBALL_ETL_SCHEMA']}")
 # The volume is recreated above to avoid checkpoint-to-table mismatches.
 _CHECKPOINT_ROOT = f"/Volumes/{_catalog}/demo_streaming_gold/_checkpoints"
 
-dim_customer_streaming_yaml = f"""table_name: demo_streaming_gold.dim_customer
+dim_customer_streaming_yaml = """table_name: demo_streaming_gold.dim_customer
 table_type: dimension
 scd_type: 2
 keys:
@@ -93,16 +93,53 @@ sources:
     streaming:
       enabled: true
       trigger: available_now
-      checkpoint_location: {_CHECKPOINT_ROOT}/customers
+      checkpoint_location: __CHECKPOINT_ROOT__/customers
       # No explicit starting_version: the streaming orchestrator resumes from
       # the etl_control watermark set by the initial batch load.
+    contract:
+      id: demo.streaming.customer
+      version: "1.0.0"
+      owner: demo-data-team
+      schema:
+        customer_id: {type: int, nullable: true}
+        first_name: {type: string, nullable: true}
+        last_name: {type: string, nullable: true}
+        email: {type: string, nullable: true}
+        address: {type: string, nullable: true}
+        updated_at: {type: string, nullable: true}
+      cdc:
+        required: true
+        primary_key: [customer_id]
+      quality:
+        - rule: not_null
+          column: customer_id
+          severity: error
+      temporal:
+        event_time_column: updated_at
+        allowed_lateness: "3650 days"
+        late_event_severity: warn
+        out_of_order_severity: error
+      validation:
+        mode: full
+        max_failure_samples: 5
+        max_actions: 8
+observability:
+  enabled: true
+  event_table: etl_data_quality_events
+  temporal_state_table: etl_contract_temporal_state
+  write_failure: warn
+table_description: Streaming Type 2 customer dimension with durable event-time checks.
+column_descriptions:
+  customer_sk: Surrogate key for one customer version.
+  customer_id: Stable supplier customer identifier.
+  updated_at: Supplier event time used for SCD2 and ordering checks.
 transformation_sql: |
   SELECT customer_id, first_name, last_name, email, address, updated_at, _change_type FROM c
 audit_columns: true
 preserve_all_changes: true
 grain_validation: skip
 declare_constraints: true
-"""
+""".replace("__CHECKPOINT_ROOT__", _CHECKPOINT_ROOT)
 
 dim_product_yaml = """table_name: demo_streaming_gold.dim_product
 table_type: dimension
@@ -148,7 +185,7 @@ def ingest_silver(table_name, data, schema, merge_keys):
             ddl_cols.append(col_def)
         spark.sql(f"""
             CREATE TABLE {full_table_name} (
-                {', '.join(ddl_cols)}
+                {", ".join(ddl_cols)}
             ) USING DELTA
             TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
         """)
@@ -221,6 +258,13 @@ ingest_silver("customers", customers_day1, customers_schema, ["customer_id"])
 ingest_silver("products", products_day1, products_schema, ["product_id"])
 
 print("✓ Day 1 data ingested")
+
+# This is safe to schedule independently of the streaming query. It performs
+# source schema/CDF checks and writes findings, but never advances watermarks.
+monitor_result = ContractMonitor(
+    [f"{CONFIG_PATH}/dim_customer.yml"], spark=spark, etl_schema="demo_streaming_gold"
+).run()
+print(f"Initial contract monitor result: {monitor_result}")
 
 # COMMAND ----------
 
@@ -445,3 +489,26 @@ alice_current = spark.sql("""
 """).collect()[0]
 assert alice_current["email"] == "alice-new@example.com"
 print("✅ Streaming after full reload verified")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 8. Operational contract evidence
+# MAGIC
+# MAGIC Schema, DQ, late-event, and ordering results are appended to the DQ
+# MAGIC event table. Per-business-key event-time maxima are stored separately.
+# MAGIC A micro-batch advances temporal state only after its target merge and
+# MAGIC watermark succeed, so a retry cannot hide an out-of-order event.
+
+# COMMAND ----------
+
+display(
+    spark.table("demo_streaming_gold.etl_data_quality_events").orderBy(
+        "observed_at", ascending=False
+    )
+)
+display(
+    spark.table("demo_streaming_gold.etl_contract_temporal_state").orderBy(
+        "updated_at", ascending=False
+    )
+)
