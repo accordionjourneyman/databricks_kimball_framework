@@ -93,12 +93,9 @@ jobs:
           distribution: temurin
           java-version: "17"
       - name: Install benchmark dependencies
-        run: python -m pip install -e ".[dev]"
-      - name: Download pinned Delta jars
         run: |
-          JARS=$(python -c "import pathlib,pyspark; print(pathlib.Path(pyspark.__file__).parent/'jars')")
-          curl -fsSL -o "$JARS/delta-spark_4.0_2.13-${DELTA_VERSION}.jar" "https://repo1.maven.org/maven2/io/delta/delta-spark_4.0_2.13/${DELTA_VERSION}/delta-spark_4.0_2.13-${DELTA_VERSION}.jar"
-          curl -fsSL -o "$JARS/delta-storage-${DELTA_VERSION}.jar" "https://repo1.maven.org/maven2/io/delta/delta-storage/${DELTA_VERSION}/delta-storage-${DELTA_VERSION}.jar"
+          python -m pip install -e ".[dev]"
+          python -m pip install "pyspark==${SPARK_VERSION}" "delta-spark==${DELTA_VERSION}"
       - name: Run one-round Spark correctness benchmarks
         env:
           KIMBALL_BENCHMARK_ROUNDS: "1"
