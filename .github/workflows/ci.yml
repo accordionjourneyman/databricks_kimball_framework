@@ -148,6 +148,7 @@ jobs:
         # written to a bind-mounted host dir so they survive the --rm container.
         run: |
           mkdir -p test-results
+          chmod 777 test-results
           docker compose run --rm --no-deps \
             -v "${PWD}/test-results:/test-results" \
             -e KIMBALL_TARGET=local \
