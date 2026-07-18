@@ -117,8 +117,7 @@ def spark():
         try:
             from delta import configure_spark_with_delta_pip
 
-            if os.environ.get("KIMBALL_BENCHMARK_USE_DELTA_PIP") == "1":
-                builder = configure_spark_with_delta_pip(builder)
+            builder = configure_spark_with_delta_pip(builder)
         except ImportError:
             pass  # delta-spark not installed — tests that need it will fail
         session = builder.getOrCreate()

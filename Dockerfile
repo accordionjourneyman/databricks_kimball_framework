@@ -85,14 +85,6 @@ RUN curl --proto '=https' --tlsv1.2 -sSfL \
 # package must be present for the test session to import. It does not hijack
 # SparkSession.builder (the reason databricks-connect is deliberately omitted).
 
-# Download Delta Lake JARs at build time so they're available offline at runtime.
-# Delta 4.x is built against Spark 4.0 / 4.1 and Scala 2.13.
-RUN SPARK_JARS_DIR=/usr/local/lib/python3.11/site-packages/pyspark/jars && \
-    curl -fsSL -o "$SPARK_JARS_DIR/delta-spark_4.0_2.13-4.2.0.jar" \
-    "https://repo1.maven.org/maven2/io/delta/delta-spark_4.0_2.13/4.2.0/delta-spark_4.0_2.13-4.2.0.jar" && \
-    curl -fsSL -o "$SPARK_JARS_DIR/delta-storage-4.2.0.jar" \
-    "https://repo1.maven.org/maven2/io/delta/delta-storage/4.2.0/delta-storage-4.2.0.jar"
-
 # Install the framework package itself (without remote/databricks extras)
 RUN pip install --no-cache-dir --no-deps -e .
 
