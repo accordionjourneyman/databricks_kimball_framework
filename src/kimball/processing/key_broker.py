@@ -219,7 +219,7 @@ class KeyBroker:
         if lookup.not_applicable_when:
             usable = usable.filter(~F.expr(lookup.not_applicable_when))
         candidates = usable.groupBy(*source_columns).agg(
-            F.min(F.col(event_time)).alias("__valid_from")
+            F.min(F.col(event_time).cast("timestamp")).alias("__valid_from")
         )
         candidates = candidates.select(
             *[
@@ -354,10 +354,11 @@ class KeyBroker:
         )
         if fk.relationship == "type7":
             assert lookup.event_time is not None
+            event_time_ts = F.col(lookup.event_time).cast("timestamp")
             condition = (
                 condition
-                & (fact_df[lookup.event_time] >= dimension[f"{prefix}valid_from"])
-                & (fact_df[lookup.event_time] < dimension[f"{prefix}valid_to"])
+                & (event_time_ts >= dimension[f"{prefix}valid_from"])
+                & (event_time_ts < dimension[f"{prefix}valid_to"])
             )
         joined = fact_df.join(dimension, condition, "left")
         not_applicable = (
