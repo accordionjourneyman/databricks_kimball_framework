@@ -26,7 +26,16 @@ if os.path.exists(_dotenv_path):
 # points to the real package, not a synthetic one created by the mock.
 # Then only mock the sdk.runtime submodule (which is not importable
 # outside Databricks runtime).
-import databricks  # noqa: F401, E402
+try:
+    import databricks  # noqa: F401, E402
+except ModuleNotFoundError:
+    # databricks-sdk not installed (e.g. unit-test-only CI job);
+    # create a minimal stub so the mock below can patch sdk.runtime.
+    import types
+
+    databricks = types.ModuleType("databricks")
+    databricks.__path__ = []
+    sys.modules["databricks"] = databricks
 
 mock_db_sdk = MagicMock()
 mock_db_sdk.spark = MagicMock()
