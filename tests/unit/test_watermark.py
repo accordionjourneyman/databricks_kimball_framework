@@ -106,6 +106,37 @@ def test_batch_fail_records_failure_without_updating_watermark(manager):
     assert "last_processed_version" not in updates
 
 
+def test_batch_complete_all_uses_one_control_merge(manager):
+    manager._upsert_control_records = MagicMock()
+
+    manager.batch_complete_all(
+        "target",
+        [
+            {
+                "source_table": "source_a",
+                "new_version": 4,
+                "rows_read": 10,
+                "rows_written": 5,
+                "config_fingerprint": "cfg",
+                "source_schema_fingerprint": "schema-a",
+            },
+            {
+                "source_table": "source_b",
+                "new_version": 9,
+                "rows_read": 10,
+                "rows_written": 5,
+                "config_fingerprint": "cfg",
+                "source_schema_fingerprint": "schema-b",
+            },
+        ],
+    )
+
+    manager._upsert_control_records.assert_called_once()
+    records = manager._upsert_control_records.call_args.args[0]
+    assert {record["last_processed_version"] for record in records} == {4, 9}
+    assert all(record["batch_status"] == "SUCCESS" for record in records)
+
+
 def test_batch_start_all_records_every_source(manager):
     manager._upsert_control_records = MagicMock()
 
@@ -156,7 +187,7 @@ def test_get_running_batches_filters_only_running_records(
 
     col_result = MagicMock()
     col_result.__eq__ = MagicMock(return_value=col_result)
-    col_result.__gt__ = MagicMock(return_value=col_result)
+    col_result.__lt__ = MagicMock(return_value=col_result)
     col_result.__and__ = MagicMock(return_value=col_result)
     mock_col.return_value = col_result
 

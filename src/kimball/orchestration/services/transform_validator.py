@@ -14,7 +14,6 @@ from kimball.observability.data_quality import (
 )
 from kimball.orchestration.services.context import PipelineContext
 from kimball.orchestration.services.contracts import ContractValidator
-from kimball.orchestration.services.fingerprint import FingerprintService
 from kimball.orchestration.validation import DataQualityValidator
 
 logger = logging.getLogger(__name__)
@@ -28,7 +27,6 @@ class TransformValidator:
         self,
         ctx: PipelineContext,
         active_dfs: dict[str, DataFrame],
-        fingerprint_service: FingerprintService,
     ) -> DataFrame:
         spark = ctx.spark
         config = ctx.config

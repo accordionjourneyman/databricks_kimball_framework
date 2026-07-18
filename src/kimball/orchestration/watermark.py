@@ -30,9 +30,9 @@ def compute_source_schema_fingerprint(
 ) -> str | None:
     """Compute a fingerprint of a source table's schema (columns + types).
 
-    Used for state-aware validation skipping: if the source schema hasn't
-    changed since the last successful run, data quality tests can be skipped
-    (they would produce the same result).
+    Stored as audit metadata after successful processing.  It must never be
+    used to skip data-quality validation because data can change independently
+    of its schema.
     """
     try:
         if not spark.catalog.tableExists(source_name):
@@ -65,7 +65,7 @@ class ETLControlRecord(TypedDict, total=False):
 
 
 class ETLControlManager:
-    DEFAULT_TABLE_NAME = "etl_control"
+    DEFAULT_TABLE_NAME = 'etl_control'
 
     def __init__(
         self,
@@ -100,7 +100,6 @@ class ETLControlManager:
     def _ensure_table_exists(self) -> None:
         self.spark.sql(f"CREATE DATABASE IF NOT EXISTS {self.schema}")
         if self.spark.catalog.tableExists(self.fq_table):
-            self._migrate_schema()
             return
         try:
             self.spark.sql(f"""
@@ -118,38 +117,11 @@ class ETLControlManager:
                     updated_at TIMESTAMP NOT NULL,
                     config_fingerprint STRING,
                     source_schema_fingerprint STRING
-                ) USING DELTA PARTITIONED BY (target_table, source_table)
+                ) USING DELTA
             """)
         except PySparkException:
             if not self.spark.catalog.tableExists(self.fq_table):
                 raise
-
-    def _migrate_schema(self) -> None:
-        existing = {
-            f.name.lower() for f in self.spark.table(self.fq_table).schema.fields
-        }
-        for col_name, col_type in {
-            "target_table": "STRING",
-            "source_table": "STRING",
-            "last_processed_version": "LONG",
-            "batch_id": "STRING",
-            "batch_started_at": "TIMESTAMP",
-            "batch_completed_at": "TIMESTAMP",
-            "batch_status": "STRING",
-            "rows_read": "LONG",
-            "rows_written": "LONG",
-            "error_message": "STRING",
-            "updated_at": "TIMESTAMP",
-            "config_fingerprint": "STRING",
-            "source_schema_fingerprint": "STRING",
-        }.items():
-            if col_name not in existing:
-                try:
-                    self.spark.sql(
-                        f"ALTER TABLE {self.fq_table} ADD COLUMN {col_name} {col_type}"
-                    )
-                except PySparkException:
-                    pass  # Column may already exist from concurrent migration
 
     def get_watermark(self, target_table: str, source_table: str) -> int | None:
         row = (
@@ -166,6 +138,21 @@ class ETLControlManager:
             if row and row["last_processed_version"] is not None
             else None
         )
+
+    def get_states(
+        self, target_table: str, source_tables: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        if not source_tables:
+            return {}
+        rows = (
+            self.spark.table(self.fq_table)
+            .filter(
+                (col("target_table") == target_table)
+                & col("source_table").isin(source_tables)
+            )
+            .collect()
+        )
+        return {row["source_table"]: row.asDict(recursive=True) for row in rows}
 
     def update_watermark(
         self, target_table: str, source_table: str, version: int
@@ -246,6 +233,30 @@ class ETLControlManager:
             },
         )
 
+    def batch_complete_all(
+        self, target_table: str, completions: list[dict[str, Any]]
+    ) -> None:
+        completed_at = datetime.now()
+        records: list[ETLControlRecord] = []
+        for completion in completions:
+            records.append(
+                {
+                    "target_table": target_table,
+                    "source_table": completion["source_table"],
+                    "last_processed_version": completion.get("new_version"),
+                    "batch_completed_at": completed_at,
+                    "batch_status": "SUCCESS",
+                    "rows_read": completion.get("rows_read"),
+                    "rows_written": completion.get("rows_written"),
+                    "error_message": None,
+                    "config_fingerprint": completion.get("config_fingerprint"),
+                    "source_schema_fingerprint": completion.get(
+                        "source_schema_fingerprint"
+                    ),
+                }
+            )
+        self._upsert_control_records(records)
+
     def batch_fail(
         self, target_table: str, source_table: str, error_message: str
     ) -> None:
@@ -259,6 +270,25 @@ class ETLControlManager:
                 "batch_status": "FAILED",
                 "error_message": error_message,
             },
+        )
+
+    def batch_fail_all(
+        self, target_table: str, source_tables: list[str], error_message: str
+    ) -> None:
+        if error_message and len(error_message) > 4000:
+            error_message = error_message[:4000] + "... (truncated)"
+        completed_at = datetime.now()
+        self._upsert_control_records(
+            [
+                {
+                    "target_table": target_table,
+                    "source_table": source_table,
+                    "batch_completed_at": completed_at,
+                    "batch_status": "FAILED",
+                    "error_message": error_message,
+                }
+                for source_table in source_tables
+            ]
         )
 
     def get_batch_status(
@@ -296,7 +326,7 @@ class ETLControlManager:
                     & (col("batch_status") == "RUNNING")
                     & (
                         col("batch_started_at")
-                        > (
+                        < (
                             current_timestamp()
                             - F.expr(f"INTERVAL {ttl_minutes} MINUTES")
                         )

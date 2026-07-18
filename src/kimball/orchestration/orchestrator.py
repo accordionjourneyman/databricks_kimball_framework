@@ -41,14 +41,21 @@ from kimball.observability.resilience import (
 )
 from kimball.observability.temporal_state import commit_temporal_state_updates
 from kimball.orchestration.services.context import PipelineContext
-from kimball.orchestration.services.fingerprint import FingerprintService
 from kimball.orchestration.services.merge_executor import MergeExecutor
 from kimball.orchestration.services.recovery import RecoveryService
 from kimball.orchestration.services.skeleton_manager import SkeletonManager
 from kimball.orchestration.services.source_loader import SourceLoader
 from kimball.orchestration.services.transform_validator import TransformValidator
+from kimball.orchestration.services.work_plan import (
+    SourceWorkPlan,
+    build_source_work_plan,
+)
 from kimball.orchestration.transaction import TransactionManager
-from kimball.orchestration.watermark import ETLControlManager, get_etl_schema
+from kimball.orchestration.watermark import (
+    ETLControlManager,
+    compute_source_schema_fingerprint,
+    get_etl_schema,
+)
 from kimball.processing import (
     merger as _merger,  # noqa: F401 — kept for test patch compatibility
 )
@@ -140,7 +147,6 @@ class Orchestrator:
         self._skeleton_manager = SkeletonManager(skeleton_generator)
         self._transform_validator = TransformValidator()
         self._merge_executor = MergeExecutor(table_creator)
-        self._fingerprint_service = FingerprintService(self.config_loader)
         self._recovery_service = RecoveryService(self.transaction_manager)
 
     @property
@@ -178,24 +184,14 @@ class Orchestrator:
     def _transform_and_validate(self, active_dfs):
         ctx = self._make_context_safe()
         ctx.active_dfs = active_dfs
-        fp_service = getattr(self, "_fingerprint_service", None) or FingerprintService(
-            getattr(self, "config_loader", ConfigLoader())
-        )
         tv = getattr(self, "_transform_validator", None) or TransformValidator()
-        return tv.transform_and_validate(ctx, active_dfs, fp_service)
+        return tv.transform_and_validate(ctx, active_dfs)
 
     def _generate_skeletons(self, active_dfs, batch_id):
         ctx = self._make_context_safe(batch_id)
         ctx.active_dfs = active_dfs
         sm = getattr(self, "_skeleton_manager", None) or SkeletonManager()
         sm.generate_skeletons(ctx, active_dfs)
-
-    def _save_fingerprints(self, table_name: str) -> None:
-        ctx = self._make_context_safe()
-        fp_service = getattr(self, "_fingerprint_service", None) or FingerprintService(
-            getattr(self, "config_loader", ConfigLoader())
-        )
-        fp_service.save_fingerprints(ctx)
 
     def _recover_zombies(self) -> bool:
         ctx = self._make_context_safe()
@@ -220,7 +216,35 @@ class Orchestrator:
     def _load_active_sources(self, batch_id: str = ""):
         ctx = self._make_context_safe(batch_id)
         sl = getattr(self, "_source_loader", None) or SourceLoader()
-        return sl.load(ctx)
+        plan = self._build_source_work_plan()
+        ctx.work_plan = plan
+        return sl.load(ctx, plan)
+
+    def _build_source_work_plan(self) -> SourceWorkPlan:
+        incremental = [
+            source
+            for source in self.config.sources
+            if source.cdc_strategy != "full"
+        ]
+        states = self.etl_control.get_states(
+            self.config.table_name, [source.name for source in incremental]
+        )
+        watermarks = {
+            source.name: states.get(source.name, {}).get("last_processed_version")
+            for source in incremental
+        }
+        latest_versions = {
+            source.name: self.loader.get_latest_version(source.name)
+            for source in incremental
+        }
+        return build_source_work_plan(
+            self.config.sources,
+            watermarks=watermarks,
+            latest_versions=latest_versions,
+            preserve_all_changes=(
+                self.config.preserve_all_changes and self.config.scd_type == 2
+            ),
+        )
 
     def _apply_identity_bridge(self, df):
         ctx = self._make_context_safe()
@@ -311,30 +335,12 @@ class Orchestrator:
     def _run_with_version_loop(self, max_iterations: int = 100) -> dict[str, Any]:
         iteration = 0
         combined_result = {"rows_read": 0, "rows_written": 0}
-        source_versions: dict[str, int] = {}
-        for source in self.config.sources:
-            if source.cdc_strategy == "cdf":
-                source_versions[source.name] = self.loader.get_latest_version(
-                    source.name
-                )
-
         while iteration < max_iterations:
             iteration += 1
-            all_caught_up = True
-            for source in self.config.sources:
-                if source.cdc_strategy == "cdf":
-                    source_version = source_versions[source.name]
-                    wm = self.etl_control.get_watermark(
-                        self.config.table_name, source.name
-                    )
-                    if wm is None or wm < source_version:
-                        all_caught_up = False
-                        break
-            if all_caught_up:
+            result = self._run_pipeline_once()
+            if result.get("active_sources", 0) == 0:
                 logger.info("Preserve All Changes: All CDF sources caught up")
                 return combined_result
-
-            result = self._run_pipeline_once()
             combined_result["rows_read"] += result.get("rows_read", 0)
             combined_result["rows_written"] += result.get("rows_written", 0)
             logger.info(f"Preserve All Changes: Iteration {iteration} processed.")
@@ -351,56 +357,55 @@ class Orchestrator:
             self.metrics_collector.start_collection()
 
         self._recovery_service.recover_zombies(ctx)
-        source_names = [s.name for s in self.config.sources if s.cdc_strategy != "full"]
-        if source_names:
-            self.etl_control.batch_start_all(
-                self.config.table_name, source_names, run_batch_id=batch_id
-            )
+        work_plan = self._build_source_work_plan()
+        ctx.work_plan = work_plan
+        active_names = [item.source_name for item in work_plan.active_items]
+        if not active_names:
+            if self.metrics_collector:
+                self.metrics_collector.stop_collection()
+            return {
+                "status": "SUCCESS",
+                "batch_id": batch_id,
+                "target_table": self.config.table_name,
+                "rows_read": 0,
+                "rows_written": 0,
+                "active_sources": 0,
+                "metrics": {},
+                "validation_metrics": [],
+            }
+        self.etl_control.batch_start_all(
+            self.config.table_name, active_names, run_batch_id=batch_id
+        )
 
         active_dfs: dict[str, Any] = {}
         try:
             with self.transaction_manager.table_transaction(
                 self.config.table_name, batch_id
             ):
-                source_versions, active_dfs = self._source_loader.load(ctx)
+                source_versions, active_dfs = self._source_loader.load(ctx, work_plan)
                 ctx.source_versions = source_versions
                 ctx.active_dfs = active_dfs
-                if not active_dfs:
-                    return {"rows_read": 0, "rows_written": 0}
 
                 self._skeleton_manager.generate_skeletons(ctx, active_dfs)
                 transformed_df = self._transform_validator.transform_and_validate(
-                    ctx, active_dfs, self._fingerprint_service
+                    ctx, active_dfs
                 )
 
-                if len(transformed_df.limit(1).head(1)) == 0:
-                    merge_executed = False
+                table_created = self._merge_executor.ensure_target_table(
+                    ctx, transformed_df
+                )
+                self._merge_executor.seed_defaults(ctx, table_created)
+                source_df = self._merge_executor.prepare_source_df(ctx, transformed_df)
+                if self.config.table_type == "fact":
+                    join_keys = self.config.merge_keys or []
                 else:
-                    merge_executed = True
-                    table_created = self._merge_executor.ensure_target_table(
-                        ctx, transformed_df
-                    )
-                    self._merge_executor.seed_defaults(ctx, table_created)
+                    join_keys = self.config.natural_keys or []
+                self._merge_executor.validate_grain(ctx, source_df, join_keys)
+                self._merge_executor.execute_merge(ctx, source_df, join_keys)
 
-                    source_df = self._merge_executor.prepare_source_df(
-                        ctx, transformed_df
-                    )
-
-                    if self.config.table_type == "fact":
-                        join_keys = self.config.merge_keys or []
-                    else:
-                        join_keys = self.config.natural_keys or []
-
-                    self._merge_executor.validate_grain(ctx, source_df, join_keys)
-                    self._merge_executor.execute_merge(ctx, source_df, join_keys)
-
-                if merge_executed:
-                    metrics = self._merge_executor.get_merge_metrics(ctx)
-                    total_rows_read = metrics["rows_read"]
-                    total_rows_written = metrics["rows_written"]
-                else:
-                    total_rows_read = 0
-                    total_rows_written = 0
+                metrics = self._merge_executor.get_merge_metrics(ctx)
+                total_rows_read = metrics["rows_read"]
+                total_rows_written = metrics["rows_written"]
 
                 if self.metrics_collector:
                     self.metrics_collector.add_operation_metric(

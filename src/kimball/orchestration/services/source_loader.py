@@ -18,232 +18,174 @@ from kimball.observability.temporal_state import (
 )
 from kimball.orchestration.services.context import PipelineContext
 from kimball.orchestration.services.contracts import ContractValidator
+from kimball.orchestration.services.work_plan import SourceWorkPlan
 
 logger = logging.getLogger(__name__)
 
 
 class SourceLoader:
-    def load(self, ctx: PipelineContext) -> tuple[dict[str, Any], dict[str, DataFrame]]:
+    def load(
+        self, ctx: PipelineContext, plan: SourceWorkPlan
+    ) -> tuple[dict[str, Any], dict[str, DataFrame]]:
         source_versions: dict[str, Any] = {}
         active_dfs: dict[str, DataFrame] = {}
         stage_start = time.time()
 
-        for source in ctx.config.sources:
-            if source.format == "delta" and source.cdc_strategy in ("cdf", "append"):
-                latest_v = ctx.loader.get_latest_version(source.name)
-            else:
-                latest_v = 0
-            source_versions[source.name] = latest_v
-            if isinstance(source.contract, SourceContractConfig):
-                schema = getattr(ctx.etl_control, "schema", None) or "default"
-                obs = ctx.config.observability
-                writer = DataQualityEventSink(
-                    ctx.spark,
-                    schema,
-                    obs.event_table if obs else "etl_data_quality_events",
-                    failure_mode=obs.write_failure if obs else "warn",
-                    writer_type=DataQualityEventWriter,
-                )
-                findings = ContractValidator(ctx.spark).validate_source(source)
-                for finding in findings:
-                    event_id = writer.write(
-                        pipeline_table=ctx.config.table_name,
-                        source=source,
-                        finding=finding,
-                        run_id=ctx.batch_id,
-                        source_version=latest_v,
-                        action="blocked"
-                        if not finding.passed and finding.severity.value == "error"
-                        else "recorded",
-                    )
-                    if (
-                        not finding.passed
-                        and finding.severity.value == "error"
-                        and obs
-                        and "error" in obs.alert_on
-                    ):
-                        AlertDispatcher(obs.webhook_env).dispatch(
-                            {
-                                "event_id": event_id,
-                                "severity": "error",
-                                "category": finding.category,
-                                "source_table": source.name,
-                                "pipeline_table": ctx.config.table_name,
-                                "summary": finding.details,
-                            }
-                        )
-                ContractValidator.raise_for_errors(findings)
+        for item in plan.active_items:
+            source = item.source
+            processed_version = item.ending_version if item.ending_version is not None else 0
+            source_versions[source.name] = processed_version
+            self._validate_source_contract(ctx, source, processed_version)
 
-            if source.cdc_strategy == "full":
+            if source.cdc_strategy == 'full':
                 df = ctx.loader.load_full_snapshot(
                     source.name, format=source.format, options=source.options
                 )
-            elif source.cdc_strategy == "cdf":
-                wm = ctx.etl_control.get_watermark(ctx.config.table_name, source.name)
-                if wm is None:
-                    logger.info(
-                        f"No watermark for {source.name}. "
-                        f"Performing Initial Load via CDF from Version 0."
-                    )
-                    if ctx.config.preserve_all_changes and ctx.config.scd_type == 2:
-                        logger.info(
-                            f"Preserve All Changes: Processing version {source.starting_version} only"
-                        )
-                        df = ctx.loader.load_cdf(
-                            source.name,
-                            starting_version=source.starting_version,
-                            deduplicate_keys=None,
-                            ending_version=source.starting_version,
-                        )
-                        source_versions[source.name] = source.starting_version
-                    else:
-                        df = ctx.loader.load_cdf(
-                            source.name,
-                            starting_version=source.starting_version,
-                            deduplicate_keys=None,
-                            ending_version=latest_v,
-                        )
-                        source_versions[source.name] = latest_v
-                else:
-                    if wm >= latest_v:
-                        logger.info(
-                            f"Source {source.name} already at version {latest_v}. Skipping."
-                        )
-                        ctx.etl_control.batch_complete(
-                            ctx.config.table_name,
-                            source.name,
-                            new_version=latest_v,
-                            rows_read=0,
-                            rows_written=0,
-                        )
-                        continue
-
-                    if ctx.config.preserve_all_changes and ctx.config.scd_type == 2:
-                        logger.info(
-                            f"Preserve All Changes: Processing version {wm + 1} only"
-                        )
-                        df = ctx.loader.load_cdf(
-                            source.name,
-                            wm + 1,
-                            deduplicate_keys=None,
-                            ending_version=wm + 1,
-                        )
-                        source_versions[source.name] = wm + 1
-                    else:
-                        df = ctx.loader.load_cdf(
-                            source.name,
-                            wm + 1,
-                            deduplicate_keys=None,
-                            ending_version=latest_v,
-                        )
-            elif source.cdc_strategy == "append":
-                wm = ctx.etl_control.get_watermark(ctx.config.table_name, source.name)
-                if wm is None:
-                    logger.info(
-                        f"No watermark for {source.name}. "
-                        f"Performing initial append load via CDF from version {source.starting_version}."
-                    )
-                    df = ctx.loader.load_cdf(
-                        source.name,
-                        starting_version=source.starting_version,
-                        deduplicate_keys=None,
-                        ending_version=latest_v,
-                    )
-                    source_versions[source.name] = latest_v
-                else:
-                    if wm >= latest_v:
-                        logger.info(
-                            f"Source {source.name} already at version {latest_v}. Skipping."
-                        )
-                        ctx.etl_control.batch_complete(
-                            ctx.config.table_name,
-                            source.name,
-                            new_version=latest_v,
-                            rows_read=0,
-                            rows_written=0,
-                        )
-                        continue
-                    df = ctx.loader.load_cdf(
-                        source.name,
-                        wm + 1,
-                        deduplicate_keys=None,
-                        ending_version=latest_v,
-                    )
-                    source_versions[source.name] = latest_v
-                cdf_metadata_cols = [
-                    c
-                    for c in ("_change_type", "_commit_version", "_commit_timestamp")
-                    if c in df.columns
-                ]
-                if cdf_metadata_cols:
-                    df = df.drop(*cdf_metadata_cols)
-            elif source.cdc_strategy == "timestamp":
-                raise NotImplementedError(
-                    f"cdc_strategy='timestamp' is not yet implemented for source '{source.name}'. "
-                    "Use 'cdf' (recommended) or 'full' instead."
-                )
             else:
-                raise ValueError(f"Unknown CDC strategy: {source.cdc_strategy}")
+                if item.starting_version is None or item.ending_version is None:
+                    raise ValueError(
+                        f'Incremental source {source.name} has no planned version range'
+                    )
+                df = ctx.loader.load_cdf(
+                    source.name,
+                    starting_version=item.starting_version,
+                    deduplicate_keys=None,
+                    ending_version=item.ending_version,
+                )
 
-            # Contract temporal checks must see raw CDF rows before the normal
-            # latest-per-key reduction removes ordering evidence.
+            if source.cdc_strategy == 'append':
+                metadata = [
+                    column
+                    for column in (
+                        '_change_type',
+                        '_commit_version',
+                        '_commit_timestamp',
+                    )
+                    if column in df.columns
+                ]
+                if metadata:
+                    df = df.drop(*metadata)
+
             if (
                 isinstance(source.contract, SourceContractConfig)
                 and source.contract.temporal
             ):
-                schema = getattr(ctx.etl_control, "schema", None) or "default"
-                obs = ctx.config.observability
-                state_store = TemporalStateStore(
-                    ctx.spark,
-                    schema,
-                    obs.temporal_state_table if obs else "etl_contract_temporal_state",
-                )
-                prior_state = state_store.existing(
-                    ctx.config.table_name, source.name, source.contract.id
-                )
-                pending_update = state_store.prepare(
-                    df, pipeline_table=ctx.config.table_name, source=source
-                )
-                validator = ContractValidator(ctx.spark)
-                findings = validator.validate_temporal(
-                    df, source, prior_state=prior_state
-                )
-                if validator.last_metrics:
-                    ctx.validation_metrics.append(
-                        {
-                            **validator.last_metrics,
-                            "source_table": source.name,
-                            "pipeline_table": ctx.config.table_name,
-                        }
-                    )
-                writer = DataQualityEventSink(
-                    ctx.spark,
-                    schema,
-                    obs.event_table if obs else "etl_data_quality_events",
-                    failure_mode=obs.write_failure if obs else "warn",
-                    writer_type=DataQualityEventWriter,
-                )
-                for finding in findings:
-                    writer.write(
-                        pipeline_table=ctx.config.table_name,
-                        source=source,
-                        finding=finding,
-                        run_id=ctx.batch_id,
-                        source_version=source_versions[source.name],
-                        action="blocked"
-                        if not finding.passed and finding.severity.value == "error"
-                        else "accepted_late",
-                    )
-                ContractValidator.raise_for_errors(findings)
-                ctx.pending_temporal_state.append(
-                    PendingTemporalState(state_store, pending_update, ctx.batch_id)
-                )
-            if source.cdc_strategy == "cdf":
+                self._validate_temporal(ctx, source, df, processed_version)
+
+            if source.cdc_strategy == 'cdf':
                 df = ctx.loader.deduplicate_cdf(df, source.primary_keys)
             df.createOrReplaceTempView(source.alias)
             active_dfs[source.name] = df
 
         logger.info(
-            f"Loaded {len(active_dfs)} source(s) in {time.time() - stage_start:.2f}s"
+            'Loaded %d source(s) in %.2fs',
+            len(active_dfs),
+            time.time() - stage_start,
         )
         return source_versions, active_dfs
+
+    @staticmethod
+    def _event_sink(ctx: PipelineContext) -> DataQualityEventSink:
+        schema = getattr(ctx.etl_control, 'schema', None) or 'default'
+        observability = ctx.config.observability
+        return DataQualityEventSink(
+            ctx.spark,
+            schema,
+            observability.event_table
+            if observability
+            else 'etl_data_quality_events',
+            failure_mode=observability.write_failure if observability else 'warn',
+            writer_type=DataQualityEventWriter,
+        )
+
+    def _validate_source_contract(
+        self, ctx: PipelineContext, source: Any, source_version: int
+    ) -> None:
+        if not isinstance(source.contract, SourceContractConfig):
+            return
+        validator = ContractValidator(ctx.spark)
+        findings = validator.validate_source(source)
+        sink = self._event_sink(ctx)
+        observability = ctx.config.observability
+        for finding in findings:
+            action = (
+                'blocked'
+                if not finding.passed and finding.severity.value == 'error'
+                else 'recorded'
+            )
+            event_id = sink.write(
+                pipeline_table=ctx.config.table_name,
+                source=source,
+                finding=finding,
+                run_id=ctx.batch_id,
+                source_version=source_version,
+                action=action,
+            )
+            if (
+                not finding.passed
+                and finding.severity.value == 'error'
+                and observability
+                and 'error' in observability.alert_on
+            ):
+                AlertDispatcher(observability.webhook_env).dispatch(
+                    {
+                        'event_id': event_id,
+                        'severity': 'error',
+                        'category': finding.category,
+                        'source_table': source.name,
+                        'pipeline_table': ctx.config.table_name,
+                        'summary': finding.details,
+                    }
+                )
+        validator.raise_for_errors(findings)
+
+    def _validate_temporal(
+        self,
+        ctx: PipelineContext,
+        source: Any,
+        df: DataFrame,
+        source_version: int,
+    ) -> None:
+        schema = getattr(ctx.etl_control, 'schema', None) or 'default'
+        observability = ctx.config.observability
+        state_store = TemporalStateStore(
+            ctx.spark,
+            schema,
+            observability.temporal_state_table
+            if observability
+            else 'etl_contract_temporal_state',
+        )
+        prior_state = state_store.existing(
+            ctx.config.table_name, source.name, source.contract.id
+        )
+        pending_update = state_store.prepare(
+            df, pipeline_table=ctx.config.table_name, source=source
+        )
+        validator = ContractValidator(ctx.spark)
+        findings = validator.validate_temporal(df, source, prior_state=prior_state)
+        if validator.last_metrics:
+            ctx.validation_metrics.append(
+                {
+                    **validator.last_metrics,
+                    'source_table': source.name,
+                    'pipeline_table': ctx.config.table_name,
+                }
+            )
+        sink = self._event_sink(ctx)
+        for finding in findings:
+            sink.write(
+                pipeline_table=ctx.config.table_name,
+                source=source,
+                finding=finding,
+                run_id=ctx.batch_id,
+                source_version=source_version,
+                action=(
+                    'blocked'
+                    if not finding.passed and finding.severity.value == 'error'
+                    else 'accepted_late'
+                ),
+            )
+        validator.raise_for_errors(findings)
+        ctx.pending_temporal_state.append(
+            PendingTemporalState(state_store, pending_update, ctx.batch_id)
+        )

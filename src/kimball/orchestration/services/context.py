@@ -27,3 +27,5 @@ class PipelineContext:
     total_rows_written: int = 0
     pending_temporal_state: list[Any] = field(default_factory=list)
     validation_metrics: list[dict[str, Any]] = field(default_factory=list)
+    work_plan: Any | None = None
+    validated_grains: set[tuple[str, ...]] = field(default_factory=set)
