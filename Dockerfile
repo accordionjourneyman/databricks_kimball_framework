@@ -38,6 +38,7 @@ WORKDIR /app
 
 # Copy project files
 COPY pyproject.toml .
+COPY README.md .
 COPY src/ src/
 COPY tests/ tests/
 COPY tools/ tools/
@@ -52,8 +53,32 @@ RUN pip install --no-cache-dir \
     jsonschema \
     pytest \
     pytest-benchmark \
+    pytest-cov \
     ruff \
+    "mypy>=1.11,<3" \
+    types-PyYAML \
+    pyright \
+    build \
+    pip-audit \
     databricks-sdk
+
+# Keep the image's packaging toolchain above versions rejected by pip-audit.
+# Application dependencies are installed separately above so this inexpensive
+# layer can be refreshed without rebuilding the Spark dependency layer.
+RUN python -m pip install --no-cache-dir --upgrade \
+    "pip>=26.1.2" \
+    "setuptools>=83.0.0"
+
+# Bencher publishes pytest-benchmark JSON from the same pinned environment that
+# produced it. The vendor installer is intentionally unpinned for Bencher Cloud;
+# its documentation recommends tracking the current CLI because the Cloud API may
+# introduce compatibility changes.
+RUN curl --proto '=https' --tlsv1.2 -sSfL \
+        https://bencher.dev/download/install-cli.sh \
+    | sh && \
+    install -m 0755 "$(find /root -type f -name bencher -print -quit)" \
+        /usr/local/bin/bencher && \
+    bencher --version
 
 # databricks-sdk is the pure-Python SDK (NOT databricks-connect). tests/conftest.py
 # does `import databricks` and then mocks `databricks.sdk.runtime`, so the SDK

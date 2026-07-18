@@ -21,8 +21,15 @@ from kimball.streaming.orchestrator import StreamingOrchestrator
 @pytest.fixture(autouse=True)
 def _patch_spark_fns():
     """Patch Spark functions that require an active SparkContext."""
-    with patch(
-        "kimball.streaming.services.microbatch.spark_count", return_value=MagicMock()
+    with (
+        patch(
+            "kimball.streaming.services.microbatch.spark_count",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "kimball.processing.dimension_nulls.apply_dimension_null_policy",
+            side_effect=lambda df, *_args, **_kwargs: df,
+        ),
     ):
         yield
 
@@ -432,6 +439,24 @@ class TestStreamingTargetCreation:
                     processor = orch._get_processor()
                     processor.ensure_target_table(source_df)
         mock_tc.create_table_with_clustering.assert_called_once()
+
+
+class TestStreamingBatchMetadata:
+    def test_microbatch_id_is_forwarded_to_merge(self):
+        cfg = _make_config(True)
+        spark = MagicMock()
+        spark.catalog.tableExists.return_value = True
+        orch = StreamingOrchestrator(cfg, spark=spark)
+        source_df = MagicMock(columns=["customer_id"])
+
+        with patch("kimball.streaming.services.microbatch._merger.merge") as merge:
+            with patch(
+                "kimball.streaming.services.microbatch._merger.get_last_merge_metrics",
+                return_value={},
+            ):
+                orch._execute_one_microbatch(source_df, cfg.sources[0], 42)
+
+        assert merge.call_args.kwargs["batch_id"] == "42"
 
 
 class TestStreamingTemporalContracts:

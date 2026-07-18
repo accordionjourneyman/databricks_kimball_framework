@@ -3,8 +3,6 @@ from __future__ import annotations
 import logging
 
 from pyspark.sql import DataFrame
-from pyspark.sql import functions as F
-from pyspark.sql.types import StringType
 
 from kimball.common.config import SourceContractConfig
 from kimball.common.errors import DataQualityError
@@ -86,23 +84,50 @@ class TransformValidator:
                 spark, transformed_df, config.junk_dimensions
             )
 
+        if config.table_type == "fact" and any(
+            fk.lookup is not None for fk in config.foreign_keys or []
+        ):
+            from kimball.observability.unresolved_keys import UnresolvedKeyRegistry
+            from kimball.processing.key_broker import KeyBroker
+
+            unresolved = any(
+                fk.lookup and fk.lookup.early_arriving == "default"
+                for fk in config.foreign_keys or []
+            )
+            schema = getattr(ctx.etl_control, "schema", None) or "default"
+            obs = config.observability
+            registry = (
+                UnresolvedKeyRegistry(
+                    spark,
+                    schema,
+                    obs.unresolved_key_table
+                    if obs
+                    else "etl_unresolved_dimension_keys",
+                )
+                if unresolved
+                else None
+            )
+            numeric_versions = [
+                int(value)
+                for value in ctx.source_versions.values()
+                if value is not None
+            ]
+            transformed_df = KeyBroker(spark, registry).resolve_fact_keys(
+                transformed_df,
+                config.foreign_keys or [],
+                batch_id=ctx.batch_id,
+                null_policy=config.null_policy,
+                fact_table=config.table_name,
+                fact_grain=config.merge_keys or [],
+                source_version=max(numeric_versions, default=-1),
+            )
+
         if config.table_type == "fact":
             from kimball.orchestration.services.model_contracts import (
                 validate_fact_output_columns,
             )
 
             validate_fact_output_columns(config, transformed_df.columns)
-
-        if config.identity_bridge:
-            from kimball.orchestration.services.skeleton_manager import SkeletonManager
-
-            sm = getattr(self, "_skeleton_manager", None) or SkeletonManager()
-            logger.info(
-                f"Applying identity bridge: {config.identity_bridge.table} on "
-                f"{config.identity_bridge.join_on} -> "
-                f"{config.identity_bridge.target_column}"
-            )
-            transformed_df = sm.apply_identity_bridge(ctx, transformed_df)
 
         # Contract data rules are intentionally never fingerprint-skipped: source
         # content can change while both configuration and schema remain stable.
@@ -144,40 +169,24 @@ class TransformValidator:
                             "run_id": ctx.batch_id,
                             "source_version": ctx.source_versions.get(source.name),
                             "action": "blocked"
-                            if not finding.passed
-                            and finding.severity.value == "error"
+                            if not finding.passed and finding.severity.value == "error"
                             else "recorded",
                         }
                     )
             writer.write_many(events)
             ContractValidator.raise_for_errors(contract_findings)
 
-        if config.foreign_keys:
-            for fk in config.foreign_keys:
-                col_name = fk.column
-                default_val = fk.default_value
-                field = next(
-                    (f for f in transformed_df.schema.fields if f.name == col_name),
-                    None,
-                )
-                if field:
-                    if isinstance(field.dataType, StringType):
-                        fill_val = str(default_val)
-                    else:
-                        fill_val = default_val
-                    logger.info(
-                        f"Filling NULL foreign key '{col_name}' with default: {fill_val}"
-                    )
-                    transformed_df = transformed_df.withColumn(
-                        col_name,
-                        F.when(F.col(col_name).isNull(), F.lit(fill_val)).otherwise(
-                            F.col(col_name)
-                        ),
-                    )
-                else:
-                    logger.info(
-                        f"Warning: Foreign key column '{col_name}' not found in transformed DataFrame"
-                    )
+        if config.table_type == "dimension":
+            from kimball.processing.dimension_nulls import apply_dimension_null_policy
+
+            identity_columns = list(config.natural_keys)
+            if config.effective_at:
+                identity_columns.append(config.effective_at)
+            transformed_df = apply_dimension_null_policy(
+                transformed_df,
+                config.null_policy,
+                identity_columns=identity_columns,
+            )
 
         if getattr(config, "tests", None):
             logger.info("Running data quality validation on transformed data...")
@@ -216,6 +225,7 @@ class TransformValidator:
                         "column": fk.column,
                         "dimension_table": fk.references,
                         "dimension_key": fk.dimension_key or fk.column,
+                        "current_only": fk.relationship != "type7",
                     }
                     for fk in config.foreign_keys or []
                     if hasattr(fk, "references") and fk.references

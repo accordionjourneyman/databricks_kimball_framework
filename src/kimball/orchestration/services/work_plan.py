@@ -6,7 +6,7 @@ from typing import Literal
 
 from kimball.common.config import SourceConfig
 
-DeleteMode = Literal['explicit_cdf', 'full_snapshot']
+DeleteMode = Literal["explicit_cdf", "full_snapshot"]
 
 
 @dataclass(frozen=True)
@@ -36,7 +36,7 @@ class SourceWorkPlan:
     def full_snapshot_reconciliation(self) -> bool:
         active = self.active_items
         return bool(active) and all(
-            item.delete_mode == 'full_snapshot' for item in active
+            item.delete_mode == "full_snapshot" for item in active
         )
 
 
@@ -49,7 +49,7 @@ def build_source_work_plan(
 ) -> SourceWorkPlan:
     items: list[SourceWorkItem] = []
     for source in sources:
-        if source.cdc_strategy == 'full':
+        if source.cdc_strategy == "full":
             items.append(
                 SourceWorkItem(
                     source=source,
@@ -58,7 +58,7 @@ def build_source_work_plan(
                     starting_version=None,
                     ending_version=None,
                     active=True,
-                    delete_mode='full_snapshot',
+                    delete_mode="full_snapshot",
                 )
             )
             continue
@@ -76,7 +76,7 @@ def build_source_work_plan(
                 starting_version=start,
                 ending_version=end,
                 active=active,
-                delete_mode='explicit_cdf',
+                delete_mode="explicit_cdf",
             )
         )
     return SourceWorkPlan(tuple(items))

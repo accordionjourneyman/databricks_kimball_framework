@@ -1,5 +1,15 @@
 import pytest
 
+SCALE_PARAMS = {
+    "tiny": {"products": 1_000, "changed": 300, "deleted": 100},
+    "small": {"products": 100_000, "changed": 30_000, "deleted": 10_000},
+    "medium": {
+        "products": 1_000_000,
+        "changed": 300_000,
+        "deleted": 100_000,
+    },
+}
+
 
 def pytest_addoption(parser):
     parser.addoption(
@@ -13,6 +23,25 @@ def pytest_addoption(parser):
 @pytest.fixture
 def scale(request):
     return request.config.getoption("--scale")
+
+
+@pytest.fixture
+def scale_params(scale):
+    return SCALE_PARAMS[scale]
+
+
+@pytest.fixture
+def benchmark_rounds():
+    import os
+
+    return int(os.environ.get("KIMBALL_BENCHMARK_ROUNDS", "5"))
+
+
+@pytest.fixture
+def benchmark_warmups():
+    import os
+
+    return int(os.environ.get("KIMBALL_BENCHMARK_WARMUPS", "2"))
 
 
 def _is_databricks_runtime() -> bool:
@@ -53,6 +82,12 @@ def spark():
         from pyspark.sql import SparkSession
 
         warehouse_dir = tempfile.mkdtemp(prefix="spark-warehouse-bench-")
+        import os
+        from pathlib import Path
+
+        event_log_dir = os.environ.get("KIMBALL_BENCHMARK_EVENTLOG_DIR")
+        if event_log_dir:
+            Path(event_log_dir).mkdir(parents=True, exist_ok=True)
         builder = (
             SparkSession.builder.appName("KimballBenchmark")
             .master("local[2]")
@@ -68,12 +103,22 @@ def spark():
             .config("spark.sql.ansi.enabled", "false")
             .config("spark.sql.warehouse.dir", warehouse_dir)
         )
+        if event_log_dir:
+            builder = builder.config("spark.eventLog.enabled", "true").config(
+                "spark.eventLog.dir", Path(event_log_dir).as_uri()
+            )
+
+        if event_log_dir:
+            builder = builder.config("spark.eventLog.compress", "false")
+            builder = builder.config("spark.eventLog.rolling.enabled", "false")
+
         # Ensure the delta-spark JARs are on the classpath when running
         # outside Databricks (e.g. GitHub Actions, local dev).
         try:
             from delta import configure_spark_with_delta_pip
 
-            builder = configure_spark_with_delta_pip(builder)
+            if os.environ.get("KIMBALL_BENCHMARK_USE_DELTA_PIP") == "1":
+                builder = configure_spark_with_delta_pip(builder)
         except ImportError:
             pass  # delta-spark not installed — tests that need it will fail
         session = builder.getOrCreate()

@@ -9,7 +9,11 @@ This document outlines known limitations, design choices, and potential edge cas
 | SCD Type | Delete Behavior                                             |
 | -------- | ----------------------------------------------------------- |
 | **SCD1** | Sets `__is_deleted = true` (row preserved)                  |
-| **SCD2** | Expires row (`__is_current = false`, `__is_deleted = true`) |
+| **SCD2/SCD7 source delete** | Expires row (`__is_current = false`, `__is_deleted = true`) |
+
+An ordinary attribute supersession expires the old row with
+`__is_deleted = false`; deletion status is reserved for an actual source
+delete.
 
 **Why Soft Deletes?** Kimball requires dimension rows to remain for FK integrity. Facts that referenced a deleted customer must still join correctly.
 
@@ -45,11 +49,29 @@ This document outlines known limitations, design choices, and potential edge cas
 
 ## 6. Surrogate Key Generation
 
-- **Implementation:** All surrogate keys are generated via `xxhash64(natural_keys)` (SCD1/SCD4/SCD6) or `xxhash64(natural_keys + version_column)` (SCD2). This is deterministic, distributed-safe, and idempotent.
-- **Collision Risk:** `xxhash64` produces a 64-bit signed BIGINT. Birthday-paradox collisions become statistically significant at very large cardinalities. A full reload does not heal a deterministic collision. Managed junk dimensions detect conflicting combinations; general dimensions require collision monitoring or an identity/key-registry design where the risk is unacceptable.
+- **Implementation:** SCD7 separates a durable entity key from a row-version
+  surrogate key. Both use canonical typed payloads and `xxhash64`; SHA-256
+  fingerprints are retained as collision evidence.
+- **Collision Risk:** `xxhash64` produces a 64-bit signed BIGINT. For Type 7,
+  the pre-merge integrity gate compares source and target fingerprints for both
+  key domains and fails on a collision or reserved-key overlap. Other SCD types
+  retain the normal statistical collision risk.
 - **Negative values:** `xxhash64` produces signed BIGINTs, so roughly half of all keys are negative. This is expected and does not affect correctness.
 
-## 7. Idempotency Contracts
+## 7. Type 7 and Identity Resolution Boundaries
+
+- Temporal identity maps are governed inputs; the framework does not perform
+  fuzzy matching, select MDM survivors, or rewrite existing facts.
+- Runtime validation is deliberately limited to 100,000 map rows and requires
+  direct, flattened source-to-final-survivor intervals without overlaps or
+  cycles.
+- Current-survivor consolidation across durable keys is a semantic-layer view
+  owned by the consuming data product. The framework documents the SQL pattern
+  but does not materialize that view.
+- Strict Kimball null substitution applies to dimensions. Supplier contract
+  checks run first so substitution cannot hide an upstream violation.
+
+## 8. Idempotency Contracts
 
 The framework provides the following guarantees for repeated runs of the same batch:
 
@@ -79,7 +101,7 @@ The framework provides the following guarantees for repeated runs of the same ba
 - Reserve `append` for immutable event logs where source has exactly-once semantics.
 - Use `partition_overwrite` for bulk restatements with date-partitioned tables.
 
-## 8. Streaming CDF Limitations
+## 9. Streaming CDF Limitations
 
 The streaming module (`StreamingOrchestrator`) is a first-class feature but has
 the following limitations compared to the batch path:

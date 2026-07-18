@@ -136,11 +136,33 @@ def analyze_role_playing_dimensions(
     return roles
 
 
+def analyze_relationship_modes(
+    configs: list[TableConfig],
+) -> dict[str, dict[str, str]]:
+    """Return fact -> dimension -> standard/dual-key/identity-map marker."""
+    modes: dict[str, dict[str, str]] = defaultdict(dict)
+    for config in configs:
+        if config.table_type != "fact":
+            continue
+        for fk in config.foreign_keys or []:
+            if fk.references:
+                marker = "H+C" if fk.relationship == "type7" else "X"
+                if fk.lookup and fk.lookup.identity_map:
+                    marker += "+I"
+                current = modes[config.table_name].get(fk.references)
+                candidates = {value for value in (current, marker) if value}
+                modes[config.table_name][fk.references] = max(
+                    candidates, key=lambda value: (value.count("+"), len(value))
+                )
+    return dict(modes)
+
+
 def render_markdown(
     sorted_facts: list[str],
     matrix_data: MatrixData,
     sorted_dims: list[str],
     role_data: dict[str, dict[str, set[str]]] | None = None,
+    relationship_modes: dict[str, dict[str, str]] | None = None,
 ) -> str:
     """Render the bus matrix as a Markdown table."""
     if not sorted_dims:
@@ -157,12 +179,21 @@ def render_markdown(
         for dim in sorted_dims:
             if dim in fact_dims:
                 roles = sorted((role_data or {}).get(fact, {}).get(dim, set()))
-                row += " X (" + ", ".join(roles) + ") |" if roles else " X |"
+                marker = (relationship_modes or {}).get(fact, {}).get(dim, "X")
+                row += (
+                    f" {marker} (" + ", ".join(roles) + ") |"
+                    if roles
+                    else f" {marker} |"
+                )
             else:
                 row += "   |"
         md += row + "\n"
 
-    return md
+    return (
+        md + "\nMarkers: `X` standard relationship; `H+C` Type 7 historical "
+        "surrogate plus current durable key; `+I` supplier identity is "
+        "canonicalized through a governed temporal identity map.\n"
+    )
 
 
 def generate_bus_matrix(config_dir: str) -> str:
@@ -181,5 +212,9 @@ def generate_bus_matrix(config_dir: str) -> str:
 
     sorted_facts, matrix_data, sorted_dims = analyze_dependencies(configs)
     return render_markdown(
-        sorted_facts, matrix_data, sorted_dims, analyze_role_playing_dimensions(configs)
+        sorted_facts,
+        matrix_data,
+        sorted_dims,
+        analyze_role_playing_dimensions(configs),
+        analyze_relationship_modes(configs),
     )

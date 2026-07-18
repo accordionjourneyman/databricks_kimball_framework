@@ -12,38 +12,30 @@ table_name: {{ env }}_gold.dim_customer
 table_type: dimension  # or: fact
 
 # Required for dimensions: SCD type
-scd_type: 2  # or: 1
+scd_type: 7  # 1, 2, 4, 6, or 7
 
 # Required: Key definitions
 keys:
   surrogate_key: customer_sk
+  durable_key: customer_dk  # required only for SCD7
   natural_keys: [customer_id]  # Can be composite: [region, customer_id]
 
-# Surrogate keys are generated via xxhash64(natural_keys) — deterministic and distributed-safe.
-# For SCD2, __valid_from is included in the hash so each version gets a unique SK.
-# No configuration needed — the framework handles this automatically.
+# Type 7 generates a durable key from the canonical natural-key payload and a
+# row surrogate key from that payload plus effective_at. SHA-256 fingerprints
+# provide collision evidence for both compact BIGINT keys.
 
-# Required for SCD2: Columns that trigger new versions
+# Required for SCD2/SCD7: columns that trigger new versions
 track_history_columns:
   - first_name
   - last_name
   - email
   - address
 
-# Optional: Default/unknown rows to seed
-default_rows:
-  -1: "Unknown"
-  -2: "N/A"
+# Four default members are always seeded: -1 missing, -2 not applicable,
+# -3 not yet available, and -4 bad value.
 
 # Optional: Enable automatic schema evolution (default: false)
 schema_evolution: true
-
-# Optional: Early arriving facts configuration (facts only)
-early_arriving_facts:
-  - dimension_table: {{ env }}_gold.dim_customer
-    fact_join_key: customer_id
-    dimension_join_key: customer_id
-    surrogate_key_col: customer_sk
 
 # Required: Source tables
 sources:
@@ -98,6 +90,9 @@ Slowly Changing Dimension type (dimensions only).
 
 - `1` - Overwrite changes (no history)
 - `2` - Track full history with versioning
+- `4` - Current dimension plus separate attribute history
+- `6` - Type 2 rows with overwritten current-value attributes
+- `7` - Type 2 history with durable and version keys for as-is/as-was facts
 
 > [!NOTE]
 > **SCD2 Multi-Version Batches**: When multiple changes for the same natural key
@@ -184,14 +179,17 @@ natural_keys: [customer_id]
 natural_keys: [region_id, customer_id]
 ```
 
-### Surrogate Keys
+### Surrogate and durable keys
 
-Dimensions use deterministic `xxhash64(natural_keys)` and SCD2 includes
-`__valid_from` in the input. This is distributed and replay-stable but not
-collision-free. Managed junk dimensions explicitly detect conflicting
-combinations that map to the same key; general dimensions require collision
-risk to be accepted and monitored. Delta identity is used only where the
-configured pattern supports it.
+Dimensions use canonical, type-normalized payloads and deterministic
+`xxhash64`. SCD2 version keys include `effective_at`. SCD7 adds a durable
+key from only the natural key and stores SHA-256 fingerprints for both
+payloads. Before an SCD7 merge, a collision gate compares incoming and
+stored fingerprints and rejects collisions or generated values in the
+reserved `-1..-4` namespace.
+
+See [Type 7, key brokering, identity maps, and null semantics](SCD7_KEYS_AND_NULLS.md)
+for the complete contract and fact-side YAML.
 
 ### track_history_columns
 
@@ -214,7 +212,7 @@ track_history_columns:
 
 ### effective_at
 
-`effective_at` is required for SCD2. It defines deterministic business-time
+`effective_at` is required for SCD2 and SCD7. It defines deterministic business-time
 `__valid_from`/`__valid_to` boundaries and makes replays and out-of-order
 backfills testable. Processing time is not an implicit fallback.
 
@@ -364,32 +362,14 @@ transformation_sql: |
   LEFT JOIN p ON oi.product_id = p.product_id
 ```
 
-### early_arriving_facts
+### Brokered foreign keys and early arrivals
 
-Configuration for handling facts that arrive before dimension data.
-
-**Fields:**
-
-- `dimension_table` - Target dimension table
-- `fact_join_key` - Column in fact source
-- `dimension_join_key` - Column in dimension
-- `surrogate_key_col` - Dimension's surrogate key column
-
-The legacy form creates an unknown-member skeleton for missing dimension keys.
-For an explicit policy, use `early_arriving_dimensions` with `action: skeleton`
-or `action: error`. Both paths record an `early_arriving_fact` finding in the
-configured data-quality event table. `error` records the evidence and blocks
-the fact load without creating a skeleton.
-
-**Example:**
-
-```yaml
-early_arriving_facts:
-  - dimension_table: prod_gold.dim_employee
-    fact_join_key: employee_id
-    dimension_join_key: employee_id
-    surrogate_key_col: employee_sk
-```
+Early-arriving behavior belongs to each `foreign_keys[].lookup` declaration.
+The accepted policies are `skeleton`, `default`, and `error`; the removed
+top-level `early_arriving_facts`, `early_arriving_dimensions`, and
+`identity_bridge` blocks fail strict configuration loading. See
+[the normative key guide](SCD7_KEYS_AND_NULLS.md) for complete examples,
+reserved-member precedence, identity-map schema, and replay evidence.
 
 ## PII transformation and tokenization
 
@@ -444,10 +424,10 @@ responsibilities.
 
 The framework automatically manages these columns:
 
-### SCD2 Columns (scd_type: 2)
+### SCD2/SCD7 Columns
 
 - `__valid_from` - Row effective timestamp
-- `__valid_to` - Row expiration timestamp (NULL = current)
+- `__valid_to` - Exclusive row expiration timestamp (`9999-12-31...` = current)
 - `__is_current` - Boolean flag (true = current version)
 - `hashdiff` - Hash of tracked columns
 
@@ -483,10 +463,10 @@ config_yaml = config_template.render(env="prod")
 
 See `examples/configs/` for:
 
-- `dim_customer.yml` - SCD2 dimension
+- `dim_customer.yml` - SCD7 dual-key dimension
 - `dim_product.yml` - SCD1 dimension
-- `fact_sales.yml` - Fact with early arriving facts
-- `tests/golden/dim_customer.yml` - SCD2 with PII masking (email: hash, address: mask)
+- `fact_sales.yml` - Fact with brokered Type 7 customer keys
+- `tests/golden/dim_customer.yml` - SCD7 regression fixture
 
 ## Performance Features (Feature Flags)
 

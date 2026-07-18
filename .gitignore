@@ -50,6 +50,7 @@ wheels/
 
 # Artifacts
 quality_reports/
+benchmark-results/
 
 # Local debug/scratch artifacts — never for VCS
 /_test_golden.py
@@ -59,3 +60,4 @@ quality_reports/
 /mask_output.txt
 /build-debug.log
 /tests/golden/_debug_*.yml
+/tests/golden/_*.yml

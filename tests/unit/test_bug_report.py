@@ -154,37 +154,12 @@ class TestBugSCD6MissingGenerateKeys:
 
 
 # ===================================================================
-# #3  _rebuild_history non-idempotent append
-# ===================================================================
-
-
-class TestBugRebuildHistoryNonIdempotent:
-    """_rebuild_history now uses MERGE instead of append — idempotent."""
-
-    @patch("kimball.processing.scd2.generate_keys")
-    @patch("kimball.processing.scd2.compute_hashdiff")
-    @patch("kimball.processing.scd2.DeltaTable")
-    @patch("kimball.processing.scd2.broadcast", side_effect=lambda x: x)
-    @patch("kimball.processing.scd2.col", return_value=MagicMock())
-    @patch("kimball.processing.scd2.lit", return_value=MagicMock())
-    @patch("kimball.processing.scd2.when", return_value=MagicMock())
-    @patch("kimball.processing.scd2.current_timestamp", return_value=MagicMock())
-    @patch("kimball.processing.scd2.expr", return_value=MagicMock())
-    @patch("kimball.processing.scd2.lead", return_value=MagicMock())
-    @patch("kimball.processing.scd2.row_number", return_value=MagicMock())
-    class TestBugRebuildHistoryNonIdempotent:
-        """Retired with the unreachable two-phase SCD2 implementation."""
-
-        pass
-
-
-# ===================================================================
-# #4  SCD2 two-phase mixes business/processing time
+# SCD2 validity uses the configured business-time column
 # ===================================================================
 
 
 class TestBugSCD2TimeMixing:
-    """_rebuild_history now normalises target __valid_from to the same timeline."""
+    """Validity boundaries use one explicit business-time column."""
 
     def test_validity_chain_uses_consistent_timeline(self):
         from kimball.processing.merge_helpers import get_validity_col
@@ -256,128 +231,6 @@ class TestBugDoubleFKValidation:
         orch._validator.run_config_tests.assert_called_once()
         # validate_fact_fk_integrity is now skipped when tests are defined
         orch._validator.validate_fact_fk_integrity.assert_not_called()
-
-
-# ===================================================================
-# #6  Skeleton SK diverges from hydrated SK
-# ===================================================================
-
-
-class TestBugSkeletonSKDivergence:
-    """Skeleton SK now includes version_column so it matches hydrated SK."""
-
-    @patch("kimball.processing.skeleton_generator.current_timestamp")
-    @patch("kimball.processing.skeleton_generator.lit")
-    @patch("kimball.processing.skeleton_generator.col")
-    @patch("kimball.processing.skeleton_generator.DeltaTable")
-    def test_skeleton_sk_includes_version_column(
-        self, mock_dt, mock_col, mock_lit, mock_cts
-    ):
-        from kimball.processing.skeleton_generator import SkeletonGenerator
-
-        mock_col.side_effect = lambda x: MagicMock()
-        mock_lit.side_effect = lambda x: MagicMock()
-        mock_cts.return_value = MagicMock()
-
-        gen = SkeletonGenerator.__new__(SkeletonGenerator)
-        gen.spark = MagicMock(spec=SparkSession)
-        gen.spark.catalog.tableExists.return_value = True
-
-        mock_dt_instance = MagicMock()
-        mock_dt.forName.return_value = mock_dt_instance
-        mock_dim_df = MagicMock()
-        f_skel = MagicMock()
-        f_skel.name = "__is_skeleton"
-        mock_dim_df.schema.fields = [f_skel]
-        mock_dt_instance.toDF.return_value = mock_dim_df
-
-        fact_df = MagicMock()
-        fact_df.columns = ["fact_join_key", "other_col"]
-        fact_keys = MagicMock()
-        missing = MagicMock()
-        missing.isEmpty.return_value = False
-        fact_keys.join.return_value = missing
-        fact_df.select.return_value.distinct.return_value = fact_keys
-
-        with patch("kimball.processing.key_generator.HashKeyGenerator") as mock_hkg:
-            mock_gen_instance = MagicMock()
-            mock_hkg.return_value = mock_gen_instance
-            mock_gen_instance.generate_keys.return_value = MagicMock()
-            mock_gen_instance.generate_keys.return_value.columns = [
-                "dim_join_key",
-                "name",
-                "__is_skeleton",
-                "surrogate_key",
-            ]
-
-            gen.generate_skeletons(
-                fact_df=fact_df,
-                dim_table_name="dim_table",
-                fact_join_key="fact_join_key",
-                dim_join_key="dim_join_key",
-                surrogate_key_col="surrogate_key",
-                batch_id="test_batch",
-            )
-
-            mock_hkg.assert_called_once_with(["dim_join_key"], version_column=None)
-
-    @patch("kimball.processing.skeleton_generator.current_timestamp")
-    @patch("kimball.processing.skeleton_generator.lit")
-    @patch("kimball.processing.skeleton_generator.col")
-    @patch("kimball.processing.skeleton_generator.DeltaTable")
-    def test_skeleton_sk_passes_effective_at_column(
-        self, mock_dt, mock_col, mock_lit, mock_cts
-    ):
-        from kimball.processing.skeleton_generator import SkeletonGenerator
-
-        mock_col.side_effect = lambda x: MagicMock()
-        mock_lit.side_effect = lambda x: MagicMock()
-        mock_cts.return_value = MagicMock()
-
-        gen = SkeletonGenerator.__new__(SkeletonGenerator)
-        gen.spark = MagicMock(spec=SparkSession)
-        gen.spark.catalog.tableExists.return_value = True
-
-        mock_dt_instance = MagicMock()
-        mock_dt.forName.return_value = mock_dt_instance
-        mock_dim_df = MagicMock()
-        f_skel = MagicMock()
-        f_skel.name = "__is_skeleton"
-        mock_dim_df.schema.fields = [f_skel]
-        mock_dt_instance.toDF.return_value = mock_dim_df
-
-        fact_df = MagicMock()
-        fact_df.columns = ["fact_join_key", "other_col"]
-        fact_keys = MagicMock()
-        missing = MagicMock()
-        missing.isEmpty.return_value = False
-        fact_keys.join.return_value = missing
-        fact_df.select.return_value.distinct.return_value = fact_keys
-
-        with patch("kimball.processing.key_generator.HashKeyGenerator") as mock_hkg:
-            mock_gen_instance = MagicMock()
-            mock_hkg.return_value = mock_gen_instance
-            mock_gen_instance.generate_keys.return_value = MagicMock()
-            mock_gen_instance.generate_keys.return_value.columns = [
-                "dim_join_key",
-                "name",
-                "__is_skeleton",
-                "surrogate_key",
-            ]
-
-            gen.generate_skeletons(
-                fact_df=fact_df,
-                dim_table_name="dim_table",
-                fact_join_key="fact_join_key",
-                dim_join_key="dim_join_key",
-                surrogate_key_col="surrogate_key",
-                batch_id="test_batch",
-                effective_at_column="order_date",
-            )
-
-            mock_hkg.assert_called_once_with(
-                ["dim_join_key"], version_column="order_date"
-            )
 
 
 # ===================================================================
@@ -524,7 +377,6 @@ class TestBugPreserveAllChangesEarlyReturn:
         orch.etl_control = MagicMock()
         orch._validator = MagicMock()
         orch.table_creator = MagicMock()
-        orch.skeleton_generator = MagicMock()
         orch.metrics_collector = None
         orch.runtime_options = MagicMock()
 
@@ -661,9 +513,9 @@ class TestBugSCD1NoopPreScan:
 
 
 class TestBugStreamingPerVersionMaterialization:
-    """Per-version path now uses a single materialised temp table."""
+    """Per-version processing filters the persisted micro-batch in memory."""
 
-    def test_per_version_uses_single_temp_table(self):
+    def test_per_version_avoids_delta_staging_tables(self):
         from kimball.streaming.orchestrator import StreamingOrchestrator
 
         orch = StreamingOrchestrator.__new__(StreamingOrchestrator)
@@ -700,9 +552,8 @@ class TestBugStreamingPerVersionMaterialization:
 
         orch._execute_microbatch_per_version(batch_df, source, "batch_1")
 
-        # No SQL calls — reads from batch_table already materialised in _foreach
+        # No SQL or table reads: versions are filtered from the persisted batch.
         assert orch.spark.sql.call_count == 0
-        # Reads batch_table once per version
         assert orch.spark.table.call_count == 0
 
 
@@ -884,47 +735,6 @@ class TestBugValidateRelationshipsFilterMismatch:
 # ===================================================================
 # #26  _generate_skeletons column→df map collision
 # ===================================================================
-
-
-class TestBugSkeletonColumnCollision:
-    """_generate_skeletons column→df map now picks first match, not last."""
-
-    def test_column_name_collision_picks_first_source(self):
-        from kimball.common.config import TableConfig
-        from kimball.orchestration.orchestrator import Orchestrator
-
-        config = TableConfig(
-            table_name="test_target",
-            table_type="dimension",
-            scd_type=2,
-            effective_at="updated_at",
-            surrogate_key="sk",
-            sources=[],
-            natural_keys=["id"],
-            track_history_columns=["val"],
-            early_arriving_facts=[
-                {
-                    "fact_join_key": "shared_col",
-                    "dimension_table": "dim_table",
-                    "dimension_join_key": "dim_key",
-                }
-            ],
-        )
-
-        orch = Orchestrator.__new__(Orchestrator)
-        orch.config = config
-        orch.skeleton_generator = MagicMock()
-
-        df_a = _make_df(["shared_col", "other_a"])
-        df_b = _make_df(["shared_col", "other_b"])
-
-        orch._generate_skeletons({"src_a": df_a, "src_b": df_b}, "batch_1")
-
-        call_kwargs = orch.skeleton_generator.generate_skeletons.call_args
-        actual_fact_df = (
-            call_kwargs[1].get("fact_df") if call_kwargs[1] else call_kwargs[0][0]
-        )
-        assert actual_fact_df is df_a
 
 
 # ===================================================================

@@ -113,10 +113,13 @@ Temporal checks distinguish:
 - Out-of-order events inside a CDF batch using commit-version order.
 - Events older than the persisted maximum for the same business key.
 
-For facts with configured early-arriving-dimension handling, the framework also
-records missing dimension keys as `early_arriving_fact` findings. A `skeleton`
-policy creates unknown-member dimension rows; an `error` policy records the
-same evidence and rejects the fact load.
+For brokered facts, missing dimension context is classified before the target
+write. A `skeleton` policy creates a real inferred member, `default` assigns
+the reserved not-yet-available key `-3` and records a row in
+`etl_unresolved_dimension_keys`, and `error` rejects the load. The registry
+captures fact grain, source identity, event time, Delta versions, batches, and
+resolution status so late-arrival remediation is measurable and replayable.
+See [the normative key contract](SCD7_KEYS_AND_NULLS.md).
 
 The last category detects late/out-of-order data across job runs. State is
 advanced only after a successful merge/watermark, preventing a failed batch

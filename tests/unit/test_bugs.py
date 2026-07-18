@@ -863,57 +863,8 @@ class TestSCD2HashdiffInInsertValues:
 
 
 # =====================================================================
-# 5. SKELETON GENERATOR BUGS
-# =====================================================================
-
-
-class TestSkeletonGeneratorBugs:
-    """BUG-SK-001: SkeletonGenerator did not check for ``__is_skeleton``
-    column existence before referencing it.
-
-    FIX: Added a check for ``__is_skeleton`` in the target table's schema.
-    If absent, skeleton generation is skipped with an info log.
-    """
-
-    def test_skeleton_generator_checks_is_skeleton_column(self):
-        """The skeleton generator should check if the target table has
-        __is_skeleton column before proceeding."""
-        from kimball.processing.skeleton_generator import SkeletonGenerator
-
-        source_code = inspect.getsource(SkeletonGenerator.generate_skeletons)
-
-        assert (
-            "has_skeleton_col" in source_code or '"__is_skeleton" not in' in source_code
-        ), (
-            "BUG-SK-001 regression: SkeletonGenerator should check if "
-            "'__is_skeleton' column exists in target table before "
-            "adding it to skeleton rows."
-        )
-
-
-# =====================================================================
 # 6. ADDITIONAL SCD LOGIC EDGE CASES
 # =====================================================================
-
-
-class TestSCD1SoftDeleteBug:
-    """BUG-SCD1-002: SCD1 soft delete update set did not include
-    ``__etl_batch_id``, breaking the audit trail.
-
-    FIX: Added ``__etl_batch_id`` to the soft delete update set.
-    """
-
-    def test_scd1_soft_delete_includes_batch_id(self):
-        """Soft delete update set should include __etl_batch_id."""
-        import inspect
-
-        from kimball.processing.scd1 import merge_scd1
-
-        source_code = inspect.getsource(merge_scd1)
-        assert "'__etl_batch_id': 'source.__etl_batch_id'" in source_code, (
-            "BUG-SCD1-002 regression: SCD1 soft delete should include "
-            "__etl_batch_id in the update set for audit trail."
-        )
 
 
 class TestSCD2ValidFromFallbackBug:

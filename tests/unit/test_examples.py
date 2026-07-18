@@ -95,6 +95,7 @@ def test_streaming_notebook_embedded_configs_load_strictly() -> None:
         for document in documents.values()
     ]
 
-    customer = next(config for config in configs if config.scd_type == 2)
+    customer = next(config for config in configs if config.scd_type == 7)
+    assert customer.durable_key == "customer_dk"
     assert customer.sources[0].contract.temporal.event_time_column == "updated_at"
     assert customer.observability.temporal_state_table == "etl_contract_temporal_state"

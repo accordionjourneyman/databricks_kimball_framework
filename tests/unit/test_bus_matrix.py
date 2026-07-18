@@ -82,3 +82,32 @@ foreign_keys:
     md = generate_bus_matrix(str(tmp_path))
 
     assert "| gold.fact_orders | X (order_date, ship_date) |" in md
+
+
+def test_bus_matrix_exposes_type7_and_identity_map_semantics(tmp_path):
+    (tmp_path / "fact_sales.yml").write_text(
+        """
+table_name: gold.fact_sales
+table_type: fact
+merge_keys: [order_id]
+sources:
+  - name: silver.orders
+foreign_keys:
+  - column: customer_sk
+    references: gold.dim_customer
+    dimension_key: customer_sk
+    relationship: type7
+    durable_column: customer_dk
+    durable_dimension_key: customer_dk
+    lookup:
+      source_columns: [customer_id]
+      event_time: order_at
+      identity_map: silver.customer_identity_map
+""",
+        encoding="utf-8",
+    )
+
+    md = generate_bus_matrix(str(tmp_path))
+
+    assert "| gold.fact_sales | H+C+I |" in md
+    assert "`H+C` Type 7 historical surrogate plus current durable key" in md

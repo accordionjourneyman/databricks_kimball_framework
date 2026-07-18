@@ -194,6 +194,7 @@ class StreamingOrchestrator:
                 logger.info("Micro-batch %s for %s is empty", batch_id, source.name)
                 return
             batch_df = batch_df.persist()
+            batch_spark = batch_df.sparkSession
             batch_df.createOrReplaceTempView(source.alias)
             try:
                 if source.streaming and source.streaming.per_version:
@@ -209,20 +210,21 @@ class StreamingOrchestrator:
                 )
                 raise
             finally:
-                self.spark.catalog.dropTempView(source.alias)
+                batch_spark.catalog.dropTempView(source.alias)
                 batch_df.unpersist(blocking=False)
 
         return _foreach
 
-    def _get_processor(self) -> StreamingMicroBatchProcessor:
+    def _get_processor(self, spark: Any | None = None) -> StreamingMicroBatchProcessor:
         return StreamingMicroBatchProcessor(
-            self.spark, self.config, self.etl_schema, self.etl_control
+            spark or self.spark, self.config, self.etl_schema, self.etl_control
         )
 
     def _execute_one_microbatch(
         self, batch_df: DataFrame, source: Any, batch_id: int
     ) -> None:
-        self._get_processor().process_microbatch(batch_df, source, batch_id)
+        batch_spark = batch_df.sparkSession if isinstance(batch_df, DataFrame) else None
+        self._get_processor(batch_spark).process_microbatch(batch_df, source, batch_id)
 
     def _execute_microbatch_per_version(
         self, batch_df: DataFrame, source: Any, batch_id: int

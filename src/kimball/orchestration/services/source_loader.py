@@ -33,18 +33,20 @@ class SourceLoader:
 
         for item in plan.active_items:
             source = item.source
-            processed_version = item.ending_version if item.ending_version is not None else 0
+            processed_version = (
+                item.ending_version if item.ending_version is not None else 0
+            )
             source_versions[source.name] = processed_version
             self._validate_source_contract(ctx, source, processed_version)
 
-            if source.cdc_strategy == 'full':
+            if source.cdc_strategy == "full":
                 df = ctx.loader.load_full_snapshot(
                     source.name, format=source.format, options=source.options
                 )
             else:
                 if item.starting_version is None or item.ending_version is None:
                     raise ValueError(
-                        f'Incremental source {source.name} has no planned version range'
+                        f"Incremental source {source.name} has no planned version range"
                     )
                 df = ctx.loader.load_cdf(
                     source.name,
@@ -53,13 +55,13 @@ class SourceLoader:
                     ending_version=item.ending_version,
                 )
 
-            if source.cdc_strategy == 'append':
+            if source.cdc_strategy == "append":
                 metadata = [
                     column
                     for column in (
-                        '_change_type',
-                        '_commit_version',
-                        '_commit_timestamp',
+                        "_change_type",
+                        "_commit_version",
+                        "_commit_timestamp",
                     )
                     if column in df.columns
                 ]
@@ -72,13 +74,13 @@ class SourceLoader:
             ):
                 self._validate_temporal(ctx, source, df, processed_version)
 
-            if source.cdc_strategy == 'cdf':
+            if source.cdc_strategy == "cdf":
                 df = ctx.loader.deduplicate_cdf(df, source.primary_keys)
             df.createOrReplaceTempView(source.alias)
             active_dfs[source.name] = df
 
         logger.info(
-            'Loaded %d source(s) in %.2fs',
+            "Loaded %d source(s) in %.2fs",
             len(active_dfs),
             time.time() - stage_start,
         )
@@ -86,15 +88,13 @@ class SourceLoader:
 
     @staticmethod
     def _event_sink(ctx: PipelineContext) -> DataQualityEventSink:
-        schema = getattr(ctx.etl_control, 'schema', None) or 'default'
+        schema = getattr(ctx.etl_control, "schema", None) or "default"
         observability = ctx.config.observability
         return DataQualityEventSink(
             ctx.spark,
             schema,
-            observability.event_table
-            if observability
-            else 'etl_data_quality_events',
-            failure_mode=observability.write_failure if observability else 'warn',
+            observability.event_table if observability else "etl_data_quality_events",
+            failure_mode=observability.write_failure if observability else "warn",
             writer_type=DataQualityEventWriter,
         )
 
@@ -109,15 +109,15 @@ class SourceLoader:
         observability = ctx.config.observability
         events = [
             {
-                'pipeline_table': ctx.config.table_name,
-                'source': source,
-                'finding': finding,
-                'run_id': ctx.batch_id,
-                'source_version': source_version,
-                'action': (
-                    'blocked'
-                    if not finding.passed and finding.severity.value == 'error'
-                    else 'recorded'
+                "pipeline_table": ctx.config.table_name,
+                "source": source,
+                "finding": finding,
+                "run_id": ctx.batch_id,
+                "source_version": source_version,
+                "action": (
+                    "blocked"
+                    if not finding.passed and finding.severity.value == "error"
+                    else "recorded"
                 ),
             }
             for finding in findings
@@ -126,18 +126,18 @@ class SourceLoader:
         for finding, event_id in zip(findings, event_ids, strict=True):
             if (
                 not finding.passed
-                and finding.severity.value == 'error'
+                and finding.severity.value == "error"
                 and observability
-                and 'error' in observability.alert_on
+                and "error" in observability.alert_on
             ):
                 AlertDispatcher(observability.webhook_env).dispatch(
                     {
-                        'event_id': event_id,
-                        'severity': 'error',
-                        'category': finding.category,
-                        'source_table': source.name,
-                        'pipeline_table': ctx.config.table_name,
-                        'summary': finding.details,
+                        "event_id": event_id,
+                        "severity": "error",
+                        "category": finding.category,
+                        "source_table": source.name,
+                        "pipeline_table": ctx.config.table_name,
+                        "summary": finding.details,
                     }
                 )
         validator.raise_for_errors(findings)
@@ -149,14 +149,14 @@ class SourceLoader:
         df: DataFrame,
         source_version: int,
     ) -> None:
-        schema = getattr(ctx.etl_control, 'schema', None) or 'default'
+        schema = getattr(ctx.etl_control, "schema", None) or "default"
         observability = ctx.config.observability
         state_store = TemporalStateStore(
             ctx.spark,
             schema,
             observability.temporal_state_table
             if observability
-            else 'etl_contract_temporal_state',
+            else "etl_contract_temporal_state",
         )
         prior_state = state_store.existing(
             ctx.config.table_name, source.name, source.contract.id
@@ -170,23 +170,23 @@ class SourceLoader:
             ctx.validation_metrics.append(
                 {
                     **validator.last_metrics,
-                    'source_table': source.name,
-                    'pipeline_table': ctx.config.table_name,
+                    "source_table": source.name,
+                    "pipeline_table": ctx.config.table_name,
                 }
             )
         sink = self._event_sink(ctx)
         sink.write_many(
             [
                 {
-                    'pipeline_table': ctx.config.table_name,
-                    'source': source,
-                    'finding': finding,
-                    'run_id': ctx.batch_id,
-                    'source_version': source_version,
-                    'action': (
-                        'blocked'
-                        if not finding.passed and finding.severity.value == 'error'
-                        else 'accepted_late'
+                    "pipeline_table": ctx.config.table_name,
+                    "source": source,
+                    "finding": finding,
+                    "run_id": ctx.batch_id,
+                    "source_version": source_version,
+                    "action": (
+                        "blocked"
+                        if not finding.passed and finding.severity.value == "error"
+                        else "accepted_late"
                     ),
                 }
                 for finding in findings

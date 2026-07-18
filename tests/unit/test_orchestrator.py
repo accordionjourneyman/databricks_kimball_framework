@@ -63,7 +63,6 @@ def orchestrator(
             "kimball.orchestration.orchestrator.DataLoader", return_value=loader_mock
         ),
         patch("kimball.orchestration.orchestrator._merger"),
-        patch("kimball.orchestration.orchestrator.SkeletonGenerator"),
         patch("kimball.orchestration.orchestrator.TableCreator"),
         patch(
             "kimball.orchestration.orchestrator.TransactionManager",
@@ -89,7 +88,6 @@ def orchestrator(
         orch.spark = spark_mock
         orch.etl_control = etl_control_mock
         orch.loader = loader_mock
-        orch.skeleton_generator = MagicMock()
         orch.table_creator = MagicMock()
         orch.transaction_manager = transaction_manager_mock
         orch.metrics_collector = None
@@ -241,95 +239,6 @@ class TestTransformAndValidate:
         active_dfs = {"src1": MagicMock(), "src2": MagicMock()}
         with pytest.raises(ValueError, match="multi-source pipelines"):
             orchestrator._transform_and_validate(active_dfs)
-
-
-class TestGenerateSkeletons:
-    def test_generate_skeletons_skips_when_no_eaf(self, orchestrator):
-        orchestrator.config.early_arriving_facts = []
-        mock_df = MagicMock()
-        active_dfs = {"src1": mock_df}
-
-        orchestrator._generate_skeletons(active_dfs, "batch-1")
-        orchestrator.skeleton_generator.generate_skeletons.assert_not_called()
-
-    def test_generate_skeletons_calls_generator(self, orchestrator):
-        eaf = {
-            "fact_join_key": "fk_customer",
-            "dimension_table": "dim_customer",
-            "dimension_join_key": "customer_sk",
-            "surrogate_key_col": "customer_sk",
-        }
-        orchestrator.config.early_arriving_facts = [eaf]
-        mock_df = MagicMock()
-        mock_df.columns = ["fk_customer", "val"]
-        active_dfs = {"src1": mock_df}
-
-        orchestrator._generate_skeletons(active_dfs, "batch-1")
-        orchestrator.skeleton_generator.generate_skeletons.assert_called_once_with(
-            fact_df=mock_df,
-            dim_table_name="dim_customer",
-            fact_join_key="fk_customer",
-            dim_join_key="customer_sk",
-            surrogate_key_col="customer_sk",
-            batch_id="batch-1",
-            effective_at_column=orchestrator.config.effective_at,
-            create=True,
-        )
-
-
-class TestIdentityBridge:
-    def test_bridge_resolves_keys(self, orchestrator):
-        bridge = MagicMock()
-        bridge.table = "dim_identity_map"
-        bridge.join_on = "business_key"
-        bridge.target_column = "resolved_key"
-        orchestrator.config.identity_bridge = bridge
-
-        mock_df = MagicMock()
-        mock_df.columns = ["business_key", "val"]
-
-        mock_spark = MagicMock()
-        mock_bridge_df = MagicMock()
-        mock_bridge_df.columns = ["business_key", "resolved_key", "extra_col"]
-        mock_spark.table.return_value = mock_bridge_df
-        mock_spark.sql.return_value = MagicMock()
-        orchestrator.spark = mock_spark
-
-        result = orchestrator._apply_identity_bridge(mock_df)
-
-        mock_df.createOrReplaceTempView.assert_called_once_with("_identity_bridge_src")
-        mock_spark.sql.assert_called_once()
-        assert result is mock_spark.sql.return_value
-
-    def test_bridge_preserves_unmapped_keys(self, orchestrator):
-        bridge = MagicMock()
-        bridge.table = "dim_identity_map"
-        bridge.join_on = "business_key"
-        bridge.target_column = "resolved_key"
-        orchestrator.config.identity_bridge = bridge
-
-        mock_df = MagicMock()
-        mock_df.columns = ["business_key", "val"]
-
-        mock_spark = MagicMock()
-        mock_bridge_df = MagicMock()
-        mock_bridge_df.columns = ["business_key", "resolved_key"]
-        mock_spark.table.return_value = mock_bridge_df
-        mock_spark.sql.return_value = MagicMock()
-        orchestrator.spark = mock_spark
-
-        result = orchestrator._apply_identity_bridge(mock_df)
-
-        mock_df.createOrReplaceTempView.assert_called_once()
-        mock_spark.sql.assert_called_once()
-        assert result is mock_spark.sql.return_value
-
-    def test_bridge_skipped_when_not_configured(self, orchestrator):
-        orchestrator.config.identity_bridge = None
-        mock_df = MagicMock()
-        result = orchestrator._apply_identity_bridge(mock_df)
-        assert result is mock_df
-        mock_df.createOrReplaceTempView.assert_not_called()
 
 
 class TestFullReload:

@@ -24,7 +24,7 @@ def test_ensure_scd2_defaults_includes_history_fields_and_system_defaults(
     )
 
     ensure_scd2_defaults("dim_test", schema, "surrogate_key")
-    assert spark.sql.call_count == 3
+    assert spark.sql.call_count == 4
     first_sql = spark.sql.call_args_list[0].args[0]
     assert "INSERT INTO dim_test" in first_sql
     assert "__is_current" in first_sql
@@ -46,6 +46,6 @@ def test_ensure_scd1_defaults_preserves_non_history_system_defaults(mock_get_spa
     )
 
     ensure_scd1_defaults("dim_test", schema, "surrogate_key")
-    assert spark.sql.call_count == 3
+    assert spark.sql.call_count == 4
     first_sql = spark.sql.call_args_list[0].args[0]
     assert "INSERT INTO dim_test" in first_sql

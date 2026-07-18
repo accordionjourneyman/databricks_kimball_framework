@@ -1,122 +1,122 @@
 name: Benchmarks
 
 on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "src/**"
+      - "tests/benchmarks/**"
+      - "tests/unit/test_performance.py"
+      - "tools/benchmark_*.py"
+      - ".github/workflows/benchmarks.yml"
   push:
     branches: [main, master]
     paths:
       - "src/**"
       - "tests/benchmarks/**"
-      - "tools/benchmark_data.py"
-      - "tools/benchmark_metrics.py"
-      - "tools/benchmark_runner.py"
-      - "tools/benchmark_analyzer.py"
-      - "tools/benchmarks/**"
+      - "tests/unit/test_performance.py"
+      - "tools/benchmark_*.py"
       - ".github/workflows/benchmarks.yml"
-  pull_request:
-    branches: [main, master]
   workflow_dispatch:
     inputs:
       scale:
-        description: "Scale tier: tiny, small, medium"
-        required: true
-        default: "tiny"
-      upload_results:
-        description: "Upload results as artifacts"
-        required: true
-        default: "true"
+        description: Spark benchmark scale
+        type: choice
+        options: [tiny, small, medium]
+        default: tiny
+
+permissions:
+  contents: read
 
 env:
-  JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
-  SPARK_VERSION: 4.0.1
-  DELTA_VERSION: 4.2.0
+  JAVA_VERSION: "17"
+  SPARK_VERSION: "4.0.1"
+  DELTA_VERSION: "4.2.0"
+  BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
+  BENCHER_PROJECT: ${{ vars.BENCHER_PROJECT || 'kimball-framework' }}
 
 jobs:
-  benchmarks:
+  micro:
+    name: Microbenchmarks (advisory)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        scale: [tiny, small]
-
+    timeout-minutes: 20
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Install Java 17
-        uses: actions/setup-java@v5
+          cache: pip
+      - uses: actions/setup-java@v4
         with:
-          distribution: "temurin"
+          distribution: temurin
           java-version: "17"
-
-      - name: Install system dependencies
+      - name: Install benchmark dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Install Bencher CLI for protected-branch publication
+        if: github.event_name == 'push' && env.BENCHER_API_KEY != ''
+        uses: bencherdev/bencher@main
+      - name: Run microbenchmarks
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends curl
-
-      - name: Cache pip
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-benchmarks-${{ hashFiles('pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-benchmarks-
-
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install "pyspark==${{ env.SPARK_VERSION }}" "delta-spark==${{ env.DELTA_VERSION }}" pyyaml jinja2 pydantic pytest
-
-      - name: Download Delta Lake JARs
-        run: |
-          SPARK_JARS_DIR=$(python -c "import pyspark, os; print(os.path.join(os.path.dirname(pyspark.__file__), 'jars'))")
-          curl -fsSL -o "$SPARK_JARS_DIR/delta-spark_4.0_2.13-${{ env.DELTA_VERSION }}.jar" \
-            "https://repo1.maven.org/maven2/io/delta/delta-spark_4.0_2.13/${{ env.DELTA_VERSION }}/delta-spark_4.0_2.13-${{ env.DELTA_VERSION }}.jar"
-          curl -fsSL -o "$SPARK_JARS_DIR/delta-storage-${{ env.DELTA_VERSION }}.jar" \
-            "https://repo1.maven.org/maven2/io/delta/delta-storage/${{ env.DELTA_VERSION }}/delta-storage-${{ env.DELTA_VERSION }}.jar"
-
-      - name: Run benchmarks
-        run: |
-          export KIMBALL_ETL_SCHEMA=etl_control
-          export PYSPARK_PYTHON=python3
-          export PYSPARK_DRIVER_PYTHON=python3
-          mkdir -p tools/benchmarks/results
-          python -m pytest tests/benchmarks/ -v -s --scale ${{ matrix.scale }} -x
-
-      - name: Collect benchmark results
-        if: always()
-        run: |
-          mkdir -p benchmark-results
-          if [ -d "tools/benchmarks/results" ]; then
-            cp tools/benchmarks/results/*.json benchmark-results/ 2>/dev/null || true
+          publish_args=()
+          if [[ "$GITHUB_EVENT_NAME" == "push" && -n "$BENCHER_API_KEY" ]]; then
+            publish_args+=(--publish)
           fi
-          ls -la benchmark-results/ 2>/dev/null || echo "No results to upload"
-
-      - name: Upload benchmark results
-        if: always() && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
-        uses: actions/upload-artifact@v7
+          python tools/benchmark_runner.py \
+            --suite micro \
+            --testbed github-ubuntu-python \
+            "${publish_args[@]}"
+      - name: Add summary
+        if: always()
+        run: find benchmark-results -name summary.md -exec cat {} \; >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload immutable results
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: benchmark-results-${{ matrix.scale }}
+          name: microbenchmarks-${{ github.sha }}
           path: benchmark-results/
-          if-no-files-found: ignore
+          retention-days: 30
+          if-no-files-found: error
 
-      - name: Annotate step summary
-        if: always()
+  spark-smoke:
+    name: Spark/Delta benchmark correctness
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install benchmark dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Download pinned Delta jars
         run: |
-          echo "## Benchmark results for ${{ matrix.scale }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [ -d "tools/benchmarks/results" ]; then
-            for f in tools/benchmarks/results/*_${{ matrix.scale }}.json; do
-              if [ -f "$f" ]; then
-                NAME=$(basename "$f" .json)
-                FIRST=$(python -c "import json; d=json.load(open('$f')); print(int(d.get('first_ms', d.get('first_run_total_ms', 0))))" 2>/dev/null || echo "N/A")
-                SECOND=$(python -c "import json; d=json.load(open('$f')); print(int(d.get('second_ms', d.get('second_run_total_ms', 0))))" 2>/dev/null || echo "N/A")
-                echo "| $NAME | 1st=${FIRST}ms | 2nd=${SECOND}ms |" >> $GITHUB_STEP_SUMMARY
-              fi
-            done
-          fi
+          JARS=$(python -c "import pathlib,pyspark; print(pathlib.Path(pyspark.__file__).parent/'jars')")
+          curl -fsSL -o "$JARS/delta-spark_4.0_2.13-${DELTA_VERSION}.jar" "https://repo1.maven.org/maven2/io/delta/delta-spark_4.0_2.13/${DELTA_VERSION}/delta-spark_4.0_2.13-${DELTA_VERSION}.jar"
+          curl -fsSL -o "$JARS/delta-storage-${DELTA_VERSION}.jar" "https://repo1.maven.org/maven2/io/delta/delta-storage/${DELTA_VERSION}/delta-storage-${DELTA_VERSION}.jar"
+      - name: Run one-round Spark correctness benchmarks
+        env:
+          KIMBALL_BENCHMARK_ROUNDS: "1"
+          KIMBALL_BENCHMARK_WARMUPS: "0"
+          KIMBALL_BENCHMARK_TESTBED: github-ubuntu-spark
+          KIMBALL_BENCHMARK_IMAGE: github-ubuntu-spark-4.0.1-delta-4.2.0
+        run: >-
+          python tools/benchmark_runner.py
+          --suite spark
+          --scale ${{ inputs.scale || 'tiny' }}
+      - name: Add summary
+        if: always()
+        run: find benchmark-results -name summary.md -exec cat {} \; >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload immutable results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spark-benchmarks-${{ github.sha }}
+          path: benchmark-results/
+          retention-days: 90
+          if-no-files-found: error

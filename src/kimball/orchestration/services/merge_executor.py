@@ -11,6 +11,8 @@ from kimball.common.utils import quote_table_name
 from kimball.observability.resilience import _feature_enabled
 from kimball.orchestration.services.context import PipelineContext
 from kimball.processing import merger as _merger
+from kimball.processing.defaults import sql_literal
+from kimball.processing.dimension_nulls import replacement_for_type
 from kimball.processing.table_creator import TableCreator
 
 logger = logging.getLogger(__name__)
@@ -51,6 +53,7 @@ class MergeExecutor:
             transformed_df.limit(0),
             ctx.config.scd_type,
             ctx.config.surrogate_key,
+            durable_key=ctx.config.durable_key,
             current_value_columns=ctx.config.current_value_columns,
         )
         cluster_cols = ctx.config.cluster_by
@@ -74,12 +77,13 @@ class MergeExecutor:
         if not table_created or ctx.config.table_type != "dimension":
             return
         target_schema = ctx.spark.table(ctx.config.table_name).schema
-        if ctx.config.scd_type == 2:
+        if ctx.config.scd_type in (2, 7):
             _merger.ensure_scd2_defaults(
                 ctx.config.table_name,
                 target_schema,
                 ctx.config.surrogate_key or "surrogate_key",
                 ctx.config.default_rows,
+                durable_key=ctx.config.durable_key,
             )
         elif ctx.config.scd_type == 1 and ctx.config.surrogate_key:
             _merger.ensure_scd1_defaults(
@@ -178,6 +182,23 @@ class MergeExecutor:
                         f"ALTER TABLE {quote_table_name(ctx.config.table_name)} "
                         f"ADD COLUMNS ({col_name} {src_type.simpleString()})"
                     )
+                    if (
+                        ctx.config.table_type == "dimension"
+                        and ctx.config.null_policy.mode == "kimball"
+                    ):
+                        replacement = ctx.config.null_policy.attribute_substitutes.get(
+                            col_name, replacement_for_type(src_type)
+                        )
+                        quoted_table = quote_table_name(ctx.config.table_name)
+                        ctx.spark.sql(
+                            f"UPDATE {quoted_table} "
+                            f"SET `{col_name}` = {sql_literal(replacement)} "
+                            f"WHERE `{col_name}` IS NULL"
+                        )
+                        ctx.spark.sql(
+                            f"ALTER TABLE {quoted_table} "
+                            f"ALTER COLUMN `{col_name}` SET NOT NULL"
+                        )
                     logger.info(
                         f"Added column {col_name} ({src_type.simpleString()}) to target"
                     )
@@ -194,7 +215,7 @@ class MergeExecutor:
         grain_key = tuple(join_keys)
         if grain_key in ctx.validated_grains:
             logger.info(
-                'Reusing exact grain validation for %s on %s',
+                "Reusing exact grain validation for %s on %s",
                 ctx.config.table_name,
                 join_keys,
             )
@@ -248,6 +269,7 @@ class MergeExecutor:
             surrogate_key_col=ctx.config.surrogate_key,
             schema_evolution=ctx.config.schema_evolution,
             effective_at_column=ctx.config.effective_at,
+            durable_key_col=ctx.config.durable_key,
             history_table=ctx.config.history_table,
             current_value_columns=ctx.config.current_value_columns,
             append_only=ctx.config.append_only,

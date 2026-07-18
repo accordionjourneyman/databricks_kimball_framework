@@ -31,20 +31,12 @@ def _make_df(columns: list[str]) -> MagicMock:
 
 
 # ===================================================================
-# #1  CRITICAL: SCD2 _rebuild_history gives every historical version
-#     the same surrogate key → history corruption
+# SCD2 payload selection retains a custom effective-time column
 # ===================================================================
 
 
-class TestBugSCD2RebuildHistorySameSK:
-    """_rebuild_history generates all intermediate SKs from __etl_processed_at
-    (a single timestamp), so every version collides to one SK.
-
-    Root cause: _select_payload_columns only keeps 'effective_at' literally,
-    not the actual effective_at_column. When effective_at_column is e.g.
-    'order_date', it's dropped from the payload, and generate_keys falls
-    back to __etl_processed_at (same for all rows) → identical SKs.
-    """
+class TestSCD2PayloadEffectiveAt:
+    """The configured effective-time value must survive payload selection."""
 
     def test_select_payload_keeps_custom_effective_at_column(self):
         """Verify _select_payload_columns now accepts effective_at_column
@@ -248,8 +240,7 @@ class TestBugSCD4DuplicateEAVRows:
 
 
 class TestBugStreamingPerVersionWrongCDFTable:
-    """_execute_microbatch_per_version materializes a temp table but
-    _execute_one_microbatch re-reads the original batch_table for CDF meta."""
+    """Per-version processing must preserve each filtered CDF version."""
 
     def test_per_version_readsmeta_from_original_batch(self):
         from kimball.streaming.orchestrator import StreamingOrchestrator
@@ -340,43 +331,6 @@ class TestBugZombieRecoveryBatchIdMismatch:
         assert "src_a" in result
         assert "src_b" in result
         assert result["src_a"] != result["src_b"]
-
-
-# ===================================================================
-# #7  HIGH: late_arriving_dimension joins on NKs, not FK
-# ===================================================================
-
-
-class TestBugLateArrivingDimensionWrongJoin:
-    """reconcile_fact_foreign_keys joins on natural keys to find the right dimension row."""
-
-    def test_reconcile_joins_on_nk(self):
-        from kimball.processing.late_arriving_dimension import (
-            LateArrivingDimensionProcessor,
-        )
-
-        lad = LateArrivingDimensionProcessor.__new__(LateArrivingDimensionProcessor)
-        lad.spark = MagicMock(spec=SparkSession)
-
-        mock_dt = MagicMock()
-        lad.spark.catalog.tableExists.return_value = True
-
-        with patch(
-            "kimball.processing.late_arriving_dimension.DeltaTable"
-        ) as mock_dt_cls:
-            mock_dt_cls.forName.return_value = mock_dt
-            lad.reconcile_fact_foreign_keys(
-                fact_table="fact_orders",
-                dimension_table="dim_customer",
-                fact_fk_col="customer_sk",
-                dimension_sk_col="sk",
-                dimension_nk_cols=["customer_id"],
-            )
-
-            merge_call = mock_dt.alias.return_value.merge
-            merge_call.assert_called_once()
-            condition = merge_call.call_args[0][1]
-            assert "target.customer_id <=> source.customer_id" in condition
 
 
 # ===================================================================

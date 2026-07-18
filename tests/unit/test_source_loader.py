@@ -19,7 +19,7 @@ def _plan(source, start=0, end=0, active=True):
                 starting_version=start,
                 ending_version=end,
                 active=active,
-                delete_mode='explicit_cdf',
+                delete_mode="explicit_cdf",
             ),
         )
     )

@@ -74,9 +74,10 @@ _CHECKPOINT_ROOT = f"/Volumes/{_catalog}/demo_streaming_gold/_checkpoints"
 
 dim_customer_streaming_yaml = """table_name: demo_streaming_gold.dim_customer
 table_type: dimension
-scd_type: 2
+scd_type: 7
 keys:
   surrogate_key: customer_sk
+  durable_key: customer_dk
   natural_keys: [customer_id]
 effective_at: updated_at
 track_history_columns:
@@ -128,9 +129,10 @@ observability:
   event_table: etl_data_quality_events
   temporal_state_table: etl_contract_temporal_state
   write_failure: warn
-table_description: Streaming Type 2 customer dimension with durable event-time checks.
+table_description: Streaming Type 7 customer dimension with durable event-time checks.
 column_descriptions:
   customer_sk: Surrogate key for one customer version.
+  customer_dk: Durable customer key shared by all versions.
   customer_id: Stable supplier customer identifier.
   updated_at: Supplier event time used for SCD2 and ordering checks.
 transformation_sql: |

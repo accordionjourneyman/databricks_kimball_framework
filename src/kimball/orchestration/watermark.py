@@ -65,7 +65,7 @@ class ETLControlRecord(TypedDict, total=False):
 
 
 class ETLControlManager:
-    DEFAULT_TABLE_NAME = 'etl_control'
+    DEFAULT_TABLE_NAME = "etl_control"
 
     def __init__(
         self,

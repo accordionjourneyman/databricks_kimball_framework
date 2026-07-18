@@ -1,16 +1,27 @@
 table_name: {{ catalog }}.{{ out_schema }}.fact_sales
 table_type: fact
 merge_keys: [order_item_id]
+depends_on:
+  - {{ catalog }}.{{ out_schema }}.dim_customer
+  - {{ catalog }}.{{ out_schema }}.dim_product
 
 foreign_keys:
   - column: customer_sk
     references: {{ catalog }}.{{ out_schema }}.dim_customer
     dimension_key: customer_sk
-    default_value: -1
+    relationship: type7
+    durable_column: customer_dk
+    durable_dimension_key: customer_dk
+    lookup:
+      source_columns: [customer_id]
+      event_time: order_date
+      early_arriving: skeleton
   - column: product_sk
     references: {{ catalog }}.{{ out_schema }}.dim_product
     dimension_key: product_sk
-    default_value: -1
+    lookup:
+      source_columns: [product_id]
+      early_arriving: default
 
 sources:
   - name: {{ catalog }}.{{ raw_schema }}.order_items
@@ -23,9 +34,6 @@ sources:
     cdc_strategy: cdf
     starting_version: 0
     primary_keys: [order_id]
-  - name: {{ catalog }}.{{ out_schema }}.dim_customer
-    alias: c
-    cdc_strategy: full
   - name: {{ catalog }}.{{ out_schema }}.dim_product
     alias: p
     cdc_strategy: full
@@ -34,7 +42,8 @@ transformation_sql: |
   SELECT
     oi.order_item_id,
     o.order_id,
-    c.customer_sk,
+    o.customer_id,
+    oi.product_id,
     p.product_sk,
     o.order_date,
     oi.quantity,
@@ -43,14 +52,6 @@ transformation_sql: |
     oi._change_type
   FROM oi
   JOIN o ON oi.order_id = o.order_id
-  LEFT JOIN c ON o.customer_id = c.customer_id
-             AND CAST(o.order_date AS DATE) >= CAST(c.__valid_from AS DATE)
-             AND (c.__valid_to IS NULL OR CAST(o.order_date AS DATE) < CAST(c.__valid_to AS DATE))
   LEFT JOIN p ON oi.product_id = p.product_id
 
 audit_columns: true
-early_arriving_facts:
-  - dimension_table: {{ catalog }}.{{ out_schema }}.dim_customer
-    fact_join_key: customer_id
-    dimension_join_key: customer_id
-    surrogate_key_col: customer_sk

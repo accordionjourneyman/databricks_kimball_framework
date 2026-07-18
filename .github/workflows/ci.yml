@@ -81,15 +81,6 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: junit.xml
 
-      - name: Run performance benchmarks
-        run: |
-          if [ -f "tests/unit/test_performance.py" ]; then
-            python -m pip install pytest-benchmark
-            pytest tests/unit/test_performance.py -v --benchmark-only --benchmark-sort=mean --benchmark-columns=min,median,mean,max --benchmark-group-by=group
-          else
-            echo "No performance benchmarks defined yet"
-          fi
-
       - name: Build package
         run: python -m build
 

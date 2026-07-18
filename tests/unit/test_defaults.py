@@ -31,7 +31,7 @@ class TestSeedDefaultRows:
             seed_default_rows("test_table", MagicMock(), "sk")
         spark_mock.sql.assert_not_called()
 
-    def test_seeds_three_default_rows(self, spark_mock):
+    def test_seeds_four_default_rows(self, spark_mock):
         spark_mock.catalog.tableExists.return_value = True
         with patch("kimball.processing.defaults.get_spark", return_value=spark_mock):
             schema = StructType(
@@ -41,9 +41,9 @@ class TestSeedDefaultRows:
                 ]
             )
             seed_default_rows("test_table", schema, "sk")
-        assert spark_mock.sql.call_count == 3
+        assert spark_mock.sql.call_count == 4
         insert_calls = [c.args[0] for c in spark_mock.sql.call_args_list]
-        for i, sk in enumerate([-1, -2, -3]):
+        for i, sk in enumerate([-1, -2, -3, -4]):
             assert "INSERT INTO test_table" in insert_calls[i]
             assert "WHERE NOT EXISTS" in insert_calls[i]
             assert f"`sk` = {sk}" in insert_calls[i]
@@ -60,7 +60,7 @@ class TestSeedDefaultRows:
                 ]
             )
             seed_default_rows("test_table", schema, "sk", include_history_fields=True)
-        assert spark_mock.sql.call_count == 3
+        assert spark_mock.sql.call_count == 4
         first_sql = spark_mock.sql.call_args_list[0].args[0]
         assert "TRUE" in first_sql
         assert "__is_current" in first_sql
@@ -81,13 +81,13 @@ class TestSeedDefaultRows:
                 ]
             )
             seed_default_rows("test_table", schema, "sk")
-        assert spark_mock.sql.call_count == 3
+        assert spark_mock.sql.call_count == 4
         first_sql = spark_mock.sql.call_args_list[0].args[0]
         assert "`__count`" in first_sql
         assert "`__amount`" in first_sql
         assert "`__ratio`" in first_sql
         assert "FALSE" in first_sql
-        assert "''" in first_sql
+        assert "'Missing'" in first_sql
 
     def test_uses_default_values(self, spark_mock):
         spark_mock.catalog.tableExists.return_value = True
@@ -120,3 +120,28 @@ class TestSeedDefaultRows:
         assert "ts_col" in first_sql
         assert "date_col" in first_sql
         assert "float_col" in first_sql
+        assert "NULL" not in first_sql
+
+    def test_scd7_defaults_seed_same_reserved_sk_and_dk(self, spark_mock):
+        spark_mock.catalog.tableExists.return_value = True
+        schema = StructType(
+            [
+                StructField("customer_sk", IntegerType(), False),
+                StructField("customer_dk", IntegerType(), False),
+                StructField("__member_status", StringType(), False),
+                StructField("__key_origin", StringType(), False),
+                StructField("name", StringType(), False),
+            ]
+        )
+        with patch("kimball.processing.defaults.get_spark", return_value=spark_mock):
+            seed_default_rows(
+                "test_table",
+                schema,
+                "customer_sk",
+                durable_key="customer_dk",
+            )
+
+        first_sql = spark_mock.sql.call_args_list[0].args[0]
+        assert "-1, -1" in first_sql
+        assert "'MISSING'" in first_sql
+        assert "'default'" in first_sql

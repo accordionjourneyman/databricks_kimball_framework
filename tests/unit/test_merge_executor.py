@@ -3,7 +3,9 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pyspark.sql.types import StringType
 
+from kimball.common.config import NullPolicyConfig
 from kimball.orchestration.services.merge_executor import MergeExecutor
 
 
@@ -245,6 +247,25 @@ class TestEvolveTargetSchema:
         ctx.spark.table.return_value.schema = src_schema
         executor._evolve_target_schema(ctx, ["new_col"])
         ctx.spark.sql.assert_called_once()
+
+    def test_strict_dimension_backfills_and_constrains_new_column(self, executor, ctx):
+        ctx.config.null_policy = NullPolicyConfig()
+        ctx.config.sources = [MagicMock(name="src_table")]
+        target_df = MagicMock()
+        target_df.schema.fields = [MagicMock(name="existing")]
+        ctx.spark.table.return_value = target_df
+        src_schema = MagicMock()
+        src_field = MagicMock()
+        src_field.dataType = StringType()
+        src_schema.__getitem__ = MagicMock(return_value=src_field)
+        ctx.spark.table.return_value.schema = src_schema
+
+        executor._evolve_target_schema(ctx, ["new_col"])
+
+        statements = [call.args[0] for call in ctx.spark.sql.call_args_list]
+        assert len(statements) == 3
+        assert "SET `new_col` = 'Missing'" in statements[1]
+        assert "SET NOT NULL" in statements[2]
 
     def test_skips_existing_columns(self, executor, ctx):
         target_df = MagicMock()

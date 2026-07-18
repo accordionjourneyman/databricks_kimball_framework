@@ -2,6 +2,9 @@
 
 This document catalogs the algorithmic complexity of core operations and provides guidance on performance tuning.
 
+For reproducible execution, baseline compatibility, result retention, and
+regression policy, see [Benchmarking](BENCHMARKING.md).
+
 ## Execution model and action budget
 
 The framework builds Spark plans lazily. Reads, projections, joins, windows,
@@ -155,25 +158,26 @@ target_df = delta_table.toDF().filter("__is_current = true").join(source_keys, k
 - Delta's data skipping helps if join keys are in Z-order/cluster columns
 - Semi-join is more efficient than inner join (doesn't duplicate rows)
 
-### Skeleton Generation (`skeleton_generator.py`)
+### Brokered Type 7 Lookup and Inferred Members
 
 #### Missing Key Detection
 ```python
-fact_keys = fact_df.select(key).distinct()
-dim_keys = dim_df.select(key).distinct()  
-missing = fact_keys.join(dim_keys, "key", "left_anti")
+candidates = fact_df.groupBy(*natural_keys).agg(min(event_time))
+missing = candidates.join(dimension_intervals, range_condition, "left_anti")
 ```
 
 **Complexity**: 
-- Two distinct() operations: O(n) + O(m) shuffles
-- Left anti join: O(n) or O(n log n) depending on broadcast
+- One source grouping: O(n) with a shuffle by natural key
+- One interval anti-join before the inferred-member MERGE
+- One point-in-time lookup that stamps both the row and durable keys
 
 **When it matters**: Large fact batches with high dimension cardinality
 
-**Optimization opportunities**:
-- `dim_keys.distinct()` is redundant if dimension natural keys are unique
-- Could skip for dimensions with uniqueness constraints
-- Currently kept for defensive programming
+Identity maps are validated once per `KeyBroker` instance and reused across
+relationships. Exact `error` and `skeleton` barriers use an eager, bounded
+existence action because allowing an unresolved fact to mutate its target
+would violate the key contract. The benchmark suite measures the complete
+range lookup rather than timing only lazy DataFrame construction.
 
 ## Spark Action Audit
 

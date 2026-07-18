@@ -202,20 +202,21 @@ See [Streaming CDF](STREAMING.md) for full documentation.
 5. Generate surrogate keys for INSERTs
 6. Execute one atomic target-table MERGE
 
-### SkeletonGenerator
+### KeyBroker
 
-**Responsibility:** Handle early arriving facts
+**Responsibility:** Resolve all brokered fact relationships before fact
+validation and mutation.
 
-**Key Methods:**
+For a Type 7 relationship the broker performs one set-based point-in-time
+lookup and stamps both the historical row surrogate key and durable entity key.
+It distinguishes missing, not-applicable, not-yet-available, and bad-value
+states with reserved members `-1` through `-4`.
 
-- `generate_skeletons()` - Create placeholder dimension rows
-
-**Algorithm:**
-
-1. Identify distinct keys in fact data
-2. LEFT ANTI JOIN with dimension
-3. Generate skeleton rows for missing keys
-4. Append to dimension table
+When `lookup.early_arriving: skeleton`, the broker inserts inferred members
+before the lookup. The dimension SCD engine later hydrates an inferred member
+in place, preserving its key and validity start. With `default`, the broker
+assigns `-3` and persists replay evidence; with `error`, it rejects the fact
+before its target is changed.
 
 ### KeyGenerator
 
@@ -223,9 +224,9 @@ See [Streaming CDF](STREAMING.md) for full documentation.
 
 **Implementation:**
 
-- `HashKeyGenerator` - xxhash64 of natural keys (+ `__valid_from` for SCD2)
-  produces deterministic, distributed-safe BIGINT surrogate keys. Each SCD2
-  version gets a unique SK because the validity timestamp is included in the hash.
+- `HashKeyGenerator` produces canonical, deterministic BIGINT keys. Type 7
+  uses one durable key per entity and one row key per business-effective
+  version. SHA-256 fingerprints provide collision evidence for both key domains.
 
 ### Resilience Module (kimball.resilience)
 
@@ -272,13 +273,17 @@ os.environ["KIMBALL_ENABLE_METRICS"] = "1"
 2. ETLControlManager.batch_start() marks RUNNING
 3. ETLControlManager.get_watermark() returns last version (e.g., V5)
 4. DataLoader reads CDF from V6+ (with deduplication via primary_keys)
-5. SkeletonGenerator checks for missing dimension keys
-6. Transformation SQL executes (CDF + snapshots)
-7. DeltaMerger:
+5. Transformation SQL executes (CDF + snapshots)
+6. For facts, KeyBroker resolves declared relationships and inferred members
+7. Strict null, grain, contract, and foreign-key validation executes
+8. DeltaMerger:
    - SCD1: UPDATE existing, INSERT new
-   - SCD2: EXPIRE changed, INSERT new versions
-8. ETLControlManager.batch_complete() marks SUCCESS + records new version
+   - SCD2/SCD7: EXPIRE changed, INSERT new versions
+9. ETLControlManager.batch_complete() marks SUCCESS + records new version
 ```
+
+See [Type 7, key brokering, identity maps, and null semantics](SCD7_KEYS_AND_NULLS.md)
+for the complete relationship and early-arrival contract.
 
 ## Key Design Patterns
 

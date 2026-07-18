@@ -32,28 +32,29 @@ that complements it lives in [`../COMPARISON.md`](../COMPARISON.md).
 - **Evidence.** K&R (foundational); GR for the temporal extension. This is the
   uncontested core of dimensional modeling — no novelty claimed.
 
-### SCD Type taxonomy (1/2/4/6; no SCD0/SCD3)
+### SCD Type taxonomy (1/2/4/6/7; no SCD0/SCD3)
 - **Decision.** Implement SCD1 (overwrite), SCD2 (history via validity interval),
-  SCD4 (mini-dimension / history table) and SCD6 (hybrid). Omit SCD0 (fixed) and
-  SCD3 (single historical snapshot).
+  SCD4 (history table), SCD6 (hybrid), and SCD7 (dual Type 1/Type 2 equality
+  join paths). Omit SCD0 (fixed) and SCD3 (single prior-value snapshot).
 - **Evidence.** K&R define SCD1/2/3; SCD0/4/6 are later extensions surveyed in
   Lanzas (2024) and GR. Lanzas confirms the taxonomy fragmentation — no single
   standard enumerates all of SCD0–6, which is why library coverage varies (see
   `COMPARISON.md`).
 
-### SCD2 validity interval (`__valid_from` / `__valid_to` / `__is_current`, `− 1 MICROSECOND` upper bound)
-- **Decision.** Half-open validity chain: each version is valid in
-  `[valid_from, valid_to]` where `valid_to` of version *n* is
-  `valid_from(n+1) − 1 MICROSECOND`; the current version has `valid_to = NULL`.
-- **Evidence.** Standard bi-temporal / SCD2 interval convention from GR and the
-  SCD2 lineage surveyed in Lanzas. The microsecond granularity matches Delta's
-  `TIMESTAMP` precision and the convention used by dbt snapshots and DLT
-  `APPLY CHANGES`.
+### SCD2/SCD7 validity interval (`__valid_from` / `__valid_to` / `__is_current`)
+- **Decision.** Use the half-open interval `[valid_from, valid_to)`. The next
+  version starts at exactly the previous version's exclusive upper bound.
+  Current rows use `9999-12-31 23:59:59.999999`, not `NULL`.
+- **Evidence.** Half-open intervals are the conventional temporal representation
+  described by GR and avoid precision-dependent subtraction. dbt snapshots
+  support a configurable high-date current-row convention; the exact framework
+  boundary is an explicit implementation contract.
 
-### Deterministic surrogate keys via `xxhash64(natural_keys [+ version_col])`
-- **Decision.** Surrogate keys are a deterministic hash so that re-runs and
-  back-fills produce stable keys; the version column is folded into the hash for
-  SCD2 so each version gets a distinct, idempotent key.
+### Deterministic row and durable keys
+- **Decision.** Type 7 separates the durable entity key (canonical natural-key
+  payload) from the row surrogate key (durable payload plus business-effective
+  timestamp). Both are compact `xxhash64` BIGINT values; stored SHA-256
+  fingerprints make collisions detectable before mutation.
 - **Evidence.** K&R prescribes integer surrogate keys but leaves generation open;
   content-addressable hashing is an engineering choice (cf. delta-rs / Hudi
   record keys). The *deterministic + version-folded* combination is not, to our

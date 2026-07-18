@@ -76,31 +76,36 @@ class TestCheckSingleFk:
                 "column": "sk",
                 "dimension_table": "dim",
                 "dimension_key": "sk",
-                "default_value": -1,
             },
             True,
             TestSeverity.ERROR,
         )
         assert result is not None
+        fact_fks.distinct.return_value.filter.assert_called_once()
 
-    def test_handles_list_default_values(self):
+    def test_type7_fk_accepts_historical_dimension_rows(self):
         validator, spark = _make_validator()
         df = MagicMock()
         fact_fks = MagicMock()
         fact_fks.filter.return_value = MagicMock()
         df.select.return_value = fact_fks
         dim_df = MagicMock()
-        dim_df.columns = []
+        dim_df.columns = ["sk", "__is_current"]
         dim_df.select.return_value = MagicMock()
         dim_df.select.return_value.distinct.return_value = MagicMock()
         spark.table.return_value = dim_df
         result = validator._check_single_fk(
             df,
-            {"column": "sk", "dimension_table": "dim", "default_value": [-1, -2]},
+            {
+                "column": "sk",
+                "dimension_table": "dim",
+                "current_only": False,
+            },
             True,
             TestSeverity.ERROR,
         )
         assert result is not None
+        dim_df.filter.assert_not_called()
 
     def test_error_handling_returns_test_error(self):
         validator, spark = _make_validator()

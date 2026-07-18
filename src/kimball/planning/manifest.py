@@ -23,12 +23,15 @@ _BACKFILL_FIELDS = {
     "natural_keys",
     "merge_keys",
     "surrogate_key",
+    "durable_key",
     "scd_type",
     "effective_at",
     "track_history_columns",
     "fact_pattern",
     "snapshot_period",
     "milestones",
+    "null_policy",
+    "foreign_keys",
     "junk_dimensions",
     "degenerate_dimensions",
 }
@@ -37,6 +40,8 @@ _BREAKING_FIELDS = {
     "table_type",
     "history_table",
     "append_only",
+    "durable_key",
+    "null_policy",
 }
 
 

@@ -44,6 +44,7 @@ def merge(
     surrogate_key_col: str | None = None,
     schema_evolution: bool = False,
     effective_at_column: str | None = None,
+    durable_key_col: str | None = None,
     history_table: str | None = None,
     current_value_columns: list[str] | None = None,
     max_retries: int = 3,
@@ -66,9 +67,11 @@ def merge(
                 surrogate_key_col=surrogate_key_col,
                 append_only=append_only,
             )
-    elif scd_type == 2:
+    elif scd_type in (2, 7):
         if surrogate_key_col is None:
-            raise ValueError("SCD2 requires surrogate_key_col")
+            raise ValueError(f"SCD{scd_type} requires surrogate_key_col")
+        if scd_type == 7 and durable_key_col is None:
+            raise ValueError("SCD7 requires durable_key_col")
 
         def merge_fn(df: DataFrame) -> None:
             merge_scd2(
@@ -80,6 +83,8 @@ def merge(
                 schema_evolution=schema_evolution,
                 effective_at_column=effective_at_column,
                 full_snapshot_reconciliation=full_snapshot_reconciliation,
+                durable_key_col=durable_key_col,
+                scd_type=scd_type,
             )
     elif scd_type == 4:
         if surrogate_key_col is None:
@@ -116,7 +121,7 @@ def merge(
                 effective_at_column=effective_at_column,
             )
     else:
-        raise ValueError(f"Unsupported SCD type: {scd_type}. Supported: 1, 2, 4, 6")
+        raise ValueError(f"Unsupported SCD type: {scd_type}. Supported: 1, 2, 4, 6, 7")
 
     for attempt in range(max_retries + 1):
         try:

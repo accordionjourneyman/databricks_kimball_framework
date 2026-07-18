@@ -599,15 +599,9 @@ class DataQualityValidator:
             dim_key = fk_column
         test_name = f"fk_integrity({fk_column} -> {dim_table}.{dim_key})"
         try:
-            raw_default = fk.get("default_value")
             accepted_defaults: set[Any] = set()
-            if raw_default is not None:
-                if isinstance(raw_default, (list, tuple, set)):
-                    accepted_defaults.update(raw_default)
-                else:
-                    accepted_defaults.add(raw_default)
             if exclude_seeds:
-                accepted_defaults.update({-1, -2, -3})
+                accepted_defaults.update({-1, -2, -3, -4})
             fact_fks = df.select(fk_column).distinct()
             if accepted_defaults:
                 from pyspark.sql.functions import col as _col
@@ -615,7 +609,7 @@ class DataQualityValidator:
                 defaults_literal = list(accepted_defaults)
                 fact_fks = fact_fks.filter(~_col(fk_column).isin(defaults_literal))
             dim_df = self.spark.table(dim_table)
-            if "__is_current" in dim_df.columns:
+            if fk.get("current_only", True) and "__is_current" in dim_df.columns:
                 dim_df = dim_df.filter(F.col("__is_current") == True)  # noqa: E712
             valid_sks = dim_df.select(dim_key).distinct()
             orphans = fact_fks.join(

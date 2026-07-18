@@ -1,36 +1,20 @@
-"""
-Unit-level performance benchmarks using pytest-benchmark.
+"""Microbenchmarks for current framework hot paths."""
 
-Tracks microbenchmarks for hot paths:
-- hashdiff computation (SHA-256 over columns)
-- validation predicates (unique, not_null)
-- config fingerprinting
+from __future__ import annotations
 
-Run with:
-    pytest tests/unit/test_performance.py -v --benchmark-only
-    pytest tests/unit/test_performance.py -v --benchmark-only --benchmark-compare=20240101
-"""
-
-import hashlib
 import os
+import shutil
 
 import pytest
 from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
 
 from kimball.common.config import ConfigLoader, TableConfig, TestDefinition
 from kimball.processing.hashing import compute_hashdiff
 from kimball.validation import DataQualityValidator, TestSeverity
 
 
-def _has_java() -> bool:
-    """Return True if a Java runtime is available for local Spark."""
-    import shutil
-
-    return shutil.which("java") is not None or bool(os.environ.get("JAVA_HOME"))
-
-
-def _is_remote_only() -> bool:
-    """Check whether pyspark is in remote-only mode (databricks-connect installed)."""
+def _remote_only() -> bool:
     try:
         from pyspark.rdd import is_remote_only
 
@@ -39,167 +23,97 @@ def _is_remote_only() -> bool:
         return False
 
 
-def _local_spark_builder(app_name: str) -> SparkSession.Builder:
-    builder = SparkSession.builder.appName(app_name)
-    if _is_remote_only():
-        builder = builder.remote("local[2]")
-    else:
-        builder = builder.master("local[2]")
-    return builder
-
-
 @pytest.fixture(scope="module")
-def small_spark():
-    """Local Spark session for benchmark tests (skipped on Databricks / missing Java)."""
+def spark():
     if os.environ.get("DATABRICKS_RUNTIME_VERSION") or os.environ.get("SPARK_REMOTE"):
-        pytest.skip("Skipping local-only benchmark on Databricks")
-    if not _has_java():
-        pytest.skip("Java is not available — skipping Spark-dependent benchmarks")
-    return _local_spark_builder("BenchUnit").getOrCreate()
+        pytest.skip("Local-only microbenchmark")
+    if _remote_only():
+        pytest.skip("Databricks Connect cannot create a local Spark session")
+    if shutil.which("java") is None and not os.environ.get("JAVA_HOME"):
+        pytest.skip("Java is required for Spark microbenchmarks")
+    session = (
+        SparkSession.builder.appName("KimballMicrobenchmarks")
+        .master("local[2]")
+        .getOrCreate()
+    )
+    yield session
+    session.stop()
 
 
-@pytest.fixture(scope="module")
-def medium_spark():
-    if os.environ.get("DATABRICKS_RUNTIME_VERSION") or os.environ.get("SPARK_REMOTE"):
-        pytest.skip("Skipping local-only benchmark on Databricks")
-    if not _has_java():
-        pytest.skip("Java is not available — skipping Spark-dependent benchmarks")
-    return _local_spark_builder("BenchUnit2").getOrCreate()
+def test_hashdiff_10_columns_1k(benchmark, spark):
+    frame = spark.range(1_000).select(
+        *(F.col("id").cast("int").alias(f"column_{index}") for index in range(10))
+    )
+    expression = compute_hashdiff([f"column_{index}" for index in range(10)])
+    result = benchmark(lambda: frame.select(expression.alias("hashdiff")).count())
+    assert result == 1_000
 
 
-class TestHashdiffBench:
-    """Hashdiff is called on every SCD2 row — this is the most performance-critical path."""
+def test_hashdiff_3_columns_10k(benchmark, spark):
+    frame = spark.range(10_000).select(
+        F.col("id").cast("int").alias("a"),
+        F.col("id").cast("string").alias("b"),
+        F.col("id").cast("int").alias("c"),
+    )
+    expression = compute_hashdiff(["a", "b", "c"])
+    result = benchmark(lambda: frame.select(expression.alias("hashdiff")).count())
+    assert result == 10_000
 
-    def test_hashdiff_10_columns_1k(self, benchmark, small_spark):
-        from pyspark.sql.functions import col
 
-        df = small_spark.range(1000).select(
-            *(col("id").cast("int").alias(f"col_{i}") for i in range(10))
+@pytest.mark.parametrize("rows", [1_000, 100_000])
+def test_validate_unique(benchmark, spark, rows):
+    frame = spark.range(rows).select(F.col("id").cast("int").alias("key"))
+    validator = DataQualityValidator(spark=spark)
+    result = benchmark(
+        lambda: validator.validate_unique(frame, ["key"], severity=TestSeverity.ERROR)
+    )
+    assert result.passed
+
+
+def test_validate_unique_approximate_1m(benchmark, spark):
+    frame = spark.range(1_000_000).select(F.col("id").cast("int").alias("key"))
+    validator = DataQualityValidator(spark=spark)
+    result = benchmark(
+        lambda: validator.validate_unique_approximate(
+            frame, ["key"], severity=TestSeverity.WARN
         )
-        hashdiff = compute_hashdiff([f"col_{i}" for i in range(10)])
-        result = benchmark(lambda: df.select(hashdiff.alias("h")).count())
-        assert result > 0
+    )
+    assert result.total_rows == 1_000_000
+    assert result.severity == TestSeverity.WARN
 
-    def test_hashdiff_3_columns_10k(self, benchmark, small_spark):
-        from pyspark.sql.functions import col
 
-        df = small_spark.range(10000).select(
-            col("id").cast("int").alias("a"),
-            col("id").cast("string").alias("b"),
-            col("id").cast("int").alias("c"),
+def test_validate_not_null_1k(benchmark, spark):
+    frame = spark.range(1_000).select(F.col("id").cast("int").alias("value"))
+    validator = DataQualityValidator(spark=spark)
+    result = benchmark(
+        lambda: validator.validate_not_null(
+            frame, ["value"], severity=TestSeverity.ERROR
         )
-        hashdiff = compute_hashdiff(["a", "b", "c"])
-        result = benchmark(lambda: df.select(hashdiff.alias("h")).count())
-        assert result > 0
+    )
+    assert result.passed
 
 
-class TestValidationBench:
-    """Validation predicates run on every pipeline iteration."""
-
-    def test_validate_unique_1k(self, benchmark, small_spark):
-        from pyspark.sql.functions import col
-
-        df = small_spark.range(1000).select(col("id").cast("int").alias("k"))
-        validator = DataQualityValidator(spark=small_spark)
-        result = benchmark(
-            lambda: validator.validate_unique(df, ["k"], severity=TestSeverity.ERROR)
-        )
-        assert result is not None
-
-    def test_validate_unique_100k(self, benchmark, medium_spark):
-        from pyspark.sql.functions import col
-
-        df = medium_spark.range(100000).select(col("id").cast("int").alias("k"))
-        validator = DataQualityValidator(spark=medium_spark)
-        result = benchmark(
-            lambda: validator.validate_unique(df, ["k"], severity=TestSeverity.ERROR)
-        )
-        assert result is not None
-
-    def test_validate_unique_approximate_1m(self, benchmark, medium_spark):
-        from pyspark.sql.functions import col
-
-        df = medium_spark.range(1_000_000).select(col("id").cast("int").alias("k"))
-        validator = DataQualityValidator(spark=medium_spark)
-        result = benchmark(
-            lambda: validator.validate_unique_approximate(
-                df, ["k"], severity=TestSeverity.WARN
-            )
-        )
-        assert result is not None
-
-    def test_validate_not_null_1k(self, benchmark, small_spark):
-        from pyspark.sql.functions import col
-
-        df = small_spark.range(1000).select(col("id").cast("int").alias("v"))
-        validator = DataQualityValidator(spark=small_spark)
-        result = benchmark(
-            lambda: validator.validate_not_null(df, ["v"], severity=TestSeverity.ERROR)
-        )
-        assert result is not None
-
-
-class TestFingerprintBench:
-    """Config fingerprinting gates the state-aware validation skip."""
-
-    def test_fingerprint_small_config(self, benchmark):
-        loader = ConfigLoader()
-        config = TableConfig(
-            table_name="catalog.schema.dim_test",
-            table_type="dimension",
-            surrogate_key="id_sk",
-            natural_keys=["id"],
-            sources=[],
-            scd_type=2,
-            effective_at="updated_at",
-            track_history_columns=["name", "value"],
-            transformation_sql="SELECT id, name, value FROM source",
-        )
-        result = benchmark(lambda: loader.compute_fingerprint(config))
-        assert len(result) == 16
-
-    def test_fingerprint_with_tests(self, benchmark):
-        loader = ConfigLoader()
-        config = TableConfig(
-            table_name="catalog.schema.dim_test",
-            table_type="dimension",
-            surrogate_key="id_sk",
-            natural_keys=["id"],
-            sources=[],
-            scd_type=2,
-            effective_at="updated_at",
-            track_history_columns=["name", "value"],
-            transformation_sql="SELECT id, name, value FROM source",
-            tests=[
-                TestDefinition(column="id", tests=["unique", "not_null"]),
-                TestDefinition(column="name", tests=["not_null"]),
-            ],
-        )
-        result = benchmark(lambda: loader.compute_fingerprint(config))
-        assert len(result) == 16
-
-
-class TestSchemaFingerprintBench:
-    """Source schema fingerprint enables cheap state-aware skipping."""
-
-    def test_hash_10_columns(self, benchmark):
-        schema_repr = ",".join(
-            f"{f.name}:{f.dataType.simpleString()}"
-            for f in [
-                type(
-                    "F",
-                    (),
-                    {
-                        "name": f"col_{i}",
-                        "dataType": type(
-                            "D", (), {"simpleString": lambda self: "int"}
-                        )(),
-                    },
-                )()
-                for i in range(10)
-            ]
-        )
-        result = benchmark(
-            lambda: hashlib.sha256(schema_repr.encode("utf-8")).hexdigest()[:16]
-        )
-        assert len(result) == 16
+@pytest.mark.parametrize("with_tests", [False, True])
+def test_config_fingerprint(benchmark, with_tests):
+    tests = (
+        [
+            TestDefinition(column="id", tests=["unique", "not_null"]),
+            TestDefinition(column="name", tests=["not_null"]),
+        ]
+        if with_tests
+        else []
+    )
+    config = TableConfig(
+        table_name="catalog.schema.dim_test",
+        table_type="dimension",
+        surrogate_key="id_sk",
+        natural_keys=["id"],
+        sources=[],
+        scd_type=2,
+        effective_at="updated_at",
+        track_history_columns=["name", "value"],
+        transformation_sql="SELECT id, name, value FROM source",
+        tests=tests,
+    )
+    result = benchmark(lambda: ConfigLoader().compute_fingerprint(config))
+    assert len(result) == 16

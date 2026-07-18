@@ -17,8 +17,10 @@ from pyspark.sql.functions import (
 )
 from pyspark.sql.window import Window
 
+from kimball.common.constants import DEFAULT_VALID_TO
 from kimball.common.spark_session import get_spark
 from kimball.processing.hashing import compute_hashdiff
+from kimball.processing.key_integrity import validate_type7_keys
 from kimball.processing.merge_helpers import (
     _CDF_METADATA,
     apply_schema_evolution,
@@ -82,6 +84,8 @@ def _merge_single_pass(
     schema_evolution: bool,
     effective_at_column: str | None,
     full_snapshot_reconciliation: bool,
+    durable_key_col: str | None,
+    scd_type: int,
 ) -> None:
     """Single-pass SCD2 MERGE using SK-based matching.
 
@@ -90,17 +94,21 @@ def _merge_single_pass(
     where ``whenMatchedUpdate`` expires the old row (matched by SK) and
     ``whenNotMatchedInsert`` inserts all new versions.
 
-    This eliminates the two-phase ``_merge_current`` + ``_rebuild_history``
-    approach, reducing Spark actions from 3-4 to 1.
+    This eliminates the retired two-phase ``_merge_current`` and
+    ``_rebuild_history`` implementation.  The target mutation is one Delta
+    MERGE; exact empty/change/collision safety checks remain eager Spark
+    actions and are deliberately accounted for in the benchmark suite.
     """
     if not track_history_columns:
         raise ValueError("track_history_columns must be provided for SCD Type 2")
     upserts, deletes = filter_cdf_deletes(source_df)
     source_is_empty = upserts.isEmpty()
-    if source_is_empty and (
-        deletes is None or deletes.isEmpty()
-    ) and not full_snapshot_reconciliation:
-        logger.info("SCD2 no-op: no upserts or deletes â€” skipping merge")
+    if (
+        source_is_empty
+        and (deletes is None or deletes.isEmpty())
+        and not full_snapshot_reconciliation
+    ):
+        logger.info("SCD2 no-op: no upserts or deletes; skipping merge")
         return
     delta_table = DeltaTable.forName(get_spark(), target_table_name)
     target_has_skeleton_col = "__is_skeleton" in [
@@ -197,6 +205,13 @@ def _merge_single_pass(
     # Join latest to target to get target_sk and target_hashdiff
     source_keys = latest.select(*join_keys).distinct()
     target_df = get_current_df(delta_table).join(source_keys, join_keys, "semi")
+    # Recompute the target hash with the current tracking contract. Persisted
+    # hashes may have been produced before a tracked column was added; comparing
+    # hashes built from different column sets would create a false version and,
+    # when effective_at is unchanged, duplicate the existing row key.
+    target_df = target_df.withColumn(
+        "__comparison_hashdiff", compute_hashdiff(track_history_columns)
+    )
     join_conditions = [latest[k].eqNullSafe(target_df[k]) for k in join_keys]
     combined = reduce(lambda a, b: a & b, join_conditions) if join_conditions else None
     joined = (
@@ -204,7 +219,7 @@ def _merge_single_pass(
         .join(target_df.alias("t"), combined, "left")
         .select(
             "s.*",
-            col("t.hashdiff").alias("target_hashdiff"),
+            col("t.__comparison_hashdiff").alias("target_hashdiff"),
             col("t." + surrogate_key_col).alias("target_sk"),
             col("t.__is_skeleton").alias("target_is_skeleton")
             if target_has_skeleton_col
@@ -212,7 +227,7 @@ def _merge_single_pass(
         )
     )
 
-    # Classify rows â€” keep target_sk for expire rows (needed for SK-based MERGE match)
+    # Keep target_sk on expiration rows because the MERGE matches by version SK.
     rows_new = joined.filter(col("target_sk").isNull()).drop(
         "target_hashdiff", "target_sk", "target_is_skeleton"
     )
@@ -252,7 +267,7 @@ def _merge_single_pass(
     )
     logger.info(f"SCD2 time semantics: using {validity_note}")
     # Oldest new version's valid_from per key. The old current target row must be
-    # expired at (oldest_new_valid_from - 1us), NOT at the latest version's
+    # expired at oldest_new_valid_from, NOT at the latest version's
     # valid_from: expiring at the latest value makes the old row's
     # [t0, latest_from] interval overlap the back-filled intermediate versions,
     # so a point-in-time read between the oldest and latest new version returns
@@ -264,25 +279,26 @@ def _merge_single_pass(
     )
     rows_changed = rows_changed.join(oldest_valid_from, join_keys, "left")
 
-    # The expire row: carry oldest valid_from so the MERGE update can set
-    # __valid_to = oldest_valid_from - 1 MICROSECOND (see EXPIRE set below).
+    # The expire row carries the exclusive upper bound for the old version.
     expire_rows = rows_changed.withColumn("__merge_action", lit("EXPIRE"))
     expire_rows = expire_rows.withColumn(
         "__valid_to",
-        col("__scd2_oldest_valid_from") - expr("INTERVAL 1 MICROSECOND"),
+        col("__scd2_oldest_valid_from"),
     )
 
-    # The latest version row: __is_current = true, __valid_to = null
+    # Current versions use a concrete exclusive high-date boundary.
     latest_version = rows_changed.withColumn("__merge_action", lit("INSERT_LATEST"))
     latest_version = latest_version.withColumn("__is_current", lit(True))
     latest_version = latest_version.withColumn(
-        "__valid_to", lit(None).cast("timestamp")
+        "__valid_to", lit(DEFAULT_VALID_TO).cast("timestamp")
     )
 
-    # New rows (no prior version): __is_current = true, __valid_to = null
+    # New rows are current and use the same high-date boundary.
     new_rows = rows_new.withColumn("__merge_action", lit("INSERT_NEW"))
     new_rows = new_rows.withColumn("__is_current", lit(True))
-    new_rows = new_rows.withColumn("__valid_to", lit(None).cast("timestamp"))
+    new_rows = new_rows.withColumn(
+        "__valid_to", lit(DEFAULT_VALID_TO).cast("timestamp")
+    )
 
     # Older versions: __is_current = false, chain valid_to to next version
     older_versions = None
@@ -292,11 +308,9 @@ def _merge_single_pass(
         older_versions = older_versions.withColumn(
             "__valid_to",
             when(
-                col("__scd2_next_valid_from").isNull(), lit(None).cast("timestamp")
-            ).otherwise(
-                col("__scd2_next_valid_from").cast("timestamp")
-                - expr("INTERVAL 1 MICROSECOND")
-            ),
+                col("__scd2_next_valid_from").isNull(),
+                lit(DEFAULT_VALID_TO).cast("timestamp"),
+            ).otherwise(col("__scd2_next_valid_from").cast("timestamp")),
         ).drop("__scd2_next_valid_from")
 
     # Union all staged rows
@@ -305,7 +319,7 @@ def _merge_single_pass(
     # source.__scd2_oldest_valid_from, which only exists on expire_rows
     # (derived from rows_changed). When the only matched target is a skeleton
     # (routed to HYDRATE, not rows_changed) there are no expire rows and the
-    # column is absent from final_source â€” adding the EXPIRE branch unconditionally
+    # column is absent from final_source; adding the EXPIRE branch unconditionally
     # then fails Delta plan resolution with DELTA_MERGE_UNRESOLVED_EXPRESSION.
     has_changed = not rows_changed.isEmpty()
     staged = new_rows
@@ -328,14 +342,22 @@ def _merge_single_pass(
         rows_needing_keys,
         join_keys,
         surrogate_key_col,
-        scd_type=2,
+        scd_type=scd_type,
         effective_at_column=effective_at_column,
+        durable_key_col=durable_key_col,
     )
+    if scd_type == 7 and durable_key_col:
+        validate_type7_keys(
+            rows_with_keys,
+            delta_table.toDF(),
+            surrogate_key=surrogate_key_col,
+            durable_key=durable_key_col,
+        )
     # EXPIRE / HYDRATE rows: set surrogate_key_col to the matched target row's
     # SK so the SK-based MERGE condition matches the existing target row
     # (target.customer_sk = source.customer_sk). For HYDRATE this is the
     # skeleton's SK, so the skeleton is hydrated in place and keeps its original
-    # SK â€” fact FKs remain valid, no null-SK duplicate is inserted.
+    # SK. Fact FKs remain valid and no null-SK duplicate is inserted.
     if "target_sk" in rows_no_keys.columns:
         rows_no_keys = rows_no_keys.withColumn(surrogate_key_col, col("target_sk"))
     elif surrogate_key_col not in rows_no_keys.columns:
@@ -350,14 +372,14 @@ def _merge_single_pass(
             when(col("__merge_action") == "EXPIRE", col(k)).otherwise(lit(None)),
         )
 
-    # Build insert values dict â€” only include columns that exist in the target table
+    # Build insert values only for columns that exist in the target table.
     target_col_names = {f.name for f in delta_table.toDF().schema.fields}
     insert_values: dict[str, str] = {}
     for c in upserts.columns:
         if c in _CDF_METADATA or c not in target_col_names:
             continue
         insert_values[c] = f"source.__orig_{c}" if c in join_keys else f"source.{c}"
-    # System columns â€” read from the staged source so older versions get
+    # Read system columns from the staged source so older versions get
     # __is_current=false and __valid_to set correctly.
     if "__is_current" in target_col_names:
         insert_values["__is_current"] = "source.__is_current"
@@ -376,6 +398,17 @@ def _merge_single_pass(
         and surrogate_key_col in target_col_names
     ):
         insert_values[surrogate_key_col] = f"source.{surrogate_key_col}"
+    if durable_key_col and durable_key_col in target_col_names:
+        insert_values[durable_key_col] = f"source.{durable_key_col}"
+    for fingerprint in ("__durable_key_fingerprint", "__row_key_fingerprint"):
+        if fingerprint in final_source.columns and fingerprint in target_col_names:
+            insert_values[fingerprint] = f"source.{fingerprint}"
+    for system_name, value in (
+        ("__member_status", "'REAL'"),
+        ("__key_origin", "'generated'"),
+    ):
+        if system_name in target_col_names:
+            insert_values[system_name] = value
 
     # Single MERGE: match on SK for expire, insert everything else
     merge_condition = f"target.{surrogate_key_col} = source.{surrogate_key_col}"
@@ -394,7 +427,6 @@ def _merge_single_pass(
         hydration_set.update(
             {
                 "__is_skeleton": "false",
-                "__valid_from": f"COALESCE({validity_col}, current_timestamp())",
                 "__is_current": "true",
                 "__etl_processed_at": "current_timestamp()",
                 "__is_deleted": "false",
@@ -411,7 +443,7 @@ def _merge_single_pass(
             condition="source.__merge_action = 'EXPIRE'",
             set={
                 "__is_current": "false",
-                "__valid_to": "COALESCE(source.__scd2_oldest_valid_from - INTERVAL 1 MICROSECOND, current_timestamp())",
+                "__valid_to": "COALESCE(source.__scd2_oldest_valid_from, current_timestamp())",
                 "__etl_processed_at": "current_timestamp()",
                 "__is_deleted": "false",
             },
@@ -430,6 +462,8 @@ def merge_scd2(
     schema_evolution: bool = False,
     effective_at_column: str | None = None,
     full_snapshot_reconciliation: bool = False,
+    durable_key_col: str | None = None,
+    scd_type: int = 2,
 ) -> None:
     if not track_history_columns:
         raise ValueError("track_history_columns must be provided for SCD Type 2")
@@ -442,4 +476,6 @@ def merge_scd2(
         schema_evolution=schema_evolution,
         effective_at_column=effective_at_column,
         full_snapshot_reconciliation=full_snapshot_reconciliation,
+        durable_key_col=durable_key_col,
+        scd_type=scd_type,
     )

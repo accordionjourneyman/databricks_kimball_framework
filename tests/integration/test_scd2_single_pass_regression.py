@@ -397,14 +397,12 @@ class TestSinglePassExpireValidTo:
         assert old_row["__is_current"] is False
         assert old_row["__is_deleted"] is False
 
-        # Must be expired at oldest_new_valid_from - 1us (2024-02-29 23:59:59.999999),
-        # NOT at latest_new_valid_from - 1us (2024-08-31 23:59:59.999999).
-        expected = spark.sql(
-            "SELECT '2024-03-01'::timestamp - INTERVAL 1 MICROSECOND AS t"
-        ).first()["t"]
+        # The half-open interval ends exactly at oldest_new_valid_from,
+        # not at the latest new version's start.
+        expected = spark.sql("SELECT '2024-03-01'::timestamp AS t").first()["t"]
         assert old_row["__valid_to"] == expected, (
-            f"old row __valid_to should be oldest_new - 1us ({expected}); "
-            f"got {old_row['__valid_to']} (overlap bug if 2024-08-31 23:59:59.999999)"
+            f"old row __valid_to should equal oldest_new ({expected}); "
+            f"got {old_row['__valid_to']} (overlap bug if 2024-09-01)"
         )
 
     def test_point_in_time_read_between_versions_returns_intermediate(

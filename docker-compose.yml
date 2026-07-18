@@ -7,9 +7,14 @@ services:
       # Mount source for live editing without rebuild
       - ./src:/app/src
       - ./tests:/app/tests
+      - ./examples:/app/examples
+      - ./contracts:/app/contracts
       - ./tools:/app/tools
+      - ./benchmark-results:/app/benchmark-results
+      - ./.git:/app/.git:ro
       - ./run_tests.py:/app/run_tests.py
       - ./pyproject.toml:/app/pyproject.toml
+      - ./kimball.targets.yml:/app/kimball.targets.yml:ro
       # Mount .env for Databricks credentials (remote target)
       - .env:/app/.env:ro
     environment:
@@ -18,6 +23,10 @@ services:
       - KIMBALL_ETL_SCHEMA=etl_control
       - PYSPARK_PYTHON=python3
       - PYSPARK_DRIVER_PYTHON=python3
+      - KIMBALL_BENCHMARK_TESTBED=tiago-windows-docker
+      - KIMBALL_BENCHMARK_IMAGE=kimball-tests:spark-4.0.1-delta-4.2.0
+      - BENCHER_API_KEY
+      - BENCHER_PROJECT
     # Run tests by default; override command for specific tests
     command: ["python", "-m", "pytest", "tests/", "-v", "--tb=short"]
 
@@ -29,7 +38,10 @@ services:
     volumes:
       - ./src:/app/src
       - ./tests:/app/tests
+      - ./examples:/app/examples
+      - ./contracts:/app/contracts
       - ./pyproject.toml:/app/pyproject.toml
+      - ./kimball.targets.yml:/app/kimball.targets.yml:ro
     environment:
       - KIMBALL_TARGET=local
       - KIMBALL_ETL_SCHEMA=etl_control

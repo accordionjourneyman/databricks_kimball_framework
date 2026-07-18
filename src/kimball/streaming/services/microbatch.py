@@ -48,6 +48,7 @@ class StreamingMicroBatchProcessor:
             transformed_sample.limit(0),
             self.config.scd_type,
             self.config.surrogate_key,
+            durable_key=self.config.durable_key,
             current_value_columns=self.config.current_value_columns,
         )
 
@@ -65,12 +66,13 @@ class StreamingMicroBatchProcessor:
 
         if self.config.table_type == "dimension":
             target_schema = self.spark.table(self.config.table_name).schema
-            if self.config.scd_type == 2:
+            if self.config.scd_type in (2, 7):
                 _merger.ensure_scd2_defaults(
                     self.config.table_name,
                     target_schema,
                     self.config.surrogate_key or "surrogate_key",
                     self.config.default_rows,
+                    durable_key=self.config.durable_key,
                 )
             elif self.config.scd_type == 1 and self.config.surrogate_key:
                 _merger.ensure_scd1_defaults(
@@ -167,6 +169,50 @@ class StreamingMicroBatchProcessor:
             meta_df = batch_df.select(*(common_cols + cdf_meta_cols))
             source_df = source_df.join(meta_df, common_cols, "left")
 
+        if self.config.table_type == "fact" and any(
+            fk.lookup is not None for fk in self.config.foreign_keys or []
+        ):
+            from kimball.observability.unresolved_keys import UnresolvedKeyRegistry
+            from kimball.processing.key_broker import KeyBroker
+
+            obs = self.config.observability
+            unresolved = any(
+                fk.lookup and fk.lookup.early_arriving == "default"
+                for fk in self.config.foreign_keys or []
+            )
+            registry = (
+                UnresolvedKeyRegistry(
+                    self.spark,
+                    self.etl_schema,
+                    obs.unresolved_key_table
+                    if obs
+                    else "etl_unresolved_dimension_keys",
+                )
+                if unresolved
+                else None
+            )
+            source_version = self._get_max_version(batch_df)
+            source_df = KeyBroker(self.spark, registry).resolve_fact_keys(
+                source_df,
+                self.config.foreign_keys or [],
+                batch_id=str(batch_id),
+                null_policy=self.config.null_policy,
+                fact_table=self.config.table_name,
+                fact_grain=self.config.merge_keys or [],
+                source_version=source_version if source_version is not None else -1,
+            )
+        elif self.config.table_type == "dimension":
+            from kimball.processing.dimension_nulls import apply_dimension_null_policy
+
+            identity_columns = list(self.config.natural_keys)
+            if self.config.effective_at:
+                identity_columns.append(self.config.effective_at)
+            source_df = apply_dimension_null_policy(
+                source_df,
+                self.config.null_policy,
+                identity_columns=identity_columns,
+            )
+
         self._validate_fks(source_df)
         self._validate_grain(source_df, join_keys)
 
@@ -174,12 +220,14 @@ class StreamingMicroBatchProcessor:
             target_table_name=self.config.table_name,
             source_df=source_df,
             join_keys=join_keys,
+            batch_id=str(batch_id),
             delete_strategy=self.config.delete_strategy,
             scd_type=self.config.scd_type,
             track_history_columns=self.config.track_history_columns,
             surrogate_key_col=self.config.surrogate_key,
             schema_evolution=self.config.schema_evolution,
             effective_at_column=self.config.effective_at,
+            durable_key_col=self.config.durable_key,
             history_table=self.config.history_table,
             current_value_columns=self.config.current_value_columns,
         )

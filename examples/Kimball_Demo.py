@@ -106,11 +106,12 @@ print(f"✓ ETL schema: {os.environ['KIMBALL_ETL_SCHEMA']}")
 
 dim_customer_yaml = """table_name: demo_gold.dim_customer
 table_type: dimension
-scd_type: 2
+scd_type: 7
 keys:
   surrogate_key: customer_sk
+  durable_key: customer_dk
   natural_keys: [customer_id]
-effective_at: updated_at  # Use business date for SCD2 validity, not processing time
+effective_at: updated_at  # Business time for Type 7 historical versions
 track_history_columns:
   - first_name
   - last_name
@@ -154,15 +155,16 @@ observability:
   event_table: etl_data_quality_events
   temporal_state_table: etl_contract_temporal_state
   write_failure: warn
-table_description: Type 2 customer dimension with supplier contract monitoring.
+table_description: Type 7 customer dimension with supplier contract monitoring.
 column_descriptions:
   customer_sk: Surrogate key for one historical customer version.
+  customer_dk: Durable customer key shared by all historical versions.
   customer_id: Durable CRM customer identifier.
   updated_at: Supplier business-effective timestamp.
 transformation_sql: |
   SELECT customer_id, first_name, last_name, email, address, updated_at, _change_type FROM c
 audit_columns: true
-preserve_all_changes: true  # Process one CDF version at a time for complete SCD2 history
+preserve_all_changes: true  # Preserve every upstream historical version
 """
 
 dim_product_yaml = """table_name: demo_gold.dim_product
@@ -206,10 +208,20 @@ measures:
 foreign_keys:
   - column: customer_sk
     references: demo_gold.dim_customer
-    default_value: -1  # Unknown customer
+    dimension_key: customer_sk
+    relationship: type7
+    durable_column: customer_dk
+    durable_dimension_key: customer_dk
+    lookup:
+      source_columns: [customer_id]
+      event_time: order_date
+      early_arriving: skeleton
   - column: product_sk
     references: demo_gold.dim_product
-    default_value: -1  # Unknown product
+    dimension_key: product_sk
+    lookup:
+      source_columns: [product_id]
+      early_arriving: default
 
 sources:
   - name: demo_silver.order_items
@@ -222,9 +234,6 @@ sources:
     cdc_strategy: cdf
     starting_version: 0
     primary_keys: [order_id]  # Required for CDF deduplication
-  - name: demo_gold.dim_customer
-    alias: c
-    cdc_strategy: full
   - name: demo_gold.dim_product
     alias: p
     cdc_strategy: full
@@ -232,7 +241,8 @@ transformation_sql: |
   SELECT
     oi.order_item_id,
     o.order_id,
-    c.customer_sk,
+    o.customer_id,
+    oi.product_id,
     p.product_sk,
     o.order_date,
     oi.quantity,
@@ -241,22 +251,15 @@ transformation_sql: |
     oi._change_type
   FROM oi
   JOIN o ON oi.order_id = o.order_id
-  LEFT JOIN c ON o.customer_id = c.customer_id 
-             AND CAST(o.order_date AS DATE) >= CAST(c.__valid_from AS DATE)
-             AND (c.__valid_to IS NULL OR CAST(o.order_date AS DATE) < CAST(c.__valid_to AS DATE))
   LEFT JOIN p ON oi.product_id = p.product_id
 table_description: Transaction fact at order-item grain.
 column_descriptions:
   order_item_id: Durable merge key for one sold line item.
   order_id: Operational order identifier retained as a degenerate dimension.
   customer_sk: Point-in-time customer dimension key.
+  customer_dk: Durable customer key for current-state reporting.
   product_sk: Product dimension key.
 audit_columns: true
-early_arriving_facts:
-  - dimension_table: demo_gold.dim_customer
-    fact_join_key: customer_id
-    dimension_join_key: customer_id
-    surrogate_key_col: customer_sk
 """
 
 # Write configs using dbutils (workspace file I/O)
@@ -572,12 +575,12 @@ print(f"Day 2 Pipeline Complete in {_day2_transform_time:.2f}s ({_day2_rows} row
 
 # COMMAND ----------
 
-# 1. Verify SCD2 on Customer (Alice)
+# 1. Verify Type 7 on Customer (Alice)
 # We expect 2 rows for Alice:
 # - One valid from Day 1 to Day 2
-# - One valid from Day 2 to NULL (Current)
+# - One current row with the concrete high-date upper bound
 alice_history = spark.sql("""
-    SELECT customer_sk, address, __valid_from, __valid_to, __is_current 
+    SELECT customer_sk, customer_dk, address, __valid_from, __valid_to, __is_current
     FROM demo_gold.dim_customer 
     WHERE customer_id = 1 
     ORDER BY __valid_from
@@ -590,6 +593,15 @@ for row in alice_history:
 assert len(alice_history) == 2, "Alice should have 2 history rows"
 assert alice_history[0]["__is_current"] == False, "First row should be expired"
 assert alice_history[1]["__is_current"] == True, "Second row should be current"
+assert alice_history[0]["customer_sk"] != alice_history[1]["customer_sk"], (
+    "Each historical version needs a distinct row surrogate key"
+)
+assert alice_history[0]["customer_dk"] == alice_history[1]["customer_dk"], (
+    "All versions of one customer must share the durable key"
+)
+assert alice_history[1]["__valid_to"].year == 9999, (
+    "Current versions use a concrete exclusive high-date, never NULL"
+)
 assert alice_history[1]["address"] == "789 Cherry Ln, LA", (
     "Current address should be LA"
 )
@@ -639,6 +651,19 @@ assert sales_check[0]["linked_customer_address"] == "123 Apple St, NY", (
 assert sales_check[1]["linked_customer_address"] == "789 Cherry Ln, LA", (
     "Day 2 order should link to LA address"
 )
+
+alice_current_sales = spark.sql("""
+    SELECT c.address, SUM(f.sales_amount) AS sales_amount
+    FROM demo_gold.fact_sales f
+    JOIN demo_gold.dim_customer c
+      ON f.customer_dk = c.customer_dk
+     AND c.__is_current = true
+    WHERE c.customer_id = 1
+    GROUP BY c.address
+""").first()
+
+assert alice_current_sales["address"] == "789 Cherry Ln, LA"
+assert alice_current_sales["sales_amount"] == 1225.0
 
 print("\n✅ Fact Linkage Test Passed")
 
@@ -876,25 +901,25 @@ if len(skeleton_check) > 0:
     assert skeleton_check[0]["__is_skeleton"] == True, (
         "Row should be marked as skeleton"
     )
-    assert skeleton_check[0]["first_name"] is None, (
-        "Skeleton should have NULL for non-key columns"
+    assert skeleton_check[0]["first_name"] == "Not Yet Available", (
+        "Skeleton attributes must use concrete Kimball placeholders"
     )
-    # Check sentinel date (1800-01-01)
+    # The inferred member begins at the earliest referencing fact event.
     valid_from = skeleton_check[0]["__valid_from"]
-    assert valid_from.year == 1800, (
-        f"Skeleton __valid_from should be 1800-01-01 sentinel, got {valid_from}"
+    assert str(valid_from).startswith("2025-01-03"), (
+        f"Skeleton __valid_from should match the earliest fact event, got {valid_from}"
     )
     print("\n✅ Skeleton Generation Test Passed")
 else:
     print(
         "\n⚠️ Skeleton not generated - this may be expected if skeleton generation is disabled"
     )
-    print("   Check enable_skeleton_rows in fact_sales config")
+    print("   Check foreign_keys[].lookup.early_arriving in fact_sales config")
 
 # COMMAND ----------
 
 # TEST 5: Fact Sales FK Integrity
-# All facts should have valid customer_sk (either real or skeleton -1 default)
+# All facts should have a concrete customer_sk (real, inferred, or reserved).
 
 fk_check = spark.sql("""
     SELECT 
@@ -933,12 +958,12 @@ print(f"  dim_product: {dim_product_count} rows")
 print(f"  fact_sales: {fact_sales_count} rows")
 
 # Expected counts:
-# - dim_customer: 9 rows (includes SCD2 history + skeleton + seeded defaults)
-# - dim_product: 7 rows (4 real products + 3 seeded defaults)
+# - dim_customer: 11 rows (7 real/history/inferred + 4 reserved members)
+# - dim_product: 8 rows (4 real products + 4 reserved members)
 # - fact_sales: 6 order items total
 
-assert dim_customer_count == 9, f"Expected 9 customers, got {dim_customer_count}"
-assert dim_product_count == 7, f"Expected 7 products, got {dim_product_count}"
+assert dim_customer_count == 11, f"Expected 11 customer rows, got {dim_customer_count}"
+assert dim_product_count == 8, f"Expected 8 product rows, got {dim_product_count}"
 assert fact_sales_count == 6, f"Expected 6 fact rows, got {fact_sales_count}"
 
 print("\n✅ Row Count Test Passed")

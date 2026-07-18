@@ -4,7 +4,7 @@ Golden end-to-end tests for the Kimball Framework.
 This test replicates the ETL DAG from examples/Kimball_Demo.py:
   1. Create CDF-enabled silver source tables.
   2. Ingest Day 1 CSV data via MERGE (producing initial CDF versions).
-  3. Run dimension pipelines (SCD1 product, SCD2 customer).
+  3. Run dimension pipelines (SCD1 product, SCD7 customer).
   4. Run fact pipeline with FK lookups.
   5. Ingest Day 2 CSV data via MERGE (producing CDF updates).
   6. Re-run the same pipelines; watermarks ensure only incremental changes
@@ -97,7 +97,9 @@ def _full_table(catalog: str, schema: str, table: str) -> str:
     return f"{catalog}.{schema}.{table}" if catalog else f"{schema}.{table}"
 
 
-def _render_config(raw_config_path: Path, catalog: str, run_id: str) -> str:
+def _render_config(
+    raw_config_path: Path, catalog: str, run_id: str, output_dir: Path
+) -> str:
     """Render Jinja2 placeholders in a config file and return the rendered path.
 
     Each config may reference ``{{ catalog }}``, ``{{ raw_schema }}`` and
@@ -113,7 +115,7 @@ def _render_config(raw_config_path: Path, catalog: str, run_id: str) -> str:
     rendered = raw_content.replace("{{ catalog }}.", catalog_prefix)
     rendered = rendered.replace("{{ raw_schema }}", f"kimball_golden_raw_{run_id}")
     rendered = rendered.replace("{{ out_schema }}", f"kimball_golden_{run_id}")
-    rendered_path = raw_config_path.parent / f"_{raw_config_path.name}"
+    rendered_path = output_dir / raw_config_path.name
     rendered_path.write_text(rendered, encoding="utf-8")
     return str(rendered_path)
 
@@ -222,14 +224,17 @@ def golden_schemas(spark: SparkSession, golden_catalog: str, run_id: str):
 
 
 @pytest.fixture(scope="module")
-def rendered_configs(spark: SparkSession, run_id: str) -> list[str]:
+def rendered_configs(
+    spark: SparkSession, run_id: str, tmp_path_factory: pytest.TempPathFactory
+) -> list[str]:
     """Return paths to rendered config files (catalog + unique schemas baked in)."""
     catalog = _catalog(spark)
+    output_dir = tmp_path_factory.mktemp("golden-configs")
     return [
-        _render_config(GOLDEN_DIR / "dim_customer.yml", catalog, run_id),
-        _render_config(GOLDEN_DIR / "dim_product.yml", catalog, run_id),
-        _render_config(GOLDEN_DIR / "fact_sales.yml", catalog, run_id),
-        _render_config(GOLDEN_DIR / "fact_events.yml", catalog, run_id),
+        _render_config(GOLDEN_DIR / "dim_customer.yml", catalog, run_id, output_dir),
+        _render_config(GOLDEN_DIR / "dim_product.yml", catalog, run_id, output_dir),
+        _render_config(GOLDEN_DIR / "fact_sales.yml", catalog, run_id, output_dir),
+        _render_config(GOLDEN_DIR / "fact_events.yml", catalog, run_id, output_dir),
     ]
 
 
@@ -379,10 +384,10 @@ def test_day1_pipeline(
     product_count = spark.table(_q(day1_data, out_schema, "dim_product")).count()
     fact_count = spark.table(_q(day1_data, out_schema, "fact_sales")).count()
 
-    # 2 real customers + 3 seeded defaults (-1, -2, -3) = 5
-    assert customer_count == 5, f"Expected 5 customer rows, got {customer_count}"
-    # 2 real products + 3 seeded defaults = 5
-    assert product_count == 5, f"Expected 5 product rows, got {product_count}"
+    # 2 real customers + 4 governed defaults (-1 through -4) = 6
+    assert customer_count == 6, f"Expected 6 customer rows, got {customer_count}"
+    # 2 real products + 4 governed defaults = 6
+    assert product_count == 6, f"Expected 6 product rows, got {product_count}"
     # 2 order items
     assert fact_count == 2, f"Expected 2 fact rows, got {fact_count}"
 
@@ -403,14 +408,14 @@ def test_day2_pipeline(
     golden_schemas: tuple[str, str],
     rendered_configs: list[str],
 ) -> None:
-    """Run day 2 incremental load and assert SCD2 + SCD1 behavior."""
+    """Run day 2 incremental load and assert SCD7 + SCD1 behavior."""
     _, out_schema = golden_schemas
     _run_pipelines(rendered_configs, day2_data, out_schema)
 
     # Alice should now have 2 history rows: old NY (expired) and new LA (current)
     alice_history = spark.sql(
         f"""
-        SELECT customer_sk, address, __is_current
+        SELECT customer_sk, customer_dk, address, __is_current
         FROM {_q(day2_data, out_schema, "dim_customer")}
         WHERE customer_id = 1
         ORDER BY __valid_from
@@ -421,6 +426,7 @@ def test_day2_pipeline(
     )
     assert alice_history[-1].address == "789 Cherry Ln, LA"
     assert alice_history[-1]["__is_current"] is True
+    assert alice_history[0].customer_dk == alice_history[1].customer_dk
 
     # Charlie (new customer) should have 1 current row
     charlie = spark.sql(
@@ -453,6 +459,7 @@ def test_day2_pipeline(
         SELECT
           o.order_id,
           o.order_date,
+          f.customer_dk,
           c.address AS linked_customer_address
         FROM {_q(day2_data, out_schema, "fact_sales")} f
         JOIN {_q(day2_data, out_schema, "dim_customer")} c ON f.customer_sk = c.customer_sk
@@ -464,6 +471,7 @@ def test_day2_pipeline(
     assert len(links) == 2
     assert links[0].linked_customer_address == "123 A**********"
     assert links[1].linked_customer_address == "789 C**********"
+    assert links[0].customer_dk == links[1].customer_dk
 
 
 def test_append_only_fact_loads(

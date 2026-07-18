@@ -2,80 +2,37 @@ name: Integration Tests
 
 on:
   schedule:
-    # Run every night at 02:00 UTC
     - cron: "0 2 * * *"
   workflow_dispatch:
     inputs:
       test_path:
-        description: "Path to run (tests/integration, tests/benchmarks, tests/golden)"
-        required: true
-        default: "tests/golden"
-      scale:
-        description: "Benchmark scale (tiny, small, medium) — only used when test_path=tests/benchmarks"
-        required: false
-        default: "tiny"
+        description: Compatibility suite to run
+        type: choice
+        options: [tests/golden, tests/integration]
+        default: tests/golden
+
+permissions:
+  contents: read
 
 jobs:
   databricks-integration:
     runs-on: ubuntu-latest
     environment: databricks-integration
+    timeout-minutes: 60
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
+          cache: pip
       - name: Install remote tooling
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install ".[remote]"
-
-      - name: Run Databricks integration tests
+        run: python -m pip install ".[remote]"
+      - name: Run Databricks compatibility tests
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_CLUSTER_ID: ${{ secrets.DATABRICKS_CLUSTER_ID }}
           KIMBALL_TEST_CATALOG: ${{ vars.KIMBALL_TEST_CATALOG || 'spark_catalog' }}
-        run: |
-          TEST_PATH="${{ github.event.inputs.test_path || 'tests/golden' }}"
-          SCALE="${{ github.event.inputs.scale || 'tiny' }}"
-          if [ "$TEST_PATH" = "tests/benchmarks" ]; then
-            echo "Running benchmarks at scale=$SCALE on Databricks"
-            python tools/run_databricks_tests.py "$TEST_PATH" -- --scale "$SCALE"
-          else
-            python tools/run_databricks_tests.py "$TEST_PATH"
-          fi
-
-      - name: Upload benchmark results
-        if: always() && github.event.inputs.test_path == 'tests/benchmarks'
-        uses: actions/upload-artifact@v7
-        with:
-          name: benchmark-results-databricks
-          path: tools/benchmarks/results/
-          if-no-files-found: ignore
-
-      - name: Annotate benchmark step summary
-        if: always() && github.event.inputs.test_path == 'tests/benchmarks'
-        run: |
-          echo "## Databricks benchmark results (${{ github.event.inputs.scale }})" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [ -d "tools/benchmarks/results" ]; then
-            for f in tools/benchmarks/results/*_${{ github.event.inputs.scale }}.json; do
-              if [ -f "$f" ]; then
-                NAME=$(basename "$f" .json)
-                FIRST=$(python -c "import json; d=json.load(open('$f')); print(int(d.get('first_ms', d.get('first_run_total_ms', 0))))" 2>/dev/null || echo "N/A")
-                SECOND=$(python -c "import json; d=json.load(open('$f')); print(int(d.get('second_ms', d.get('second_run_total_ms', 0))))" 2>/dev/null || echo "N/A")
-                echo "| $NAME | 1st=${FIRST}ms | 2nd=${SECOND}ms |" >> $GITHUB_STEP_SUMMARY
-              fi
-            done
-          fi
-
-      - name: Upload pytest results
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: integration-test-logs
-          path: dist/*.whl
+        run: >-
+          python tools/run_databricks_tests.py
+          ${{ inputs.test_path || 'tests/golden' }}

@@ -2,7 +2,7 @@
 
 Thin coordinator that delegates to focused service classes:
   - SourceLoader: loads CDF/full snapshot sources
-  - SkeletonManager: early-arriving fact skeletons + identity bridge
+  - KeyBroker: centralized early-arriving dimension key resolution
   - TransformValidator: transformation SQL, PII, FK/NK validation
   - MergeExecutor: table creation, adaptive pruning, merge dispatch
   - RecoveryService: zombie recovery, full reload
@@ -42,7 +42,6 @@ from kimball.observability.temporal_state import commit_temporal_state_updates
 from kimball.orchestration.services.context import PipelineContext
 from kimball.orchestration.services.merge_executor import MergeExecutor
 from kimball.orchestration.services.recovery import RecoveryService
-from kimball.orchestration.services.skeleton_manager import SkeletonManager
 from kimball.orchestration.services.source_loader import SourceLoader
 from kimball.orchestration.services.transform_validator import TransformValidator
 from kimball.orchestration.services.work_plan import (
@@ -59,7 +58,6 @@ from kimball.processing import (
     merger as _merger,  # noqa: F401 — kept for test patch compatibility
 )
 from kimball.processing.loader import DataLoader
-from kimball.processing.skeleton_generator import SkeletonGenerator
 from kimball.processing.table_creator import TableCreator
 
 logger = logging.getLogger(__name__)
@@ -80,7 +78,6 @@ class Orchestrator:
         loader: DataLoader | None = None,
         etl_control: ETLControlManager | None = None,
         table_creator: TableCreator | None = None,
-        skeleton_generator: SkeletonGenerator | None = None,
         cleanup_manager: StagingCleanupManager | None = None,
         transaction_manager: TransactionManager | None = None,
     ):
@@ -139,11 +136,6 @@ class Orchestrator:
         )
 
         self._source_loader = SourceLoader()
-        if skeleton_generator is None:
-            from kimball.processing.skeleton_generator import SkeletonGenerator
-
-            skeleton_generator = SkeletonGenerator(spark_session=self.spark)
-        self._skeleton_manager = SkeletonManager(skeleton_generator)
         self._transform_validator = TransformValidator()
         self._merge_executor = MergeExecutor(table_creator)
         self._recovery_service = RecoveryService(self.transaction_manager)
@@ -157,18 +149,6 @@ class Orchestrator:
         if not hasattr(self, "_transform_validator"):
             self._transform_validator = TransformValidator()
         self._transform_validator._validator = value
-
-    @property
-    def skeleton_generator(self):
-        return getattr(
-            getattr(self, "_skeleton_manager", None), "skeleton_generator", None
-        )
-
-    @skeleton_generator.setter
-    def skeleton_generator(self, value):
-        if not hasattr(self, "_skeleton_manager"):
-            self._skeleton_manager = SkeletonManager()
-        self._skeleton_manager.skeleton_generator = value
 
     @property
     def table_creator(self):
@@ -185,12 +165,6 @@ class Orchestrator:
         ctx.active_dfs = active_dfs
         tv = getattr(self, "_transform_validator", None) or TransformValidator()
         return tv.transform_and_validate(ctx, active_dfs)
-
-    def _generate_skeletons(self, active_dfs, batch_id):
-        ctx = self._make_context_safe(batch_id)
-        ctx.active_dfs = active_dfs
-        sm = getattr(self, "_skeleton_manager", None) or SkeletonManager()
-        sm.generate_skeletons(ctx, active_dfs)
 
     def _recover_zombies(self) -> bool:
         ctx = self._make_context_safe()
@@ -221,9 +195,7 @@ class Orchestrator:
 
     def _build_source_work_plan(self) -> SourceWorkPlan:
         incremental = [
-            source
-            for source in self.config.sources
-            if source.cdc_strategy != "full"
+            source for source in self.config.sources if source.cdc_strategy != "full"
         ]
         states = self.etl_control.get_states(
             self.config.table_name, [source.name for source in incremental]
@@ -244,11 +216,6 @@ class Orchestrator:
                 self.config.preserve_all_changes and self.config.scd_type == 2
             ),
         )
-
-    def _apply_identity_bridge(self, df):
-        ctx = self._make_context_safe()
-        sm = getattr(self, "_skeleton_manager", None) or SkeletonManager()
-        return sm.apply_identity_bridge(ctx, df)
 
     def _run_compile_time_sql_check(self) -> None:
         if not self.runtime_options.compile_time_sql_check:
@@ -385,7 +352,6 @@ class Orchestrator:
                 ctx.source_versions = source_versions
                 ctx.active_dfs = active_dfs
 
-                self._skeleton_manager.generate_skeletons(ctx, active_dfs)
                 transformed_df = self._transform_validator.transform_and_validate(
                     ctx, active_dfs
                 )

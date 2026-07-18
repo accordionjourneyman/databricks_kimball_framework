@@ -71,8 +71,7 @@ class TestBugSCD2DeleteExpiresDefaults:
 
 
 class TestBugStreamingPerVersionReprocesses:
-    """per_version path materializes full batch, then each iteration
-    transforms ALL data via transformation_sql against the full view."""
+    """Per-version processing must transform only the filtered version."""
 
     def test_per_version_registers_filtered_view(self):
         """After fix: version_df is registered as temp view (filtered),
@@ -147,7 +146,7 @@ class TestBugPreserveAllChangesEarlyReturn:
         src = inspect.getsource(Orchestrator._run_with_version_loop)
         # The work-plan result is the only completion signal; it cannot
         # return early while inspecting individual sources.
-        assert 'active_sources' in src
+        assert "active_sources" in src
         # Source iteration belongs to SourceWorkPlan, not this loop.
         assert "for source in self.config.sources" not in src
 

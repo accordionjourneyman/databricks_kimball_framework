@@ -157,7 +157,6 @@ foreign_keys:
   - column: patient_id
     references: {test_db}.dim_patient
     dimension_key: patient_id
-    default_value: -1
 sources:
   - name: {test_db}.encounters
     alias: e
@@ -282,7 +281,6 @@ foreign_keys:
   - column: provider_id
     references: {test_db}.dim_provider
     dimension_key: provider_id
-    default_value: -1
 sources:
   - name: {test_db}.encounters
     alias: e
@@ -299,7 +297,6 @@ foreign_keys:
   - column: provider_id
     references: {test_db}.dim_provider
     dimension_key: provider_id
-    default_value: -1
 sources:
   - name: {test_db}.conditions
     alias: c

@@ -12,7 +12,12 @@ def validate_fact_output_columns(config: TableConfig, columns: list[str]) -> Non
     available = set(columns)
     declarations = {
         "merge key": set(config.merge_keys or []),
-        "foreign key": {fk.column for fk in config.foreign_keys or []},
+        "foreign key": {
+            column
+            for fk in config.foreign_keys or []
+            for column in (fk.column, fk.durable_column)
+            if column
+        },
         "measure": {measure.name for measure in config.measures},
         "milestone": {milestone.column for milestone in config.milestones},
         "degenerate dimension": set(config.degenerate_dimensions),

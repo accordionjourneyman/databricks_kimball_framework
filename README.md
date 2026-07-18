@@ -3,6 +3,10 @@
 [![CI](https://github.com/accordionjourneyman/databricks_kimball_framework/actions/workflows/ci.yml/badge.svg)](https://github.com/accordionjourneyman/databricks_kimball_framework/actions/workflows/ci.yml)
 [![Integration Tests](https://github.com/accordionjourneyman/databricks_kimball_framework/actions/workflows/integration.yml/badge.svg)](https://github.com/accordionjourneyman/databricks_kimball_framework/actions/workflows/integration.yml)
 [![Benchmarks](https://github.com/accordionjourneyman/databricks_kimball_framework/actions/workflows/benchmarks.yml/badge.svg)](https://github.com/accordionjourneyman/databricks_kimball_framework/actions/workflows/benchmarks.yml)
+
+Performance changes are measured with the reproducible local Docker workflow
+described in [Benchmarking](docs/BENCHMARKING.md). GitHub-hosted timings are
+advisory and are never compared with the local Spark baseline.
 [![codecov](https://codecov.io/gh/accordionjourneyman/databricks_kimball_framework/branch/main/graph/badge.svg)](https://codecov.io/gh/accordionjourneyman/databricks_kimball_framework)
 [![License](https://img.shields.io/github/license/accordionjourneyman/databricks_kimball_framework.svg)](https://github.com/accordionjourneyman/databricks_kimball_framework/blob/master/LICENSE)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-261230.svg)](https://github.com/astral-sh/ruff)
@@ -38,7 +42,8 @@ Databricks Asset Bundle target or CI secrets.
 
 ## Features
 
-- SCD Types 1, 2, 4, and 6; CDF-driven incremental processing
+- SCD Types 1, 2, 4, 6, and 7; CDF-driven incremental processing
+- Centralized fact-key brokering, inferred members, temporal identity maps, and four non-null reserved members
 - Explicit dependency DAG with cycle, missing-upstream, and writer-conflict checks
 - Pinned ODCS 3.1 contracts, runtime DQ checks, temporal checks, and durable evidence
 - Fact grain, additivity, role-playing, degenerate, and managed junk-dimension metadata
@@ -59,6 +64,7 @@ docs/         operational and design documentation
 
 - [Getting Started](docs/GETTING_STARTED.md) - canonical installation and first-pipeline guide
 - [Configuration](docs/CONFIGURATION.md)
+- [Type 7, Key Brokering, Identity Maps, and Null Semantics](docs/SCD7_KEYS_AND_NULLS.md)
 - [Data Supplier Contracts](docs/DATA_CONTRACTS.md)
 - [Production Readiness](docs/PRODUCTION_READINESS.md)
 - [Framework Features vs SQL Patterns](docs/SQL_PATTERNS.md)

@@ -1,8 +1,9 @@
 table_name: {{ catalog }}.{{ out_schema }}.dim_customer
 table_type: dimension
-scd_type: 2
+scd_type: 7
 keys:
   surrogate_key: customer_sk
+  durable_key: customer_dk
   natural_keys: [customer_id]
 effective_at: updated_at
 track_history_columns:

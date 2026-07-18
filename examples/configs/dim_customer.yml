@@ -1,12 +1,12 @@
 table_name: {{ target.gold_schema }}.dim_customer
 table_type: dimension
-scd_type: 2
+scd_type: 7
 keys:
   surrogate_key: customer_sk
+  durable_key: customer_dk
   natural_keys: [customer_id]
 
-# New configuration for surrogate key strategy
-# SCD2 requires identity strategy; hash violates Kimball principles for versioned dimensions
+# The dimension loader is the only authority that generates customer keys.
 
 # Columns that trigger a new SCD2 version when changed
 track_history_columns: 
@@ -18,11 +18,6 @@ track_history_columns:
 # Required business-time SCD2 boundary. Replays use this source timestamp rather
 # than processing time, so the same input produces the same history chain.
 effective_at: updated_at
-
-# Default rows to seed into the dimension
-default_rows:
-  "-1": "Unknown"
-  "-2": "N/A"
 
 # Liquid Clustering for optimal query performance
 cluster_by: [customer_id]
@@ -46,6 +41,7 @@ observability:
 table_description: Type 2 customer dimension governed by the CRM supplier contract.
 column_descriptions:
   customer_sk: Warehouse surrogate key for a customer version.
+  customer_dk: Durable warehouse key shared by all versions of a customer.
   customer_id: Stable CRM customer identifier.
   updated_at: Supplier business-effective timestamp for this version.
 

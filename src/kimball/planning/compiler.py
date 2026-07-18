@@ -173,6 +173,11 @@ class ProjectCompiler:
         candidates.update(
             fk.references for fk in (config.foreign_keys or []) if fk.references
         )
+        candidates.update(
+            fk.lookup.identity_map
+            for fk in (config.foreign_keys or [])
+            if fk.lookup and fk.lookup.identity_map
+        )
         candidates.discard(config.table_name)
         return candidates & known_targets
 

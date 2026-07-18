@@ -115,15 +115,19 @@ def generate_keys(
     col_name: str,
     scd_type: int = 1,
     effective_at_column: str | None = None,
+    durable_key_col: str | None = None,
 ) -> DataFrame:
-    version_col = effective_at_column if scd_type == 2 else None
-    if scd_type == 2 and not version_col:
+    version_col = effective_at_column if scd_type in (2, 7) else None
+    if scd_type in (2, 7) and not version_col:
         if "__etl_processed_at" not in source_df.columns:
             source_df = source_df.withColumn("__etl_processed_at", current_timestamp())
         version_col = "__etl_processed_at"
-    return HashKeyGenerator(join_keys, version_column=version_col).generate_keys(
-        source_df, col_name
-    )
+    generator = HashKeyGenerator(join_keys, version_column=version_col)
+    if scd_type == 7:
+        if not durable_key_col:
+            raise ValueError("SCD Type 7 requires durable_key_col")
+        return generator.generate_type7_keys(source_df, col_name, durable_key_col)
+    return generator.generate_keys(source_df, col_name)
 
 
 def get_validity_col(

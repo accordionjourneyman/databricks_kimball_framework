@@ -7,7 +7,7 @@ from typing import Any
 from pyspark.errors import PySparkException
 from pyspark.sql import DataFrame
 
-from kimball.common.constants import SPARK_CONF_AUTO_MERGE
+from kimball.common.constants import DEFAULT_VALID_TO, SPARK_CONF_AUTO_MERGE
 from kimball.common.runtime_policy import get_runtime_policy
 from kimball.common.spark_session import get_spark
 from kimball.common.utils import quote_table_name
@@ -47,6 +47,7 @@ class TableCreator:
         df: DataFrame,
         scd_type: int,
         surrogate_key: str | None,
+        durable_key: str | None = None,
         current_value_columns: list[str] | None = None,
     ) -> DataFrame:
         """
@@ -60,20 +61,22 @@ class TableCreator:
 
         # Common audit columns
         result_df = df.withColumn("__etl_processed_at", current_timestamp())
-        result_df = result_df.withColumn("__etl_batch_id", lit(None).cast(StringType()))
+        result_df = result_df.withColumn("__etl_batch_id", lit("").cast(StringType()))
         result_df = result_df.withColumn("__is_deleted", lit(False))
 
-        if scd_type in (2, 6):
+        if scd_type in (2, 6, 7):
             # SCD2/SCD6 specific columns
             result_df = result_df.withColumn("__is_current", lit(True))
             result_df = result_df.withColumn("__valid_from", current_timestamp())
             result_df = result_df.withColumn(
-                "__valid_to", lit(None).cast(TimestampType())
+                "__valid_to", lit(DEFAULT_VALID_TO).cast(TimestampType())
             )
-            result_df = result_df.withColumn("hashdiff", lit(None).cast(LongType()))
+            result_df = result_df.withColumn("hashdiff", lit(-1).cast(LongType()))
             result_df = result_df.withColumn(
                 "__is_skeleton", lit(False)
             )  # For skeleton hydration
+            result_df = result_df.withColumn("__member_status", lit("REAL"))
+            result_df = result_df.withColumn("__key_origin", lit("generated"))
 
         # SCD6: Add current_* columns
         if scd_type == 6 and current_value_columns:
@@ -88,6 +91,14 @@ class TableCreator:
         # Add surrogate key column (always LongType for xxhash64)
         if surrogate_key:
             result_df = result_df.withColumn(surrogate_key, lit(None).cast(LongType()))
+        if durable_key:
+            result_df = result_df.withColumn(durable_key, lit(None).cast(LongType()))
+            result_df = result_df.withColumn(
+                "__durable_key_fingerprint", lit("").cast(StringType())
+            )
+            result_df = result_df.withColumn(
+                "__row_key_fingerprint", lit("").cast(StringType())
+            )
 
         return result_df
 
@@ -201,6 +212,16 @@ class TableCreator:
                     else []
                 )
             not_null_cols.update(natural_keys)
+            null_policy = config.get("null_policy") or {}
+            if (
+                config.get("table_type") == "dimension"
+                and null_policy.get("mode", "kimball") == "kimball"
+            ):
+                not_null_cols.update(
+                    field.name
+                    for field in schema_df.schema.fields
+                    if field.name not in CDF_METADATA
+                )
             if config.get("table_type") == "fact" and config.get("foreign_keys"):
                 for fk in config.get("foreign_keys") or []:
                     fk_col = (
@@ -210,6 +231,13 @@ class TableCreator:
                     )
                     if fk_col:
                         not_null_cols.add(fk_col)
+                    durable_col = (
+                        fk.get("durable_column")
+                        if isinstance(fk, dict)
+                        else getattr(fk, "durable_column", None)
+                    )
+                    if durable_col:
+                        not_null_cols.add(durable_col)
 
         for field in schema_df.schema.fields:
             col_name = field.name
@@ -332,6 +360,17 @@ class TableCreator:
                 logger.warning(
                     f"Could not apply NOT NULL constraint to {surrogate_key}: {e}"
                 )
+        durable_key = config.get("durable_key")
+        if durable_key and _is_valid_identifier(durable_key):
+            try:
+                get_spark().sql(
+                    f"ALTER TABLE {quoted_table_name} ALTER COLUMN `{durable_key}` SET NOT NULL"
+                )
+                logger.info(f"Applied NOT NULL constraint to {durable_key}")
+            except PySparkException as e:
+                logger.warning(
+                    f"Could not apply NOT NULL constraint to {durable_key}: {e}"
+                )
 
         # Apply NOT NULL constraints for natural keys
         # Handle both flat and nested config structures for natural keys
@@ -367,6 +406,23 @@ class TableCreator:
                         get_spark().sql(alter_sql)
                         logger.info(
                             f"Applied FK NOT NULL constraint: {constraint_name}"
+                        )
+                    except PySparkException as e:
+                        logger.info(
+                            f"Warning: Could not apply FK constraint {constraint_name}: {e}"
+                        )
+                durable_col = (
+                    fk.get("durable_column")
+                    if isinstance(fk, dict)
+                    else getattr(fk, "durable_column", None)
+                )
+                if durable_col and _is_valid_identifier(durable_col):
+                    constraint_name = f"fk_{durable_col}_not_null"
+                    try:
+                        get_spark().sql(
+                            f"ALTER TABLE {quoted_table_name} "
+                            f"ADD CONSTRAINT `{constraint_name}` "
+                            f"CHECK (`{durable_col}` IS NOT NULL)"
                         )
                     except PySparkException as e:
                         logger.info(

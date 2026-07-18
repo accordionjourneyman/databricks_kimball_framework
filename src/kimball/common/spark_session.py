@@ -7,7 +7,7 @@ allowing the Kimball framework to be imported outside of Databricks
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
@@ -44,7 +44,7 @@ def get_spark() -> SparkSession:
         # Try Databricks runtime first
         from databricks.sdk.runtime import spark
 
-        return spark
+        return cast("SparkSession", spark)
     except ImportError:
         # Fallback for non-Databricks environments
         from pyspark.sql import SparkSession

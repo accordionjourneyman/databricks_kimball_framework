@@ -244,13 +244,86 @@ class SourceConfig(StrictConfigModel):
         return self
 
 
+class ForeignKeyLookupConfig(StrictConfigModel):
+    source_columns: list[str] = Field(min_length=1)
+    dimension_columns: list[str] | None = None
+    event_time: str | None = None
+    identity_map: str | None = None
+    early_arriving: Literal["skeleton", "default", "error"] = "skeleton"
+    not_applicable_when: str | None = None
+    invalid_action: Literal["default", "error"] = "error"
+
+    @model_validator(mode="after")
+    def validate_column_mapping(self) -> "ForeignKeyLookupConfig":
+        if self.dimension_columns and len(self.dimension_columns) != len(
+            self.source_columns
+        ):
+            raise ValueError(
+                "lookup.dimension_columns must have the same length as source_columns"
+            )
+        return self
+
+
 class ForeignKeyConfig(StrictConfigModel):
     column: str
     references: str | None = Field(default=None)
     dimension_key: str | None = Field(default=None)
-    default_value: int = Field(default=-1)
     role: str | None = None
     role_playing: bool = False
+    relationship: Literal["standard", "type7"] = "standard"
+    durable_column: str | None = None
+    durable_dimension_key: str | None = None
+    lookup: ForeignKeyLookupConfig | None = None
+
+    @model_validator(mode="after")
+    def validate_type7(self) -> "ForeignKeyConfig":
+        if self.lookup is not None and (not self.references or not self.dimension_key):
+            raise ValueError(
+                "brokered relationships require references and dimension_key"
+            )
+        if self.lookup and self.lookup.identity_map:
+            if len(self.lookup.source_columns) != 1:
+                raise ValueError(
+                    "identity_map currently requires exactly one lookup.source_columns entry"
+                )
+            if not self.lookup.event_time:
+                raise ValueError(
+                    "identity_map requires lookup.event_time for temporal resolution"
+                )
+        if self.relationship != "type7":
+            if self.durable_column or self.durable_dimension_key:
+                raise ValueError(
+                    "durable columns are only valid for relationship='type7'"
+                )
+            return self
+        if not self.references or not self.dimension_key:
+            raise ValueError("type7 relationships require references and dimension_key")
+        if not self.durable_column or not self.durable_dimension_key:
+            raise ValueError(
+                "type7 relationships require durable_column and durable_dimension_key"
+            )
+        if self.lookup is None or not self.lookup.event_time:
+            raise ValueError("type7 relationships require lookup.event_time")
+        return self
+
+
+class NullPolicyConfig(StrictConfigModel):
+    mode: Literal["kimball", "legacy"] = "kimball"
+    attribute_substitutes: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_substitutes(self) -> "NullPolicyConfig":
+        invalid = [
+            name
+            for name, value in self.attribute_substitutes.items()
+            if value is None or (isinstance(value, str) and not value.strip())
+        ]
+        if invalid:
+            raise ValueError(
+                "attribute_substitutes values must be non-null and non-blank: "
+                + ", ".join(sorted(invalid))
+            )
+        return self
 
 
 class PIIColumnConfig(StrictConfigModel):
@@ -336,21 +409,6 @@ class ConformedDimensionConfig(StrictConfigModel):
     shared_attributes: list[str] = Field(default_factory=list)
 
 
-class IdentityBridgeConfig(StrictConfigModel):
-    table: str
-    join_on: str
-    target_column: str
-
-
-class EarlyArrivingDimensionConfig(StrictConfigModel):
-    fact_key: str
-    dimension_table: str
-    dimension_key: str
-    surrogate_key: str = "surrogate_key"
-    action: Literal["skeleton", "error"] = "skeleton"
-    severity: Literal["warn", "error"] = "warn"
-
-
 def _default_alert_on() -> list[Literal["warn", "error"]]:
     return ["error"]
 
@@ -360,6 +418,7 @@ class ObservabilityConfig(StrictConfigModel):
     event_table: str = "etl_data_quality_events"
     state_table: str = "etl_contract_monitor_state"
     temporal_state_table: str = "etl_contract_temporal_state"
+    unresolved_key_table: str = "etl_unresolved_dimension_keys"
     write_failure: Literal["warn", "error"] = "warn"
     webhook_env: str = "KIMBALL_ALERT_WEBHOOK_URL"
     alert_on: list[Literal["warn", "error"]] = Field(default_factory=_default_alert_on)
@@ -370,20 +429,19 @@ class TableConfig(StrictConfigModel):
     table_type: Literal["dimension", "fact"]
     depends_on: list[str] = Field(default_factory=list)
     surrogate_key: str | None = None
+    durable_key: str | None = None
     natural_keys: list[str] = Field(default_factory=list)
     sources: list[SourceConfig]
     transformation_sql: str | None = None
     delete_strategy: Literal["hard", "soft"] = "soft"
     enable_audit_columns: bool = Field(alias="audit_columns", default=True)
-    scd_type: Literal[1, 2, 4, 6] = 1
+    scd_type: Literal[1, 2, 4, 6, 7] = 1
     track_history_columns: list[str] | None = None
     history_table: str | None = Field(default=None)
     current_value_columns: list[str] | None = Field(default=None)
     effective_at: str | None = Field(default=None)
     default_rows: dict[str, Any] | None = None
     schema_evolution: bool = False
-    early_arriving_facts: list[dict[str, str]] | None = None
-    early_arriving_dimensions: list[EarlyArrivingDimensionConfig] | None = None
     cluster_by: list[str] | None = None
     optimize_after_merge: bool = False
     merge_keys: list[str] | None = None
@@ -391,7 +449,7 @@ class TableConfig(StrictConfigModel):
     tests: list[TestDefinition] | None = Field(default=None)
     enable_lineage_truncation: bool = False
     preserve_all_changes: bool = Field(default=False)
-    identity_bridge: IdentityBridgeConfig | None = None
+    null_policy: NullPolicyConfig = Field(default_factory=NullPolicyConfig)
     grain_validation: Literal["error", "warn", "skip"] = "error"
     declare_constraints: bool = True
     pii: PIIPolicy | None = None
@@ -416,7 +474,7 @@ class TableConfig(StrictConfigModel):
         if isinstance(data, dict):
             keys = data.get("keys", {})
             if isinstance(keys, dict):
-                for field_name in ("surrogate_key", "natural_keys"):
+                for field_name in ("surrogate_key", "durable_key", "natural_keys"):
                     if field_name in keys:
                         data[field_name] = keys[field_name]
                 data.pop("keys", None)
@@ -480,6 +538,14 @@ class TableConfig(StrictConfigModel):
         roles = [fk.role for fk in self.foreign_keys or [] if fk.role_playing]
         if len(roles) != len(set(roles)):
             raise ValueError("role_playing foreign key roles must be unique")
+        relationship_columns = [
+            column
+            for fk in self.foreign_keys or []
+            for column in (fk.column, fk.durable_column)
+            if column
+        ]
+        if len(relationship_columns) != len(set(relationship_columns)):
+            raise ValueError("foreign-key output columns must be unique")
         measure_names = [measure.name for measure in self.measures]
         if len(measure_names) != len(set(measure_names)):
             raise ValueError("fact measure names must be unique")
@@ -498,11 +564,15 @@ class TableConfig(StrictConfigModel):
             raise ValueError(
                 "cdc_strategy='append' requires append_only=true for the target table"
             )
-        if self.scd_type == 2 and not self.effective_at:
+        if self.scd_type in (2, 7) and not self.effective_at:
             raise ValueError(
-                "SCD Type 2 requires 'effective_at' for idempotent history tracking. "
+                f"SCD Type {self.scd_type} requires 'effective_at' for idempotent history tracking. "
                 "Specify the business-time column (e.g. 'updated_at') in the YAML config."
             )
+        if self.scd_type == 7 and not self.durable_key:
+            raise ValueError("SCD Type 7 requires keys.durable_key")
+        if self.scd_type != 7 and self.durable_key:
+            raise ValueError("keys.durable_key is only valid for SCD Type 7")
         if self.scd_type == 4 and not self.history_table:
             raise ValueError("SCD Type 4 requires 'history_table' to be specified.")
         if self.scd_type == 6 and not self.current_value_columns:
@@ -690,6 +760,7 @@ class ConfigLoader:
             "natural_keys": sorted(config.natural_keys),
             "track_history_columns": sorted(config.track_history_columns or []),
             "surrogate_key": config.surrogate_key,
+            "durable_key": config.durable_key,
             "transformation_sql": sql_text or config.transformation_sql or "",
             "tests": [
                 {"column": t.column, "tests": t.tests, "severity": t.severity}
@@ -701,6 +772,10 @@ class ConfigLoader:
                         "column": fk.column,
                         "references": fk.references,
                         "dimension_key": fk.dimension_key,
+                        "relationship": fk.relationship,
+                        "durable_column": fk.durable_column,
+                        "durable_dimension_key": fk.durable_dimension_key,
+                        "lookup": fk.lookup.model_dump() if fk.lookup else None,
                     }
                     for fk in (config.foreign_keys or [])
                 ],
@@ -711,6 +786,7 @@ class ConfigLoader:
             "effective_at": config.effective_at,
             "merge_keys": sorted(config.merge_keys or []),
             "current_value_columns": sorted(config.current_value_columns or []),
+            "null_policy": config.null_policy.model_dump(),
             "pii": sorted(
                 [
                     {"column": p.column, "strategy": p.strategy}

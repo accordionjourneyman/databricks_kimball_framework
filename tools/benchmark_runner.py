@@ -1,509 +1,388 @@
-"""
-Benchmark runner: orchestrates performance scenarios, collects metrics, writes reports.
-
-Usage:
-    python tools/benchmark_runner.py --scenario all --scale medium
-    python tools/benchmark_runner.py --scenario scd2_change_detection --scale small
-    python tools/benchmark_runner.py --scenario all --scale tiny small
-"""
+"""Reproducible benchmark runner for micro and Spark/Delta suites."""
 
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
+import json
+import os
+import platform
+import shutil
+import subprocess
 import sys
-import tempfile
-import time
-import types
-import uuid
-from dataclasses import dataclass, field
-from datetime import datetime
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
-# Ensure src/ is importable
-_HERE = Path(__file__).parent.parent
-sys.path.insert(0, str(_HERE / "src"))
-sys.path.insert(0, str(_HERE / "tools"))
+try:
+    from benchmark_metrics import summarize_event_logs
+except ModuleNotFoundError:
+    from tools.benchmark_metrics import summarize_event_logs
 
-if "databricks.sdk.runtime" not in sys.modules:
-    mock_db_sdk = types.ModuleType("databricks.sdk.runtime")
-    mock_db_sdk.spark = MagicMock()
-    mock_db_sdk.dbutils = MagicMock()
-    sys.modules["databricks.sdk.runtime"] = mock_db_sdk
-
-from benchmark_data import (  # noqa: E402
-    ScaleTier,
-    create_benchmark_database,
-    drop_benchmark_database,
-    generate_customers,
-    generate_orders,
-    generate_products,
-    make_changes,
-)
-from benchmark_metrics import (  # noqa: E402
-    MetricsListener,
-    capture_execution_plan,
-    extract_exchanges,
-    extract_join_types,
-    extract_window_ops,
-    profile_stage,
-    save_metrics_report,
-)
-from pyspark.sql import SparkSession  # noqa: E402
-from pyspark.sql.functions import col  # noqa: E402
-
-from kimball.orchestration.orchestrator import Orchestrator  # noqa: E402
-from kimball.orchestration.transaction import TransactionManager  # noqa: E402
-from kimball.orchestration.watermark import ETLControlManager  # noqa: E402
-from kimball.processing.loader import DataLoader  # noqa: E402
-from kimball.processing.skeleton_generator import SkeletonGenerator  # noqa: E402
-from kimball.processing.table_creator import TableCreator  # noqa: E402
-
-BENCHMARK_CONFIGS = {
-    "scd1_baseline": "scd1_baseline.yml",
-    "scd2_change_detection": "scd2_change_detection.yml",
-    "scd2_full_cdc_delete": "scd2_full_cdc_delete.yml",
-    "scd2_effective_at": "scd2_effective_at.yml",
-    "multi_source_join": "multi_source_join.yml",
-    "schema_evolution": "schema_evolution.yml",
-    "identity_bridge": "identity_bridge.yml",
-    "validation_overhead": "validation_overhead.yml",
-}
-
-SCALE_MAP = {
-    "tiny": ScaleTier.tiny(),
-    "small": ScaleTier.small(),
-    "medium": ScaleTier.medium(),
-    "large": ScaleTier.large(),
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SCHEMA_VERSION = 1
+DEFAULT_THRESHOLD = 0.15
+SUITES = {
+    "micro": "tests/unit/test_performance.py",
+    "spark": "tests/benchmarks",
 }
 
 
-@dataclass
-class ScenarioResult:
-    """Collected metrics for a single scenario run."""
-
-    scenario: str
-    scale: str
-    rows_in_target: int
-    first_run_status: str
-    second_run_status: str
-    first_run_total_ms: float
-    second_run_total_ms: float
-    first_run_stages: list[dict] = field(default_factory=list)
-    second_run_stages: list[dict] = field(default_factory=list)
-    first_run_total_shuffle: int = 0
-    second_run_total_shuffle: int = 0
-    first_run_disk_spill: int = 0
-    second_run_disk_spill: int = 0
-    first_run_exchanges: int = 0
-    second_run_exchanges: int = 0
-    first_run_windows: int = 0
-    second_run_windows: int = 0
-    first_run_join_types: list[str] = field(default_factory=list)
-    second_run_join_types: list[str] = field(default_factory=list)
-    timestamp: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "scenario": self.scenario,
-            "scale": self.scale,
-            "rows_in_target": self.rows_in_target,
-            "first_run_status": self.first_run_status,
-            "second_run_status": self.second_run_status,
-            "first_run_total_ms": round(self.first_run_total_ms, 1),
-            "second_run_total_ms": round(self.second_run_total_ms, 1),
-            "first_run_total_shuffle_bytes": self.first_run_total_shuffle,
-            "second_run_total_shuffle_bytes": self.second_run_total_shuffle,
-            "first_run_disk_spill_bytes": self.first_run_disk_spill,
-            "second_run_disk_spill_bytes": self.second_run_disk_spill,
-            "first_run_exchanges": self.first_run_exchanges,
-            "second_run_exchanges": self.second_run_exchanges,
-            "first_run_windows": self.first_run_windows,
-            "second_run_windows": self.second_run_windows,
-            "first_run_join_types": self.first_run_join_types,
-            "second_run_join_types": self.second_run_join_types,
-            "first_run_stages": self.first_run_stages,
-            "second_run_stages": self.second_run_stages,
-            "timestamp": self.timestamp,
-        }
+class BenchmarkCompatibilityError(ValueError):
+    """Raised when benchmark runs were produced on unlike testbeds."""
 
 
-def build_spark() -> tuple[SparkSession, str]:
-    """Build a local SparkSession tuned for benchmarks.
-
-    Returns:
-        Tuple of (SparkSession, warehouse_dir_path).
-        Caller should clean up warehouse_dir after stopping the session.
-    """
-
-    warehouse_dir = tempfile.mkdtemp(prefix="spark-warehouse-bench-")
-    session = (
-        SparkSession.builder.appName("KimballBenchmark")
-        .master("local[2]")
-        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-        .config(
-            "spark.sql.catalog.spark_catalog",
-            "org.apache.spark.sql.delta.catalog.DeltaCatalog",
-        )
-        .config("spark.sql.shuffle.partitions", "8")
-        .config("spark.sql.adaptive.enabled", "true")
-        .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
-        .config("spark.sql.ansi.enabled", "false")
-        .config("spark.sql.warehouse.dir", warehouse_dir)
-        .config("spark.driver.memory", "2g")
-        .config("spark.sql.adaptive.skewJoin.enabled", "true")
-        .getOrCreate()
-    )
-    return session, warehouse_dir
-
-
-def render_config(template_path: Path, db: str) -> str:
-    """Render a Jinja2 config template with the given database name."""
-    from jinja2 import StrictUndefined
-    from jinja2.sandbox import SandboxedEnvironment
-
-    with open(template_path) as f:
-        content = f.read()
-    rendered = (
-        SandboxedEnvironment(undefined=StrictUndefined)
-        .from_string(content)
-        .render(db=db)
-    )
-    return rendered
-
-
-def write_config(content: str, tmp_dir: Path) -> Path:
-    """Write a rendered config to a temp file and return the path."""
-    path = tmp_dir / f"bench_{uuid.uuid4().hex[:8]}.yml"
-    path.write_text(content, encoding="utf-8")
-    return path
-
-
-def run_orchestrator(
-    config_path: str,
-    spark: SparkSession,
-    db: str,
-    listener: MetricsListener,
-) -> dict[str, Any]:
-    """Run the orchestrator and collect metrics."""
-    listener.reset()
-    start = time.time()
+def _package_version(name: str) -> str:
     try:
-        loader = DataLoader(spark_session=spark)
-        etl_control = ETLControlManager(etl_schema=db, spark_session=spark)
-        table_creator = TableCreator()
-        skeleton_generator = SkeletonGenerator(spark)
-        transaction_manager = TransactionManager(spark_session=spark)
-        orchestrator = Orchestrator(
-            config_path,
-            spark=spark,
-            etl_schema=db,
-            loader=loader,
-            etl_control=etl_control,
-            table_creator=table_creator,
-            skeleton_generator=skeleton_generator,
-            transaction_manager=transaction_manager,
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return "not-installed"
+
+
+def _git(args: Sequence[str], repo_root: Path) -> str:
+    args = ["-c", f"safe.directory={repo_root}", *args]
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
         )
-        result = orchestrator.run()
-        error = None
-    except Exception as e:
-        import traceback
+        return completed.stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
 
-        result = {"status": "ERROR", "error": str(e)}
-        error = traceback.format_exc()
-    duration_ms = (time.time() - start) * 1000
 
-    if error:
-        print(f"  ORCHESTRATOR ERROR:\n{error[:2000]}")
+def _memory_bytes() -> int | None:
+    meminfo = Path("/proc/meminfo")
+    if meminfo.exists():
+        for line in meminfo.read_text(encoding="utf-8").splitlines():
+            if line.startswith("MemTotal:"):
+                return int(line.split()[1]) * 1024
+    return None
 
+
+def build_manifest(
+    *,
+    suite: str,
+    scale: str,
+    testbed_id: str,
+    repo_root: Path = REPO_ROOT,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Build the comparison contract for one benchmark run."""
+    env = os.environ if environ is None else environ
+    dirty_output = _git(["status", "--porcelain"], repo_root)
     return {
-        "result": result,
-        "duration_ms": duration_ms,
-        "total_shuffle": 0,
-        "disk_spill": 0,
-        "stages": [],
+        "schema_version": SCHEMA_VERSION,
+        "created_at": datetime.now(UTC).isoformat(),
+        "suite": suite,
+        "scale": scale,
+        "testbed_id": testbed_id,
+        "git": {
+            "commit_sha": _git(["rev-parse", "HEAD"], repo_root),
+            "branch": _git(["branch", "--show-current"], repo_root),
+            "dirty": dirty_output not in {"", "unknown"},
+        },
+        "runtime": _runtime_metadata(env),
+        "hardware": _hardware_metadata(),
     }
 
 
-def setup_identity_bridge_data(spark: SparkSession, db: str, n_customers: int) -> None:
-    """Create a bridge table for the identity_bridge scenario."""
-    spark.sql(f"DROP TABLE IF EXISTS {db}.customer_bridge")
-    spark.sql(f"""
-        CREATE TABLE {db}.customer_bridge (
-            customer_id INT,
-            canonical_customer_id INT
-        ) USING DELTA
-    """)
-    bridge_count = max(1, n_customers // 2)
-    bridge_df = spark.range(bridge_count).select(
-        col("id").cast("int").alias("customer_id"),
-        (col("id") / 3).cast("int").alias("canonical_customer_id"),
-    )
-    bridge_df.write.format("delta").mode("overwrite").saveAsTable(
-        f"{db}.customer_bridge"
-    )
+def _runtime_metadata(env: Mapping[str, str]) -> dict[str, str]:
+    return {
+        "python": platform.python_version(),
+        "java": env.get("JAVA_VERSION", "17"),
+        "spark": _package_version("pyspark"),
+        "delta": _package_version("delta-spark"),
+        "docker_image": env.get("KIMBALL_BENCHMARK_IMAGE", "unknown"),
+    }
 
 
-def setup_schema_evolution(spark: SparkSession, db: str) -> None:
-    """Add a new column to source to test schema evolution path."""
-    spark.sql(f"ALTER TABLE {db}.products_src ADD COLUMN new_col STRING")
-    spark.sql(
-        f"UPDATE {db}.products_src SET new_col = 'added_later' WHERE product_id < 100"
-    )
+def _hardware_metadata() -> dict[str, Any]:
+    return {
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "processor": platform.processor() or "unknown",
+        "logical_cores": os.cpu_count() or 1,
+        "memory_bytes": _memory_bytes(),
+    }
 
 
-def run_scenario(
-    scenario: str,
-    scale_name: str,
-    scale: ScaleTier,
-    spark: SparkSession,
-    listener: MetricsListener,
-    output_dir: Path,
-) -> ScenarioResult:
-    """Run a single benchmark scenario and return results."""
-    print(f"\n{'=' * 60}")
-    print(f"  Scenario: {scenario}  Scale: {scale_name}")
-    print(f"{'=' * 60}")
+def validate_comparable(
+    baseline: Mapping[str, Any], current: Mapping[str, Any]
+) -> None:
+    """Reject scientifically invalid cross-testbed/runtime comparisons."""
+    if baseline.get("testbed_id") != current.get("testbed_id"):
+        raise BenchmarkCompatibilityError("testbed_id differs")
+    baseline_runtime = baseline.get("runtime", {})
+    current_runtime = current.get("runtime", {})
+    for field in ("python", "java", "spark", "delta", "docker_image"):
+        if baseline_runtime.get(field) != current_runtime.get(field):
+            raise BenchmarkCompatibilityError(f"runtime {field} differs")
 
-    db = create_benchmark_database(spark)
-    result = ScenarioResult(
-        scenario=scenario,
-        scale=scale_name,
-        rows_in_target=0,
-        first_run_status="",
-        second_run_status="",
-        first_run_total_ms=0.0,
-        second_run_total_ms=0.0,
-        timestamp=datetime.now().isoformat(),
-    )
 
-    try:
-        # --- Data generation ---
-        with profile_stage("data_generation") as prof:
-            generate_products(spark, scale.products, db)
-            generate_customers(spark, scale.customers, db)
-            if scenario == "multi_source_join":
-                generate_orders(spark, scale.orders, scale.customers, db)
-                spark.sql(f"""
-                    CREATE TABLE {db}.orders_src AS
-                    SELECT order_id, customer_id, order_timestamp
-                    FROM {db}.order_items_src
-                    GROUP BY order_id, customer_id, order_timestamp
-                """)
-            if scenario == "identity_bridge":
-                setup_identity_bridge_data(spark, db, scale.customers)
-        print(f"  Data generation: {prof.duration_ms:.0f}ms")
-        if scenario == "identity_bridge":
-            spark.sql(
-                f"INSERT INTO {db}.customer_bridge "
-                f"SELECT customer_id, customer_id FROM {db}.customers_src "
-                f"WHERE customer_id >= {scale.customers // 2}"
-            )
+def _medians(path: Path) -> dict[str, float]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return {
+        item["name"]: float(item["stats"]["median"])
+        for item in payload.get("benchmarks", [])
+        if item.get("stats", {}).get("median") is not None
+    }
 
-        # Verify tables exist
-        for tbl in [f"{db}.products_src", f"{db}.customers_src"]:
-            if not spark.catalog.tableExists(tbl):
-                print(f"  ERROR: Table {tbl} does not exist after generation!")
-                result.first_run_status = "TABLE_MISSING"
-                return result
 
-        # --- Load config ---
-        template_path = _HERE / "tools" / "benchmarks" / BENCHMARK_CONFIGS[scenario]
-        config_text = render_config(template_path, db)
-        config_path = write_config(config_text, output_dir)
-        print(f"  Config (first 300 chars): {config_text[:300]}")
-
-        # --- First run (initial load) ---
-        first = run_orchestrator(str(config_path), spark, db, listener)
-        result.first_run_status = first["result"].get("status", "UNKNOWN")
-        result.first_run_total_ms = first["duration_ms"]
-        result.first_run_total_shuffle = first["total_shuffle"]
-        result.first_run_disk_spill = first["disk_spill"]
-        result.first_run_stages = first["stages"]
-
-        target_table_name = config_text.split("table_name:")[1].split()[0].strip()
-        target_exists = spark.catalog.tableExists(target_table_name)
-        print(
-            f"  First run:  {first['duration_ms']:.0f}ms  "
-            f"shuffle={first['total_shuffle'] / 1024 / 1024:.1f}MB  "
-            f"status={result.first_run_status}  "
-            f"target_exists={target_exists}"
+def compare_benchmark_files(
+    baseline_path: Path,
+    current_path: Path,
+    *,
+    threshold: float = DEFAULT_THRESHOLD,
+) -> list[dict[str, Any]]:
+    """Compare like-named medians and mark regressions above the threshold."""
+    baseline = _medians(baseline_path)
+    current = _medians(current_path)
+    comparisons: list[dict[str, Any]] = []
+    for name in sorted(baseline.keys() & current.keys()):
+        old = baseline[name]
+        new = current[name]
+        change = ((new - old) / old) if old else 0.0
+        comparisons.append(
+            {
+                "name": name,
+                "baseline_median": old,
+                "current_median": new,
+                "change_percent": change * 100,
+                "regression": change > threshold,
+            }
         )
+    return comparisons
 
-        if result.first_run_status != "SUCCESS" or not target_exists:
-            print("  Skipping second run due to first run failure")
-            return result
 
-        # --- Mutate source (except for SCD1 baseline / multi_source_join) ---
-        if scenario not in ("multi_source_join", "validation_overhead"):
-            with profile_stage("data_mutation") as prof:
-                make_changes(spark, scale, db)
-            print(f"  Data mutation: {prof.duration_ms:.0f}ms")
-        elif scenario == "validation_overhead":
-            with profile_stage("data_mutation") as prof:
-                spark.sql(f"""
-                    UPDATE {db}.products_src
-                    SET price = price * 1.10
-                    WHERE product_id < {scale.n_changed}
-                """)
-            print(f"  Data mutation: {prof.duration_ms:.0f}ms")
+def build_bencher_command(
+    result_path: Path,
+    *,
+    project: str,
+    branch: str,
+    testbed: str,
+) -> list[str]:
+    """Return a token-free Bencher command."""
+    return [
+        "bencher",
+        "run",
+        "--project",
+        project,
+        "--branch",
+        branch,
+        "--testbed",
+        testbed,
+        "--adapter",
+        "python_pytest",
+        "--average",
+        "median",
+        "--file",
+        str(result_path),
+    ]
 
-        if scenario == "schema_evolution":
-            setup_schema_evolution(spark, db)
 
-        # --- Second run (incremental) ---
-        second = run_orchestrator(str(config_path), spark, db, listener)
-        result.second_run_status = second["result"].get("status", "UNKNOWN")
-        result.second_run_total_ms = second["duration_ms"]
-        result.second_run_total_shuffle = second["total_shuffle"]
-        result.second_run_disk_spill = second["disk_spill"]
-        result.second_run_stages = second["stages"]
+def _resolve_baseline(path: Path) -> tuple[Path, Path]:
+    if path.is_dir():
+        return path / "pytest-benchmark.json", path / "manifest.json"
+    return path, path.with_name("manifest.json")
 
-        if scenario in (
-            "scd2_change_detection",
-            "scd2_full_cdc_delete",
-            "scd2_effective_at",
-            "scd1_baseline",
-            "schema_evolution",
-            "validation_overhead",
-            "identity_bridge",
-        ):
-            try:
-                plan_excerpt = capture_execution_plan(
-                    spark.read.format("delta")
-                    .table(
-                        f"{db}.{config_text.split('table_name:')[1].split('.')[1].split()[0]}"
-                    )
-                    .limit(1)
-                )
-                result.second_run_join_types = extract_join_types(plan_excerpt)
-                result.second_run_exchanges = extract_exchanges(plan_excerpt)
-                result.second_run_windows = extract_window_ops(plan_excerpt)
-            except Exception:
-                pass
-        print(
-            f"  Second run: {second['duration_ms']:.0f}ms  "
-            f"shuffle={second['total_shuffle'] / 1024 / 1024:.1f}MB  "
-            f"status={result.second_run_status}"
+
+def _write_summary(
+    path: Path,
+    manifest: Mapping[str, Any],
+    comparisons: list[dict[str, Any]],
+    spark_metrics: Mapping[str, int],
+) -> None:
+    suite = manifest["suite"]
+    scale = manifest["scale"]
+    testbed_id = manifest["testbed_id"]
+    commit_sha = manifest["git"]["commit_sha"]
+    jobs = spark_metrics["jobs"]
+    stages = spark_metrics["stages"]
+    tasks = spark_metrics["tasks"]
+    lines = [
+        f"# Benchmark: {suite} / {scale}",
+        "",
+        f"- Testbed: {testbed_id}",
+        f"- Commit: {commit_sha}",
+        f"- Spark jobs/stages/tasks: {jobs}/{stages}/{tasks}",
+        "",
+    ]
+    if comparisons:
+        lines.extend(
+            [
+                "| Benchmark | Baseline | Current | Change | Advisory |",
+                "|---|---:|---:|---:|:---:|",
+            ]
         )
-
-        # --- Row count ---
-        try:
-            result.rows_in_target = (
-                spark.table(
-                    f"{db}.{config_text.split('table_name:')[1].split('.')[1].split()[0]}"
-                )
-                .filter("__is_current = true")
-                .count()
+        for item in comparisons:
+            status = "REGRESSION" if item["regression"] else "OK"
+            name = item["name"]
+            baseline_median = item["baseline_median"]
+            current_median = item["current_median"]
+            change_percent = item["change_percent"]
+            lines.append(
+                f"| {name} | {baseline_median:.6f}s | "
+                f"{current_median:.6f}s | "
+                f"{change_percent:+.1f}% | {status} |"
             )
-        except Exception:
-            pass
-
-    finally:
-        drop_benchmark_database(spark, db)
-
-    return result
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Kimball framework benchmark runner")
+def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--suite", choices=sorted(SUITES), default="spark")
+    parser.add_argument("--scale", choices=("tiny", "small", "medium"), default="tiny")
+    parser.add_argument("--output-dir", default="benchmark-results")
     parser.add_argument(
-        "--scenario",
-        default="all",
-        help=f"Scenario name or 'all'. Choices: {', '.join(BENCHMARK_CONFIGS.keys())}",
+        "--testbed",
+        default=os.environ.get("KIMBALL_BENCHMARK_TESTBED", "tiago-windows-docker"),
     )
+    parser.add_argument("--compare", type=Path)
+    parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD)
+    parser.add_argument("--fail-on-regression", action="store_true")
+    parser.add_argument("--save-baseline")
+    parser.add_argument("--publish", action="store_true")
     parser.add_argument(
-        "--scale",
-        nargs="+",
-        default=["tiny"],
-        help=f"Scale tier(s). Choices: {', '.join(SCALE_MAP.keys())}",
+        "--bencher-project",
+        default=os.environ.get("BENCHER_PROJECT", "kimball-framework"),
     )
-    parser.add_argument(
-        "--output-dir",
-        default="tools/benchmarks/results",
-        help="Output directory for results JSON",
+    return parser.parse_args(argv)
+
+
+def _run_pytest(
+    args: argparse.Namespace, run_dir: Path, event_dir: Path
+) -> tuple[subprocess.CompletedProcess[Any], Path]:
+    result_path = run_dir / "pytest-benchmark.json"
+    command = [
+        sys.executable,
+        "-m",
+        "pytest",
+        SUITES[args.suite],
+        "-q",
+        "--benchmark-only",
+        f"--benchmark-json={result_path}",
+        "--benchmark-disable-gc",
+    ]
+    if args.suite == "spark":
+        command.extend(["--scale", args.scale])
+    env = os.environ.copy()
+    env["KIMBALL_BENCHMARK_EVENTLOG_DIR"] = str(event_dir)
+    completed = subprocess.run(command, cwd=REPO_ROOT, env=env, check=False)
+    return completed, result_path
+
+
+def _compare(
+    args: argparse.Namespace,
+    manifest: Mapping[str, Any],
+    result_path: Path,
+    run_dir: Path,
+) -> list[dict[str, Any]]:
+    if not args.compare:
+        return []
+    baseline_result, baseline_manifest = _resolve_baseline(args.compare.resolve())
+    baseline_metadata = json.loads(baseline_manifest.read_text(encoding="utf-8"))
+    validate_comparable(baseline_metadata, manifest)
+    comparisons = compare_benchmark_files(
+        baseline_result, result_path, threshold=args.threshold
     )
-    args = parser.parse_args()
-
-    scenarios = (
-        list(BENCHMARK_CONFIGS.keys()) if args.scenario == "all" else [args.scenario]
+    if not comparisons:
+        raise BenchmarkCompatibilityError(
+            "baseline and current run share no benchmark names"
+        )
+    (run_dir / "comparison.json").write_text(
+        json.dumps(comparisons, indent=2), encoding="utf-8"
     )
-    scales = [SCALE_MAP[s] for s in args.scale if s in SCALE_MAP]
-    if not scales:
-        print(f"Invalid scale. Choices: {list(SCALE_MAP.keys())}")
-        sys.exit(1)
+    return comparisons
 
-    output_dir = Path(_HERE / args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
 
-    spark, _warehouse_dir = build_spark()
-    listener = MetricsListener()
-    listener.attach(spark)
+def validate_baseline_candidate(manifest: Mapping[str, Any]) -> None:
+    git = manifest.get("git", {})
+    if git.get("dirty"):
+        raise ValueError("Baseline promotion requires a clean worktree")
+    if git.get("branch") not in {"main", "master"}:
+        raise ValueError("Baseline promotion requires main or master")
+    if git.get("commit_sha") in {None, "", "unknown"}:
+        raise ValueError("Baseline promotion requires a known commit")
 
-    all_results: list[dict[str, Any]] = []
-    summary_rows: list[dict[str, Any]] = []
 
-    try:
-        for scale in scales:
-            for scenario in scenarios:
-                result = run_scenario(
-                    scenario, scale.name, scale, spark, listener, output_dir
-                )
-                d = result.to_dict()
-                all_results.append(d)
-                summary_rows.append(
-                    {
-                        "scenario": scenario,
-                        "scale": scale.name,
-                        "first_ms": d["first_run_total_ms"],
-                        "second_ms": d["second_run_total_ms"],
-                        "first_shuffle_mb": round(
-                            d["first_run_total_shuffle_bytes"] / 1024 / 1024, 1
-                        ),
-                        "second_shuffle_mb": round(
-                            d["second_run_total_shuffle_bytes"] / 1024 / 1024, 1
-                        ),
-                        "first_spill_mb": round(
-                            d["first_run_disk_spill_bytes"] / 1024 / 1024, 1
-                        ),
-                        "second_spill_mb": round(
-                            d["second_run_disk_spill_bytes"] / 1024 / 1024, 1
-                        ),
-                        "first_exchanges": d["first_run_exchanges"],
-                        "second_exchanges": d["second_run_exchanges"],
-                        "first_status": d["first_run_status"],
-                        "second_status": d["second_run_status"],
-                    }
-                )
-    finally:
-        spark.stop()
-        import shutil
-
-        shutil.rmtree(_warehouse_dir, ignore_errors=True)
-
-    # Write results
-    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_path = output_dir / f"benchmark_{timestamp_str}.json"
-    save_metrics_report(
-        str(report_path),
-        {
-            "timestamp": datetime.now().isoformat(),
-            "scenarios": scenarios,
-            "scales": [s.name for s in scales],
-            "results": all_results,
-        },
+def _save_baseline(
+    args: argparse.Namespace,
+    result_path: Path,
+    manifest_path: Path,
+    manifest: Mapping[str, Any],
+) -> None:
+    if not args.save_baseline:
+        return
+    validate_baseline_candidate(manifest)
+    baseline_dir = (
+        REPO_ROOT
+        / args.output_dir
+        / "baselines"
+        / args.testbed
+        / f"{args.suite}-{args.scale}-{args.save_baseline}"
     )
+    baseline_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(result_path, baseline_dir / result_path.name)
+    shutil.copy2(manifest_path, baseline_dir / manifest_path.name)
 
-    summary_path = output_dir / f"summary_{timestamp_str}.json"
-    save_metrics_report(str(summary_path), summary_rows)
 
-    print(f"\n{'=' * 60}")
-    print("  Results written to:")
-    print(f"    Full report: {report_path}")
-    print(f"    Summary:     {summary_path}")
-    print(f"{'=' * 60}")
+def _publish(
+    args: argparse.Namespace,
+    result_path: Path,
+    manifest: Mapping[str, Any],
+) -> None:
+    if not args.publish:
+        return
+    if not os.environ.get("BENCHER_API_KEY"):
+        raise RuntimeError("BENCHER_API_KEY is required for --publish")
+    if shutil.which("bencher") is None:
+        raise RuntimeError("Bencher CLI is required for --publish")
+    command = build_bencher_command(
+        result_path,
+        project=args.bencher_project,
+        branch=manifest["git"]["branch"],
+        testbed=args.testbed,
+    )
+    subprocess.run(command, cwd=REPO_ROOT, check=True)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parse_args(argv)
+    run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    run_dir = (REPO_ROOT / args.output_dir / "raw" / run_id).resolve()
+    event_dir = run_dir / "spark-events"
+    run_dir.mkdir(parents=True, exist_ok=False)
+    event_dir.mkdir()
+    manifest = build_manifest(
+        suite=args.suite,
+        scale=args.scale,
+        testbed_id=args.testbed,
+    )
+    manifest_path = run_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    completed, result_path = _run_pytest(args, run_dir, event_dir)
+    spark_metrics = summarize_event_logs(event_dir)
+    (run_dir / "spark-metrics.json").write_text(
+        json.dumps(spark_metrics, indent=2), encoding="utf-8"
+    )
+    comparisons: list[dict[str, Any]] = []
+    if completed.returncode == 0:
+        comparisons = _compare(args, manifest, result_path, run_dir)
+        _save_baseline(args, result_path, manifest_path, manifest)
+        _publish(args, result_path, manifest)
+    _write_summary(run_dir / "summary.md", manifest, comparisons, spark_metrics)
+    print(f"Benchmark artifacts: {run_dir}")
+    if completed.returncode != 0:
+        return completed.returncode
+    if args.fail_on_regression and any(item["regression"] for item in comparisons):
+        return 2
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

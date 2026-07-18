@@ -245,6 +245,16 @@ def _manifest_publish(args: argparse.Namespace) -> int:
     from kimball.contracts.registry import DeltaContractRegistry
 
     manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+    legacy = [
+        pipeline["table_name"]
+        for pipeline in manifest.get("pipelines", [])
+        if pipeline.get("semantic_config", {}).get("null_policy", {}).get("mode")
+        == "legacy"
+    ]
+    if legacy:
+        raise ValueError(
+            "Legacy null policy cannot be published: " + ", ".join(sorted(legacy))
+        )
     registry = DeltaContractRegistry(get_spark(), args.etl_schema)
     registry.publish_manifest(
         manifest,
