@@ -36,7 +36,10 @@ def _any_null(columns: list[str]) -> Column:
 
 
 def _placeholder(field, *, status: str = "NOT_YET_AVAILABLE") -> Column:
+    from typing import Any
+
     data_type = field.dataType
+    value: Any
     if isinstance(data_type, StringType):
         value = "Not Yet Available"
     elif isinstance(data_type, (IntegerType, LongType, ShortType)):

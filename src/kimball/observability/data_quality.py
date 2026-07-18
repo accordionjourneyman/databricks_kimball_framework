@@ -232,7 +232,8 @@ class DataQualityEventSink:
         if self.writer is None:
             return None
         try:
-            return self.writer.write(**kwargs)
+            result: str | None = self.writer.write(**kwargs)
+            return result
         except Exception as exc:
             self._handle("append", exc)
             return None
@@ -241,7 +242,8 @@ class DataQualityEventSink:
         if self.writer is None or not events:
             return []
         try:
-            return self.writer.write_many(events)
+            result: list[str] = self.writer.write_many(events)
+            return result
         except Exception as exc:
             self._handle("append", exc)
             return []

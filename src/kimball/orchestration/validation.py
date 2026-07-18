@@ -550,12 +550,12 @@ class DataQualityValidator:
             if is_dev_mode:
                 total_rows: int | None = df.count()
                 distinct_keys: int | None = df.select(*natural_keys).distinct().count()
-                duplicate_count = (total_rows or 0) - (distinct_keys or 0)
+                duplicate_count: int | None = (total_rows or 0) - (distinct_keys or 0)
             else:
                 duplicates_check = (
                     df.groupBy(*natural_keys).count().filter(F.col("count") > 1)
                 )
-                duplicate_count: int | None = (
+                duplicate_count = (
                     None if duplicates_check.limit(1).isEmpty() is False else 0
                 )
                 total_rows = None

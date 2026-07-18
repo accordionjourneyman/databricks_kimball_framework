@@ -72,7 +72,8 @@ class QualityValidationPlan:
 
 
 def _spark_type_name(field: Any) -> str:
-    return field.dataType.simpleString().lower()
+    result: str = field.dataType.simpleString().lower()
+    return result
 
 
 class ContractValidator:
@@ -331,7 +332,8 @@ class ContractValidator:
         *,
         approximate: bool,
     ) -> ContractFinding:
-        columns = [column for column in (rule.columns or [rule.column]) if column]
+        raw = rule.columns or ([rule.column] if rule.column is not None else [])
+        columns = [column for column in raw if column is not None]
         if not columns:
             raise ValueError("unique contract rules require column or columns")
         name = rule.name or f"contract_unique_{'_'.join(columns)}"

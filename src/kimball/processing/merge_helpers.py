@@ -155,8 +155,10 @@ def build_expire_set(validity_col: str) -> dict[str, str]:
 
 def get_current_df(table_or_df) -> DataFrame:
     if hasattr(table_or_df, "toDF"):
-        return table_or_df.toDF().filter("__is_current = true")
-    return table_or_df.filter("__is_current = true")
+        result: DataFrame = table_or_df.toDF().filter("__is_current = true")
+        return result
+    result = table_or_df.filter("__is_current = true")
+    return result
 
 
 def build_insert_values(
