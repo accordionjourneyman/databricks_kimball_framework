@@ -16,7 +16,7 @@ RUNNER_PATH = REPO_ROOT / "tools" / "run_databricks_tests.py"
 
 def _install_databricks_sdk_mock() -> None:
     """Provide a minimal stub for databricks.sdk so unit tests don't need it installed."""
-    if "databricks" in sys.modules:
+    if "databricks.sdk.service.workspace" in sys.modules:
         return
 
     databricks_pkg = ModuleType("databricks")

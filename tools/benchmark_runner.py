@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -77,7 +77,7 @@ def build_manifest(
     dirty_output = _git(["status", "--porcelain"], repo_root)
     return {
         "schema_version": SCHEMA_VERSION,
-        "created_at": datetime.now(UTC).isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "suite": suite,
         "scale": scale,
         "testbed_id": testbed_id,
@@ -353,7 +353,7 @@ def _publish(
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
-    run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = (REPO_ROOT / args.output_dir / "raw" / run_id).resolve()
     event_dir = run_dir / "spark-events"
     run_dir.mkdir(parents=True, exist_ok=False)
