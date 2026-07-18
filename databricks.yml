@@ -2,8 +2,6 @@ bundle:
   name: kimball-framework
 
 variables:
-  workspace_host:
-    description: "Databricks workspace URL; provide per target through bundle variables or CI."
   catalog:
     description: "Unity Catalog name for test schemas"
     default: "workspace"
@@ -51,17 +49,11 @@ resources:
 
 targets:
   dev:
-    workspace:
-      host: ${var.workspace_host}
     default: true
     mode: development
 
   test:
-    workspace:
-      host: ${var.workspace_host}
     mode: development
 
   prod:
-    workspace:
-      host: ${var.workspace_host}
     mode: production
