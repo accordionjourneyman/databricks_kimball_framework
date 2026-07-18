@@ -228,9 +228,9 @@ class TestPerVersionForeachBatch:
             orch._execute_microbatch_per_version(batch_df, cfg.sources[0], 7)
 
         assert calls == ["silver.customers"] * 3
-        # Verify the method reads from the batch_table (already materialised
-        # in _foreach) rather than writing its own temp table.
-        assert spark.table.call_count == 3  # one per version
+        # Per-version filtering uses the persisted micro-batch directly.
+        assert spark.table.call_count == 0
+        assert batch_df.filter.call_count == 3
 
     def test_per_version_falls_back_when_no_commit_version(self) -> None:
         spark = MagicMock()
@@ -253,6 +253,7 @@ class TestPerVersionForeachBatch:
 
         batch_df = MagicMock()
         batch_df.columns = ["customer_id", "_change_type", "_commit_version"]
+        batch_df.filter.return_value.isEmpty.return_value = False
         batch_df.select.return_value.distinct.return_value.collect.return_value = [
             MagicMock(_commit_version=5),
         ]
@@ -270,7 +271,7 @@ class TestPerVersionForeachBatch:
         # filter predicate -- the predicate itself must be checked.
         batch_df.filter.assert_called_once_with("_change_type != 'update_preimage'")
         mock_per_version.assert_called_once_with(
-            batch_df.filter.return_value, cfg.sources[0], 42
+            batch_df.filter.return_value.persist.return_value, cfg.sources[0], 42
         )
         mock_single.assert_not_called()
 
@@ -284,6 +285,7 @@ class TestPerVersionForeachBatch:
 
         batch_df = MagicMock()
         batch_df.columns = ["customer_id", "_change_type"]
+        batch_df.filter.return_value.isEmpty.return_value = False
 
         with (
             patch.object(orch, "_execute_microbatch_per_version") as mock_per_version,
@@ -295,7 +297,7 @@ class TestPerVersionForeachBatch:
         # Verify the actual filter predicate (see per_version test for rationale).
         batch_df.filter.assert_called_once_with("_change_type != 'update_preimage'")
         mock_single.assert_called_once_with(
-            batch_df.filter.return_value, cfg.sources[0], 42
+            batch_df.filter.return_value.persist.return_value, cfg.sources[0], 42
         )
         mock_per_version.assert_not_called()
 

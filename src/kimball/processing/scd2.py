@@ -81,6 +81,7 @@ def _merge_single_pass(
     surrogate_key_col: str,
     schema_evolution: bool,
     effective_at_column: str | None,
+    full_snapshot_reconciliation: bool,
 ) -> None:
     """Single-pass SCD2 MERGE using SK-based matching.
 
@@ -95,7 +96,10 @@ def _merge_single_pass(
     if not track_history_columns:
         raise ValueError("track_history_columns must be provided for SCD Type 2")
     upserts, deletes = filter_cdf_deletes(source_df)
-    if upserts.isEmpty() and (deletes is None or deletes.isEmpty()):
+    source_is_empty = upserts.isEmpty()
+    if source_is_empty and (
+        deletes is None or deletes.isEmpty()
+    ) and not full_snapshot_reconciliation:
         logger.info("SCD2 no-op: no upserts or deletes â€” skipping merge")
         return
     delta_table = DeltaTable.forName(get_spark(), target_table_name)
@@ -124,14 +128,14 @@ def _merge_single_pass(
         ).execute()
         logger.info("SCD2: CDF deletes expired")
         upserts = source_df.filter(col("_change_type") != "delete")
-        if upserts.isEmpty():
+        if source_is_empty:
             logger.info("SCD2 delete-only CDF batch completed")
             return
 
     # --- Full-snapshot delete detection ---
     # ``None`` means a full snapshot (no CDF marker exists).  An empty CDF
     # delete DataFrame means this incremental commit simply had no deletes.
-    if deletes is None:
+    if deletes is None and full_snapshot_reconciliation:
         current_target = get_current_df(delta_table)
         if target_has_skeleton_col:
             current_target = current_target.filter(~col("__is_skeleton"))
@@ -155,6 +159,8 @@ def _merge_single_pass(
             ).execute()
             logger.info("SCD2: full-snapshot delete detection merge executed")
 
+    if source_is_empty:
+        return
     apply_schema_evolution(target_table_name, schema_evolution, upserts)
     upserts = upserts.withColumn("hashdiff", compute_hashdiff(track_history_columns))
 
@@ -423,6 +429,7 @@ def merge_scd2(
     surrogate_key_col: str,
     schema_evolution: bool = False,
     effective_at_column: str | None = None,
+    full_snapshot_reconciliation: bool = False,
 ) -> None:
     if not track_history_columns:
         raise ValueError("track_history_columns must be provided for SCD Type 2")
@@ -434,4 +441,5 @@ def merge_scd2(
         surrogate_key_col=surrogate_key_col,
         schema_evolution=schema_evolution,
         effective_at_column=effective_at_column,
+        full_snapshot_reconciliation=full_snapshot_reconciliation,
     )

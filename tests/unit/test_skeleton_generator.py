@@ -34,7 +34,6 @@ def test_skeleton_generator_logic(mock_generate_keys):
         patch("kimball.processing.skeleton_generator.col"),
         patch("kimball.processing.skeleton_generator.lit"),
         patch("kimball.processing.skeleton_generator.current_timestamp"),
-        patch("kimball.processing.skeleton_generator.broadcast") as mock_broadcast,
     ):
         mock_table = MagicMock()
         mock_dt.forName.return_value = mock_table
@@ -57,7 +56,6 @@ def test_skeleton_generator_logic(mock_generate_keys):
 
         fact_df.select.return_value.distinct.return_value = fact_keys
         dim_df.select.return_value = dim_keys
-        mock_broadcast.return_value = dim_keys
         fact_keys.join.return_value = missing_keys
 
         mock_skeletons_out = MagicMock()

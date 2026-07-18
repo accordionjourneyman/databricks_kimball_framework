@@ -157,7 +157,7 @@ class TestLoadActiveSources:
         source.alias = "src1_view"
         orchestrator.config.sources = [source]
 
-        orchestrator.etl_control.get_watermark.return_value = None
+        orchestrator.etl_control.get_states.return_value = {}
         orchestrator.loader.get_latest_version.return_value = 10
         mock_df = MagicMock()
         orchestrator.loader.load_cdf.return_value = mock_df
@@ -182,16 +182,16 @@ class TestLoadActiveSources:
         source.alias = "src1_view"
         orchestrator.config.sources = [source]
 
-        orchestrator.etl_control.get_watermark.return_value = 10
+        orchestrator.etl_control.get_states.return_value = {
+            "src1": {"last_processed_version": 10}
+        }
         orchestrator.loader.get_latest_version.return_value = 10
 
         source_versions, active_dfs = orchestrator._load_active_sources("batch-1")
 
         orchestrator.loader.load_cdf.assert_not_called()
         assert active_dfs == {}
-        orchestrator.etl_control.batch_complete.assert_called_once_with(
-            "test_table", "src1", new_version=10, rows_read=0, rows_written=0
-        )
+        orchestrator.etl_control.batch_complete.assert_not_called()
 
     def test_load_full_snapshot_source(self, orchestrator):
         source = MagicMock()

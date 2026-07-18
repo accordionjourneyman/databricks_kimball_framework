@@ -60,12 +60,6 @@ class RuntimeOptions:
             If you have dimension defaults like -1 or 'Unknown' with millions of rows,
             those partitions will be skewed. AQE will split them if > this threshold.
 
-        skip_grain_check: Skip the pre-merge duplicate key validation. This check
-            causes a full shuffle + collect() which breaks the DAG and adds latency.
-            Set to True if:
-            - Your upstream (CDF dedup) already guarantees uniqueness
-            - You prefer to let Delta's merge fail on duplicates instead of pre-checking
-            - You're optimizing for latency over detailed error messages
     """
 
     etl_schema: str | None = None
@@ -83,8 +77,6 @@ class RuntimeOptions:
     shuffle_partitions: str | int = "auto"  # 'auto' = let AQE decide, or explicit int
     skew_threshold_mb: int = 256  # Partition size threshold for skew handling
     skew_factor: int = 5  # Partition Nx larger than median = skewed
-    skip_grain_check: bool = False  # Skip expensive pre-merge duplicate validation
-
     use_approximate_unique: bool = False
     """Use HLL-based approx_count_distinct instead of exact groupBy for uniqueness checks.
     O(n) instead of O(n log n) shuffle. Probabilistic (~1.5% error)."""
@@ -154,7 +146,6 @@ class RuntimeOptions:
             shuffle_partitions=os.environ.get("KIMBALL_SHUFFLE_PARTITIONS", "auto"),
             skew_threshold_mb=int(os.environ.get("KIMBALL_SKEW_THRESHOLD_MB", "256")),
             skew_factor=int(os.environ.get("KIMBALL_SKEW_FACTOR", "5")),
-            skip_grain_check=os.environ.get("KIMBALL_SKIP_GRAIN_CHECK", "") == "1",
             use_approximate_unique=os.environ.get("KIMBALL_USE_APPROXIMATE_UNIQUE", "")
             == "1",
             compile_time_sql_check=os.environ.get("KIMBALL_COMPILE_TIME_SQL_CHECK", "1")

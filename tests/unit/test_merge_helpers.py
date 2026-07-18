@@ -259,13 +259,11 @@ class TestApplySchemaEvolution:
         "kimball.processing.merge_helpers.quote_table_name",
         return_value="`catalog`.`schema`.`table`",
     )
-    def test_enabled_sets_tblproperties_and_returns_when_source_none(
+    def test_enabled_without_source_performs_no_metadata_write(
         self, mock_quote, mock_dt, mock_get_spark
     ):
         apply_schema_evolution("test.table", enabled=True, source_df=None)
-        mock_get_spark.return_value.sql.assert_called_once_with(
-            "ALTER TABLE `catalog`.`schema`.`table` SET TBLPROPERTIES ('delta.schema.autoMerge.enabled' = 'true')"
-        )
+        mock_get_spark.return_value.sql.assert_not_called()
         mock_dt.forName.assert_not_called()
 
     @patch("kimball.processing.merge_helpers.get_spark")
@@ -274,16 +272,11 @@ class TestApplySchemaEvolution:
         "kimball.processing.merge_helpers.quote_table_name",
         return_value="`catalog`.`schema`.`table`",
     )
-    def test_tblproperties_failure_logs_warning(
+    def test_enabled_without_source_does_not_issue_auto_merge_ddl(
         self, mock_quote, mock_dt, mock_get_spark, caplog
     ):
-        from pyspark.errors import PySparkException
-
-        mock_get_spark.return_value.sql.side_effect = PySparkException(
-            "permission denied"
-        )
         apply_schema_evolution("test.table", enabled=True, source_df=None)
-        assert "Could not enable schema auto-merge" in caplog.text
+        assert not caplog.records
 
     @patch("kimball.processing.merge_helpers.get_spark")
     @patch("kimball.processing.merge_helpers.DeltaTable")
@@ -310,11 +303,8 @@ class TestApplySchemaEvolution:
         apply_schema_evolution("test.table", enabled=True, source_df=source_df)
 
         calls = mock_get_spark.return_value.sql.call_args_list
-        assert len(calls) == 2
+        assert len(calls) == 1
         assert calls[0][0][0] == (
-            "ALTER TABLE `catalog`.`schema`.`table` SET TBLPROPERTIES ('delta.schema.autoMerge.enabled' = 'true')"
-        )
-        assert calls[1][0][0] == (
             "ALTER TABLE `catalog`.`schema`.`table` ADD COLUMNS (name string, email string)"
         )
 
@@ -342,7 +332,7 @@ class TestApplySchemaEvolution:
         apply_schema_evolution("test.table", enabled=True, source_df=source_df)
 
         calls = mock_get_spark.return_value.sql.call_args_list
-        add_cols_call = calls[1][0][0]
+        add_cols_call = calls[0][0][0]
         assert "name string" in add_cols_call
         assert "__internal" not in add_cols_call
         assert "_change_type" not in add_cols_call
@@ -375,7 +365,7 @@ class TestApplySchemaEvolution:
 
         apply_schema_evolution("test.table", enabled=True, source_df=source_df)
 
-        assert mock_get_spark.return_value.sql.call_count == 1  # only SET TBLPROPERTIES
+        assert mock_get_spark.return_value.sql.call_count == 0
 
     @patch("kimball.processing.merge_helpers.get_spark")
     @patch("kimball.processing.merge_helpers.DeltaTable")
@@ -397,10 +387,9 @@ class TestApplySchemaEvolution:
         target_df = MagicMock()
         target_df.schema = target_schema
         mock_dt.forName.return_value.toDF.return_value = target_df
-        mock_get_spark.return_value.sql.side_effect = [
-            None,
-            PySparkException("add column failed"),
-        ]
+        mock_get_spark.return_value.sql.side_effect = PySparkException(
+            "add column failed"
+        )
 
         apply_schema_evolution("test.table", enabled=True, source_df=source_df)
 

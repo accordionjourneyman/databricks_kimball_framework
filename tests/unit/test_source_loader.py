@@ -6,6 +6,23 @@ import pytest
 
 from kimball.common.config import SourceConfig
 from kimball.orchestration.services.source_loader import SourceLoader
+from kimball.orchestration.services.work_plan import SourceWorkItem, SourceWorkPlan
+
+
+def _plan(source, start=0, end=0, active=True):
+    return SourceWorkPlan(
+        (
+            SourceWorkItem(
+                source=source,
+                prior_watermark=None if start == 0 else start - 1,
+                latest_version=end,
+                starting_version=start,
+                ending_version=end,
+                active=active,
+                delete_mode='explicit_cdf',
+            ),
+        )
+    )
 
 
 @pytest.fixture
@@ -37,11 +54,9 @@ class TestAppendStrategy:
         dropped_df = MagicMock()
         df.drop.return_value = dropped_df
         dropped_df.createOrReplaceTempView = MagicMock()
-        ctx.loader.get_latest_version.return_value = 10
         ctx.loader.load_cdf.return_value = df
-        ctx.etl_control.get_watermark.return_value = None
 
-        versions, active = SourceLoader().load(ctx)
+        versions, active = SourceLoader().load(ctx, _plan(source, 0, 10))
 
         ctx.loader.load_cdf.assert_called_once_with(
             "silver.events",
@@ -83,7 +98,6 @@ class TestAppendStrategy:
         df = MagicMock()
         df.columns = ["event_id", "event_at", "_commit_version"]
         deduplicated = MagicMock()
-        ctx.loader.get_latest_version.return_value = 3
         ctx.loader.load_cdf.return_value = df
         ctx.loader.deduplicate_cdf.return_value = deduplicated
         ctx.etl_control.get_watermark.return_value = 1
@@ -111,7 +125,7 @@ class TestAppendStrategy:
             store_type.return_value.existing.return_value = prior
             store_type.return_value.prepare.return_value = update
 
-            SourceLoader().load(ctx)
+            SourceLoader().load(ctx, _plan(source, 2, 3))
 
         validator.return_value.validate_temporal.assert_called_once_with(
             df,
@@ -143,15 +157,11 @@ class TestAppendStrategy:
         source.options = {}
         ctx.config.sources = [source]
 
-        ctx.loader.get_latest_version.return_value = 10
-        ctx.etl_control.get_watermark.return_value = 10
-
-        versions, active = SourceLoader().load(ctx)
+        versions, active = SourceLoader().load(ctx, _plan(source, 11, 10, False))
 
         ctx.loader.load_cdf.assert_not_called()
-        ctx.etl_control.batch_complete.assert_called_once_with(
-            "fact_events", "silver.events", new_version=10, rows_read=0, rows_written=0
-        )
+        ctx.etl_control.batch_complete.assert_not_called()
+        assert versions == {}
         assert active == {}
 
     def test_append_strategy_loads_incremental_from_watermark(self, ctx):
@@ -169,15 +179,13 @@ class TestAppendStrategy:
         df.columns = ["id", "event_time"]
         df.drop.return_value = df
         df.createOrReplaceTempView = MagicMock()
-        ctx.loader.get_latest_version.return_value = 10
         ctx.loader.load_cdf.return_value = df
-        ctx.etl_control.get_watermark.return_value = 5
 
-        versions, active = SourceLoader().load(ctx)
+        versions, active = SourceLoader().load(ctx, _plan(source, 6, 10))
 
         ctx.loader.load_cdf.assert_called_once_with(
             "silver.events",
-            6,
+            starting_version=6,
             deduplicate_keys=None,
             ending_version=10,
         )

@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.functions import broadcast, col, current_timestamp, lit
+from pyspark.sql.functions import col, current_timestamp, lit
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ class SkeletonGenerator:
             )
         fact_keys = fact_df.select(col(fact_join_key).alias("key")).distinct()
         dim_keys = dim_df.select(col(dim_join_key).alias("key"))
-        missing = fact_keys.join(broadcast(dim_keys), "key", "left_anti")
+        missing = fact_keys.join(dim_keys, "key", "left_anti")
         if missing.isEmpty():
             logger.info(f"No missing keys found for {dim_table_name}.")
             return SkeletonGenerationResult(dim_table_name, 0, [], "no_missing_keys")

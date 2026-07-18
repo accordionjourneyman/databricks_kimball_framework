@@ -48,6 +48,7 @@ def merge(
     current_value_columns: list[str] | None = None,
     max_retries: int = 3,
     append_only: bool = False,
+    full_snapshot_reconciliation: bool = True,
 ) -> None:
     enriched_df = source_df.withColumn("__etl_processed_at", current_timestamp())
     if batch_id:
@@ -78,6 +79,7 @@ def merge(
                 surrogate_key_col=surrogate_key_col,
                 schema_evolution=schema_evolution,
                 effective_at_column=effective_at_column,
+                full_snapshot_reconciliation=full_snapshot_reconciliation,
             )
     elif scd_type == 4:
         if surrogate_key_col is None:

@@ -145,11 +145,11 @@ class TestBugPreserveAllChangesEarlyReturn:
         from kimball.orchestration.orchestrator import Orchestrator
 
         src = inspect.getsource(Orchestrator._run_with_version_loop)
-        # After fix: the loop should NOT return inside the for-source loop
-        # when one source is caught up.
-        assert "all_caught_up" in src
-        # Should check all sources, not break on first caught-up
-        assert "for source in self.config.sources" in src
+        # The work-plan result is the only completion signal; it cannot
+        # return early while inspecting individual sources.
+        assert 'active_sources' in src
+        # Source iteration belongs to SourceWorkPlan, not this loop.
+        assert "for source in self.config.sources" not in src
 
 
 # ===================================================================

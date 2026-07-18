@@ -4,7 +4,6 @@ import logging
 from typing import Any
 
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import broadcast
 from pyspark.sql.functions import count as spark_count
 
 from kimball.common.config import ConfigLoader, SourceContractConfig
@@ -164,13 +163,9 @@ class StreamingMicroBatchProcessor:
             and self.config.transformation_sql
             and "_commit_version" not in source_df.columns
         ):
-            batch_table_name = (
-                f"{self.etl_schema}._kimball_batch_{source.alias}_{batch_id}"
-            )
-            batch_table = self.spark.table(batch_table_name)
-            common_cols = [c for c in source_df.columns if c in batch_table.columns]
-            meta_df = batch_table.select(*(common_cols + cdf_meta_cols))
-            source_df = source_df.join(broadcast(meta_df), common_cols, "left")
+            common_cols = [c for c in source_df.columns if c in batch_df.columns]
+            meta_df = batch_df.select(*(common_cols + cdf_meta_cols))
+            source_df = source_df.join(meta_df, common_cols, "left")
 
         self._validate_fks(source_df)
         self._validate_grain(source_df, join_keys)

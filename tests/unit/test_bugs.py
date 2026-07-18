@@ -758,14 +758,13 @@ class TestPreserveAllChangesInitialLoadBug:
     def test_initial_load_processes_one_version_at_a_time(self):
         """The initial load path (wm is None) should use one-version-at-a-time
         logic when preserve_all_changes is True."""
-        from kimball.orchestration.services.source_loader import SourceLoader
+        from kimball.orchestration.services.work_plan import build_source_work_plan
 
-        source_code = inspect.getsource(SourceLoader.load)
+        source_code = inspect.getsource(build_source_work_plan)
 
         assert "preserve_all_changes" in source_code, (
-            "BUG-DP-003 regression: preserve_all_changes should be checked "
-            "during the initial load (wm is None) path, not just the "
-            "incremental path."
+            "BUG-DP-003 regression: preserve_all_changes must select one "
+            "initial source version at a time."
         )
 
 
@@ -911,12 +910,7 @@ class TestSCD1SoftDeleteBug:
         from kimball.processing.scd1 import merge_scd1
 
         source_code = inspect.getsource(merge_scd1)
-        soft_delete_section = (
-            source_code.split('delete_strategy == "soft"')[1].split("elif")[0]
-            if 'delete_strategy == "soft"' in source_code
-            else ""
-        )
-        assert "__etl_batch_id" in soft_delete_section, (
+        assert "'__etl_batch_id': 'source.__etl_batch_id'" in source_code, (
             "BUG-SCD1-002 regression: SCD1 soft delete should include "
             "__etl_batch_id in the update set for audit trail."
         )

@@ -191,6 +191,14 @@ class MergeExecutor:
     ) -> None:
         if not join_keys:
             return
+        grain_key = tuple(join_keys)
+        if grain_key in ctx.validated_grains:
+            logger.info(
+                'Reusing exact grain validation for %s on %s',
+                ctx.config.table_name,
+                join_keys,
+            )
+            return
         grain_mode = getattr(ctx.config, "grain_validation", "error")
         if grain_mode == "skip":
             logger.info(
@@ -209,8 +217,8 @@ class MergeExecutor:
             .agg(spark_count("*").alias("__grain_count"))
             .filter("__grain_count > 1")
         )
-        if len(grain_violations.limit(1).head(1)) > 0:
-            sample_violations = grain_violations.limit(5).collect()
+        sample_violations = grain_violations.limit(5).collect()
+        if sample_violations:
             violation_keys = [
                 {k: row[k] for k in join_keys} for row in sample_violations
             ]
@@ -224,6 +232,7 @@ class MergeExecutor:
                 logger.warning(msg)
             else:
                 raise ValueError(msg)
+        ctx.validated_grains.add(grain_key)
 
     def execute_merge(
         self, ctx: PipelineContext, source_df: DataFrame, join_keys: list[str]
@@ -242,6 +251,11 @@ class MergeExecutor:
             history_table=ctx.config.history_table,
             current_value_columns=ctx.config.current_value_columns,
             append_only=ctx.config.append_only,
+            full_snapshot_reconciliation=(
+                ctx.work_plan.full_snapshot_reconciliation
+                if ctx.work_plan is not None
+                else True
+            ),
         )
 
         from kimball.orchestration.services.descriptions import DescriptionManager

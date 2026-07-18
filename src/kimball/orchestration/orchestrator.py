@@ -5,7 +5,6 @@ Thin coordinator that delegates to focused service classes:
   - SkeletonManager: early-arriving fact skeletons + identity bridge
   - TransformValidator: transformation SQL, PII, FK/NK validation
   - MergeExecutor: table creation, adaptive pruning, merge dispatch
-  - FingerprintService: config/source fingerprint caching
   - RecoveryService: zombie recovery, full reload
 """
 
@@ -338,7 +337,7 @@ class Orchestrator:
         while iteration < max_iterations:
             iteration += 1
             result = self._run_pipeline_once()
-            if result.get("active_sources", 0) == 0:
+            if result.get("active_sources") == 0:
                 logger.info("Preserve All Changes: All CDF sources caught up")
                 return combined_result
             combined_result["rows_read"] += result.get("rows_read", 0)
@@ -402,6 +401,7 @@ class Orchestrator:
                     join_keys = self.config.natural_keys or []
                 self._merge_executor.validate_grain(ctx, source_df, join_keys)
                 self._merge_executor.execute_merge(ctx, source_df, join_keys)
+                merge_executed = True
 
                 metrics = self._merge_executor.get_merge_metrics(ctx)
                 total_rows_read = metrics["rows_read"]
@@ -416,17 +416,27 @@ class Orchestrator:
                     )
 
                 if merge_executed:
-                    for source_name, version in source_versions.items():
-                        if source_name not in active_dfs:
-                            continue
-                        self.etl_control.batch_complete(
-                            target_table=self.config.table_name,
-                            source_table=source_name,
-                            new_version=version,
-                            rows_read=total_rows_read,
-                            rows_written=total_rows_written,
-                        )
-                    self._fingerprint_service.save_fingerprints(ctx)
+                    config_fingerprint = self.config_loader.compute_fingerprint(
+                        self.config
+                    )
+                    self.etl_control.batch_complete_all(
+                        self.config.table_name,
+                        [
+                            {
+                                "source_table": item.source_name,
+                                "new_version": source_versions[item.source_name],
+                                "rows_read": total_rows_read,
+                                "rows_written": total_rows_written,
+                                "config_fingerprint": config_fingerprint,
+                                "source_schema_fingerprint": (
+                                    compute_source_schema_fingerprint(
+                                        self.spark, item.source_name
+                                    )
+                                ),
+                            }
+                            for item in work_plan.active_items
+                        ],
+                    )
                     try:
                         commit_temporal_state_updates(ctx)
                     except Exception:
@@ -459,6 +469,7 @@ class Orchestrator:
                 "target_table": self.config.table_name,
                 "rows_read": total_rows_read,
                 "rows_written": total_rows_written,
+                "active_sources": len(active_names),
                 "metrics": metrics_summary,
                 "validation_metrics": ctx.validation_metrics,
             }
@@ -468,21 +479,15 @@ class Orchestrator:
                 self.metrics_collector.stop_collection()
             error_msg = f"{type(e).__name__}: {str(e)}"
             logger.info(f"Pipeline failed: {error_msg}")
-            for source in self.config.sources:
-                try:
-                    self.etl_control.batch_fail(
-                        self.config.table_name, source.name, error_msg
-                    )
-                except PySparkException as batch_err:
-                    logger.debug(f"Could not mark batch as failed: {batch_err}")
+            try:
+                self.etl_control.batch_fail_all(
+                    self.config.table_name, active_names, error_msg
+                )
+            except PySparkException as batch_err:
+                logger.debug(f"Could not mark batch as failed: {batch_err}")
             raise e
 
         finally:
-            for _name, df in active_dfs.items():
-                try:
-                    df.unpersist(blocking=False)
-                except (PySparkException, OSError, AttributeError):
-                    pass  # Cleanup must never mask the original error
             active_dfs.clear()
             for source in self.config.sources:
                 try:

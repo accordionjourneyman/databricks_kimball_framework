@@ -103,7 +103,8 @@ def test_update_and_insert_maps_mark_not_deleted(
     )
 
     update_call = mock_dt.whenMatchedUpdate.call_args
-    assert update_call.kwargs["condition"] == "source._change_type != 'delete'"
+    assert "source._change_type != 'delete'" in update_call.kwargs["condition"]
+    assert "NOT (target.val <=> source.val)" in update_call.kwargs["condition"]
     update_set = update_call.kwargs["set"]
     assert update_set["val"] == "source.val"
     assert update_set["__is_deleted"] == "false"
@@ -166,7 +167,7 @@ def test_no_change_type_skips_delete_clause(
 
     mock_dt.whenMatchedDelete.assert_not_called()
     update_call = mock_dt.whenMatchedUpdate.call_args
-    assert update_call.kwargs["condition"] is None  # no delete filter without cdf
+    assert "NOT (target.val <=> source.val)" in update_call.kwargs["condition"]
 
 
 def test_missing_join_keys_raises():

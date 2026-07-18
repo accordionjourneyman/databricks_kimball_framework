@@ -114,6 +114,40 @@ class DataQualityEventWriter:
         action: str = "recorded",
         monitor_run_id: str | None = None,
     ) -> str:
+        return self.write_many(
+            [
+                {
+                    "pipeline_table": pipeline_table,
+                    "source": source,
+                    "finding": finding,
+                    "run_id": run_id,
+                    "source_version": source_version,
+                    "action": action,
+                    "monitor_run_id": monitor_run_id,
+                }
+            ]
+        )[0]
+
+    def write_many(self, events: list[dict[str, Any]]) -> list[str]:
+        if not events:
+            return []
+        rows = [self._row(**event) for event in events]
+        self.spark.createDataFrame(rows, schema=self._EVENT_SCHEMA).write.format(
+            "delta"
+        ).mode("append").saveAsTable(self.table)
+        return [row["event_id"] for row in rows]
+
+    def _row(
+        self,
+        *,
+        pipeline_table: str,
+        source: Any,
+        finding: Any,
+        run_id: str | None = None,
+        source_version: int | None = None,
+        action: str = "recorded",
+        monitor_run_id: str | None = None,
+    ) -> dict[str, Any]:
         contract = getattr(source, "contract", None)
         values = {
             "pipeline_table": pipeline_table,
@@ -158,10 +192,7 @@ class DataQualityEventWriter:
             "alert_delivery_status": None,
             "alert_error": None,
         }
-        self.spark.createDataFrame([row], schema=self._EVENT_SCHEMA).write.format(
-            "delta"
-        ).mode("append").saveAsTable(self.table)
-        return event_id
+        return row
 
 
 class DataQualityEventSink:
@@ -205,6 +236,15 @@ class DataQualityEventSink:
         except Exception as exc:
             self._handle("append", exc)
             return None
+
+    def write_many(self, events: list[dict[str, Any]]) -> list[str]:
+        if self.writer is None or not events:
+            return []
+        try:
+            return self.writer.write_many(events)
+        except Exception as exc:
+            self._handle("append", exc)
+            return []
 
 
 class AlertDispatcher:

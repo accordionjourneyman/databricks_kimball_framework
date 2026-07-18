@@ -22,23 +22,27 @@ def merge_scd4(
     schema_evolution: bool = False,
     effective_at_column: str | None = None,
 ) -> None:
-    merge_scd1(
-        source_df,
-        target_table_name=target_table_name,
-        join_keys=join_keys,
-        delete_strategy="hard",
-        schema_evolution=schema_evolution,
-        surrogate_key_col=surrogate_key_col,
-    )
-    _merge_history(
-        source_df,
-        target_table_name,
-        history_table_name,
-        join_keys,
-        track_history_columns,
-        surrogate_key_col,
-        effective_at_column or "__etl_processed_at",
-    )
+    reusable_source = source_df.persist()
+    try:
+        merge_scd1(
+            reusable_source,
+            target_table_name=target_table_name,
+            join_keys=join_keys,
+            delete_strategy="hard",
+            schema_evolution=schema_evolution,
+            surrogate_key_col=surrogate_key_col,
+        )
+        _merge_history(
+            reusable_source,
+            target_table_name,
+            history_table_name,
+            join_keys,
+            track_history_columns,
+            surrogate_key_col,
+            effective_at_column or "__etl_processed_at",
+        )
+    finally:
+        reusable_source.unpersist(blocking=False)
 
 
 def _merge_history(

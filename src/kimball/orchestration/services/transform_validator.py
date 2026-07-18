@@ -123,6 +123,7 @@ class TransformValidator:
             )
             validator = ContractValidator(spark)
             contract_findings = []
+            events = []
             for source in contracted_sources:
                 findings = validator.validate_data(transformed_df, source)
                 if validator.last_metrics:
@@ -135,16 +136,20 @@ class TransformValidator:
                     )
                 contract_findings.extend(findings)
                 for finding in findings:
-                    writer.write(
-                        pipeline_table=config.table_name,
-                        source=source,
-                        finding=finding,
-                        run_id=ctx.batch_id,
-                        source_version=ctx.source_versions.get(source.name),
-                        action="blocked"
-                        if not finding.passed and finding.severity.value == "error"
-                        else "recorded",
+                    events.append(
+                        {
+                            "pipeline_table": config.table_name,
+                            "source": source,
+                            "finding": finding,
+                            "run_id": ctx.batch_id,
+                            "source_version": ctx.source_versions.get(source.name),
+                            "action": "blocked"
+                            if not finding.passed
+                            and finding.severity.value == "error"
+                            else "recorded",
+                        }
                     )
+            writer.write_many(events)
             ContractValidator.raise_for_errors(contract_findings)
 
         if config.foreign_keys:
@@ -197,6 +202,7 @@ class TransformValidator:
                     f"{nk_result.failed_rows} duplicate keys. Details: {nk_result.details}",
                     details={"sample_failures": nk_result.sample_failures},
                 )
+            ctx.validated_grains.add(tuple(config.natural_keys))
 
         if config.table_type == "fact" and (
             config.foreign_keys or config.junk_dimensions

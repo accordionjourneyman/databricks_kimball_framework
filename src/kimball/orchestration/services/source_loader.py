@@ -107,20 +107,23 @@ class SourceLoader:
         findings = validator.validate_source(source)
         sink = self._event_sink(ctx)
         observability = ctx.config.observability
-        for finding in findings:
-            action = (
-                'blocked'
-                if not finding.passed and finding.severity.value == 'error'
-                else 'recorded'
-            )
-            event_id = sink.write(
-                pipeline_table=ctx.config.table_name,
-                source=source,
-                finding=finding,
-                run_id=ctx.batch_id,
-                source_version=source_version,
-                action=action,
-            )
+        events = [
+            {
+                'pipeline_table': ctx.config.table_name,
+                'source': source,
+                'finding': finding,
+                'run_id': ctx.batch_id,
+                'source_version': source_version,
+                'action': (
+                    'blocked'
+                    if not finding.passed and finding.severity.value == 'error'
+                    else 'recorded'
+                ),
+            }
+            for finding in findings
+        ]
+        event_ids = sink.write_many(events)
+        for finding, event_id in zip(findings, event_ids, strict=True):
             if (
                 not finding.passed
                 and finding.severity.value == 'error'
@@ -172,19 +175,23 @@ class SourceLoader:
                 }
             )
         sink = self._event_sink(ctx)
-        for finding in findings:
-            sink.write(
-                pipeline_table=ctx.config.table_name,
-                source=source,
-                finding=finding,
-                run_id=ctx.batch_id,
-                source_version=source_version,
-                action=(
-                    'blocked'
-                    if not finding.passed and finding.severity.value == 'error'
-                    else 'accepted_late'
-                ),
-            )
+        sink.write_many(
+            [
+                {
+                    'pipeline_table': ctx.config.table_name,
+                    'source': source,
+                    'finding': finding,
+                    'run_id': ctx.batch_id,
+                    'source_version': source_version,
+                    'action': (
+                        'blocked'
+                        if not finding.passed and finding.severity.value == 'error'
+                        else 'accepted_late'
+                    ),
+                }
+                for finding in findings
+            ]
+        )
         validator.raise_for_errors(findings)
         ctx.pending_temporal_state.append(
             PendingTemporalState(state_store, pending_update, ctx.batch_id)

@@ -2,6 +2,41 @@
 
 This document catalogs the algorithmic complexity of core operations and provides guidance on performance tuning.
 
+## Execution model and action budget
+
+The framework builds Spark plans lazily. Reads, projections, joins, windows,
+aggregations, and temporary views do not execute until an action such as
+collect, count, isEmpty, a Delta MERGE, or a write.
+
+The batch orchestrator first builds a source work plan from one control-table
+read and Delta source versions. A caught-up run performs no target, batch-start,
+or completion write. Incremental ranges that produce zero output still advance
+their watermark after successful processing; an empty full snapshot is instead
+passed to SCD2 reconciliation so it can expire missing current rows.
+
+The framework intentionally retains exact natural-key and merge-grain
+validation. When they use the same key tuple, the merge reuses the natural-key
+result instead of repeating the grouped shuffle. Approximate uniqueness remains
+an observability option, not a merge-safety replacement.
+
+SCD1 uses one conditional Delta merge. The matched-update predicate compares
+tracked columns with null-safe equality, so unchanged rows are not rewritten and
+no source/target hash preflight is required. SCD4 persists its narrow source
+lineage only across its required current-table and history-table writes.
+
+Contract findings are appended in one Delta write per validation stage. Streaming
+micro-batches are persisted and exposed as a temporary view; the framework no
+longer writes and drops a temporary Delta table for every batch. Per-version
+streaming still enumerates versions because preserving intermediate SCD2 history
+is a semantic requirement.
+
+## Beta control-table reset
+
+etl_control is now created without static target/source partitioning and no
+longer performs automatic schema migration. Before adopting this beta version,
+drop the existing control and observability state tables and run a deliberate
+full reload. Business target tables are not dropped by this change.
+
 ## Design Philosophy (Knuth-style)
 
 Performance optimization in this framework follows these principles:

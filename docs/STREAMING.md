@@ -187,3 +187,10 @@ docker-compose run --rm kimball-tests python -m pytest tests/integration/test_st
 # Full test suite
 docker-compose run --rm kimball-tests python -m pytest tests/ -v
 ```
+# Micro-batch execution
+
+Each non-empty foreachBatch input is persisted once and registered as a
+temporary view. Validation and merge logic reuse that plan, then the view is
+removed and the DataFrame is unpersisted. No temporary Delta table is created
+per micro-batch. Empty micro-batches return before any target or control-table
+write.

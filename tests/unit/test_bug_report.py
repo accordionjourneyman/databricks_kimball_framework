@@ -269,14 +269,12 @@ class TestBugSkeletonSKDivergence:
     @patch("kimball.processing.skeleton_generator.current_timestamp")
     @patch("kimball.processing.skeleton_generator.lit")
     @patch("kimball.processing.skeleton_generator.col")
-    @patch("kimball.processing.skeleton_generator.broadcast")
     @patch("kimball.processing.skeleton_generator.DeltaTable")
     def test_skeleton_sk_includes_version_column(
-        self, mock_dt, mock_broadcast, mock_col, mock_lit, mock_cts
+        self, mock_dt, mock_col, mock_lit, mock_cts
     ):
         from kimball.processing.skeleton_generator import SkeletonGenerator
 
-        mock_broadcast.side_effect = lambda x: x
         mock_col.side_effect = lambda x: MagicMock()
         mock_lit.side_effect = lambda x: MagicMock()
         mock_cts.return_value = MagicMock()
@@ -326,14 +324,12 @@ class TestBugSkeletonSKDivergence:
     @patch("kimball.processing.skeleton_generator.current_timestamp")
     @patch("kimball.processing.skeleton_generator.lit")
     @patch("kimball.processing.skeleton_generator.col")
-    @patch("kimball.processing.skeleton_generator.broadcast")
     @patch("kimball.processing.skeleton_generator.DeltaTable")
     def test_skeleton_sk_passes_effective_at_column(
-        self, mock_dt, mock_broadcast, mock_col, mock_lit, mock_cts
+        self, mock_dt, mock_col, mock_lit, mock_cts
     ):
         from kimball.processing.skeleton_generator import SkeletonGenerator
 
-        mock_broadcast.side_effect = lambda x: x
         mock_col.side_effect = lambda x: MagicMock()
         mock_lit.side_effect = lambda x: MagicMock()
         mock_cts.return_value = MagicMock()
@@ -707,7 +703,7 @@ class TestBugStreamingPerVersionMaterialization:
         # No SQL calls — reads from batch_table already materialised in _foreach
         assert orch.spark.sql.call_count == 0
         # Reads batch_table once per version
-        assert orch.spark.table.call_count == 3
+        assert orch.spark.table.call_count == 0
 
 
 # ===================================================================
@@ -765,7 +761,7 @@ class TestBugStreamingExtraCount:
 
 
 class TestBugReDeriveVersions:
-    """get_latest_version is now cached once before the loop."""
+    """The work-plan owns version discovery; the version loop does not."""
 
     def test_versions_cached_exactly_once(self):
         from kimball.common.config import SourceConfig, TableConfig
@@ -786,13 +782,14 @@ class TestBugReDeriveVersions:
         orch.config = config
         orch.spark = MagicMock(spec=SparkSession)
         orch.loader = MagicMock()
-        orch.loader.get_latest_version.return_value = 5
         orch.etl_control = MagicMock()
-        orch.etl_control.get_watermark.return_value = 5
+        orch._run_pipeline_once = MagicMock(
+            return_value={"active_sources": 0, "rows_read": 0, "rows_written": 0}
+        )
 
         orch._run_with_version_loop(max_iterations=5)
 
-        assert orch.loader.get_latest_version.call_count == 1
+        orch.loader.get_latest_version.assert_not_called()
 
 
 # ===================================================================
@@ -1062,7 +1059,7 @@ class TestBugZombieDetectionNoTTL:
 
         col_mock = MagicMock()
         col_mock.__eq__ = MagicMock(return_value=MagicMock())
-        col_mock.__gt__ = MagicMock(return_value=MagicMock())
+        col_mock.__lt__ = MagicMock(return_value=MagicMock())
         col_mock.__and__ = MagicMock(return_value=MagicMock())
         ts_mock = MagicMock()
         ts_mock.__sub__ = MagicMock(return_value=MagicMock())

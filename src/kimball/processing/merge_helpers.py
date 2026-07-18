@@ -71,12 +71,6 @@ def apply_schema_evolution(
 ) -> None:
     if not enabled:
         return
-    try:
-        get_spark().sql(
-            f"ALTER TABLE {quote_table_name(table_name)} SET TBLPROPERTIES ('delta.schema.autoMerge.enabled' = 'true')"
-        )
-    except PYSPARK_EXCEPTION_BASE as e:
-        logger.warning(f"Could not enable schema auto-merge for {table_name}: {e}")
     if source_df is None:
         return
     try:

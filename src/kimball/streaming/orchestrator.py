@@ -190,10 +190,11 @@ class StreamingOrchestrator:
         def _foreach(batch_df: DataFrame, batch_id: int) -> None:
             if "_change_type" in batch_df.columns:
                 batch_df = batch_df.filter("_change_type != 'update_preimage'")
-            batch_table = f"{self.etl_schema}._kimball_batch_{source.alias}_{batch_id}"
-            self.spark.sql(f"DROP TABLE IF EXISTS {batch_table}")
-            batch_df.write.format("delta").mode("overwrite").saveAsTable(batch_table)
-            self.spark.table(batch_table).createOrReplaceTempView(source.alias)
+            if batch_df.isEmpty():
+                logger.info("Micro-batch %s for %s is empty", batch_id, source.name)
+                return
+            batch_df = batch_df.persist()
+            batch_df.createOrReplaceTempView(source.alias)
             try:
                 if source.streaming and source.streaming.per_version:
                     self._execute_microbatch_per_version(batch_df, source, batch_id)
@@ -208,8 +209,8 @@ class StreamingOrchestrator:
                 )
                 raise
             finally:
-                self.spark.sql(f"DROP TABLE IF EXISTS {batch_table}")
                 self.spark.catalog.dropTempView(source.alias)
+                batch_df.unpersist(blocking=False)
 
         return _foreach
 
@@ -237,11 +238,8 @@ class StreamingOrchestrator:
         logger.info(
             f"Processing {len(versions)} version(s) for {source.name} in micro-batch {batch_id}"
         )
-        batch_table = f"{self.etl_schema}._kimball_batch_{source.alias}_{batch_id}"
         for version in versions:
-            version_df = self.spark.table(batch_table).filter(
-                f"`_commit_version` = {version}"
-            )
+            version_df = batch_df.filter(f"_commit_version = {version}")
             version_df.createOrReplaceTempView(source.alias)
             self._execute_one_microbatch(version_df, source, batch_id)
             logger.info(f"Processed version {version} for {source.name}")
