@@ -2,6 +2,8 @@ bundle:
   name: kimball-framework
 
 variables:
+  workspace_host:
+    description: "Databricks workspace URL; provide per target through bundle variables or CI."
   catalog:
     description: "Unity Catalog name for test schemas"
     default: "workspace"
@@ -28,7 +30,7 @@ resources:
               - "{{job.parameters.test_path || 'tests/integration'}}"
               - "{{job.parameters.catalog || 'spark_catalog'}}"
           new_cluster:
-            spark_version: "14.3.x-scala2.12"
+            spark_version: "17.0.x-scala2.13"
             node_type_id: "i3.xlarge"
             num_workers: 2
             data_security_mode: "SINGLE_USER"
@@ -50,17 +52,16 @@ resources:
 targets:
   dev:
     workspace:
-      host: https://dbc-7bded16a-1785.cloud.databricks.com/
+      host: ${var.workspace_host}
     default: true
     mode: development
 
   test:
     workspace:
-      host: https://dbc-7bded16a-1785.cloud.databricks.com/
+      host: ${var.workspace_host}
     mode: development
 
   prod:
     workspace:
-      host: https://dbc-7bded16a-1785.cloud.databricks.com/
-      root_path: /Workspace/Users/t.diogo.marques@gmail.com/.bundle/${bundle.name}/${bundle.target}
+      host: ${var.workspace_host}
     mode: production

@@ -86,8 +86,6 @@ class Orchestrator:
         self.spark = spark or get_spark()
         self.runtime_options = RuntimeOptions.from_environment()
 
-        self._apply_spark_configs()
-
         if watermark_database is not None:
             warnings.warn(
                 "The 'watermark_database' parameter is deprecated. Use 'etl_schema' instead.",
@@ -192,13 +190,6 @@ class Orchestrator:
         sm = getattr(self, "_skeleton_manager", None) or SkeletonManager()
         sm.generate_skeletons(ctx, active_dfs)
 
-    def _should_skip_validation(self, table_name: str) -> bool:
-        ctx = self._make_context_safe()
-        fp_service = getattr(self, "_fingerprint_service", None) or FingerprintService(
-            getattr(self, "config_loader", ConfigLoader())
-        )
-        return fp_service.should_skip_validation(ctx)
-
     def _save_fingerprints(self, table_name: str) -> None:
         ctx = self._make_context_safe()
         fp_service = getattr(self, "_fingerprint_service", None) or FingerprintService(
@@ -250,26 +241,41 @@ class Orchestrator:
                 + "\n".join(f"  - {i}" for i in issues)
             )
 
-    def _apply_spark_configs(self) -> None:
+    def _apply_spark_configs(self) -> dict[str, str | None]:
+        previous: dict[str, str | None] = {}
         try:
             spark = self.spark
-            spark.conf.set(SPARK_CONF_AQE_ENABLED, "true")
-            spark.conf.set(SPARK_CONF_AQE_SKEW_JOIN, "true")
-            spark.conf.set(SPARK_CONF_AQE_COALESCE, "true")
-            if self.runtime_options.shuffle_partitions != "auto":
-                spark.conf.set(
-                    SPARK_CONF_SHUFFLE_PARTITIONS,
-                    str(self.runtime_options.shuffle_partitions),
+            runtime_options = getattr(self, "runtime_options", RuntimeOptions())
+            settings = {
+                SPARK_CONF_AQE_ENABLED: "true",
+                SPARK_CONF_AQE_SKEW_JOIN: "true",
+                SPARK_CONF_AQE_COALESCE: "true",
+                SPARK_CONF_SKEW_SIZE_THRESHOLD: f"{runtime_options.skew_threshold_mb}MB",
+                SPARK_CONF_SKEW_FACTOR: str(runtime_options.skew_factor),
+            }
+            if runtime_options.shuffle_partitions != "auto":
+                settings[SPARK_CONF_SHUFFLE_PARTITIONS] = str(
+                    runtime_options.shuffle_partitions
                 )
-            spark.conf.set(
-                SPARK_CONF_SKEW_SIZE_THRESHOLD,
-                f"{self.runtime_options.skew_threshold_mb}MB",
-            )
-            spark.conf.set(
-                SPARK_CONF_SKEW_FACTOR, str(self.runtime_options.skew_factor)
-            )
+            for key, value in settings.items():
+                try:
+                    previous[key] = spark.conf.get(key)
+                except (PySparkException, AnalysisException):
+                    previous[key] = None
+                spark.conf.set(key, value)
         except (PySparkException, AnalysisException) as e:
             logger.debug(f"Could not set Spark configs: {e}")
+        return previous
+
+    def _restore_spark_configs(self, previous: dict[str, str | None]) -> None:
+        for key, value in previous.items():
+            try:
+                if value is None:
+                    self.spark.conf.unset(key)
+                else:
+                    self.spark.conf.set(key, value)
+            except (PySparkException, AnalysisException) as exc:
+                logger.debug(f"Could not restore Spark config {key}: {exc}")
 
     def _make_context(self, batch_id: str = "") -> PipelineContext:
         return PipelineContext(
@@ -282,13 +288,17 @@ class Orchestrator:
         )
 
     def run(self, max_retries: int = 0, full_reload: bool = False) -> dict[str, Any]:
-        if full_reload:
-            return self._run_full_reload()
-        if self.config.preserve_all_changes and self.config.scd_type == 2:
-            return self._run_with_version_loop()
-        if max_retries > 0:
-            return self.run_with_retry(max_retries=max_retries)
-        return self._run_pipeline_once()
+        previous = self._apply_spark_configs()
+        try:
+            if full_reload:
+                return self._run_full_reload()
+            if self.config.preserve_all_changes and self.config.scd_type == 2:
+                return self._run_with_version_loop()
+            if max_retries > 0:
+                return self.run_with_retry(max_retries=max_retries)
+            return self._run_pipeline_once()
+        finally:
+            self._restore_spark_configs(previous)
 
     def _run_full_reload(self) -> dict[str, Any]:
         ctx = self._make_context_safe()

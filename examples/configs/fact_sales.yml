@@ -1,5 +1,9 @@
-table_name: {{ env }}_gold.fact_sales
+table_name: {{ target.gold_schema }}.fact_sales
 table_type: fact
+depends_on:
+  - {{ target.gold_schema }}.dim_customer
+  - {{ target.gold_schema }}.dim_product
+  - {{ target.gold_schema }}.dim_employee
 
 # Merge keys: degenerate dimension used for MERGE condition (Kimball: facts have no SK)
 merge_keys: [order_item_id]
@@ -8,13 +12,13 @@ merge_keys: [order_item_id]
 # Default values: -1=Unknown, -2=N/A, -3=Error
 foreign_keys:
   - column: customer_sk
-    references: {{ env }}_gold.dim_customer
+    references: {{ target.gold_schema }}.dim_customer
     default_value: -1
   - column: product_sk
-    references: {{ env }}_gold.dim_product
+    references: {{ target.gold_schema }}.dim_product
     default_value: -1
   - column: employee_sk
-    references: {{ env }}_gold.dim_employee
+    references: {{ target.gold_schema }}.dim_employee
     default_value: -1
 
 # Enable schema evolution to automatically handle new columns
@@ -22,11 +26,11 @@ schema_evolution: true
 
 # Handle Early Arriving Facts by generating skeleton dimension rows
 early_arriving_facts:
-  - dimension_table: {{ env }}_gold.dim_customer
+  - dimension_table: {{ target.gold_schema }}.dim_customer
     fact_join_key: customer_id
     dimension_join_key: customer_id
     surrogate_key_col: customer_sk
-  - dimension_table: {{ env }}_gold.dim_employee
+  - dimension_table: {{ target.gold_schema }}.dim_employee
     fact_join_key: employee_id
     dimension_join_key: employee_id
     surrogate_key_col: employee_sk
@@ -37,21 +41,21 @@ cluster_by: [customer_sk, order_date]
 optimize_after_merge: true
 
 sources:
-  - name: {{ env }}_silver.order_items
+  - name: {{ target.silver_schema }}.order_items
     alias: oi
     cdc_strategy: cdf
     primary_keys: [order_item_id]  # Required for CDF deduplication
-  - name: {{ env }}_silver.orders
+  - name: {{ target.silver_schema }}.orders
     alias: o
     cdc_strategy: cdf
     primary_keys: [order_id]  # Required for CDF deduplication
-  - name: {{ env }}_gold.dim_customer
+  - name: {{ target.gold_schema }}.dim_customer
     alias: c
     cdc_strategy: full
-  - name: {{ env }}_gold.dim_product
+  - name: {{ target.gold_schema }}.dim_product
     alias: p
     cdc_strategy: full
-  - name: {{ env }}_gold.dim_employee
+  - name: {{ target.gold_schema }}.dim_employee
     alias: e
     cdc_strategy: full
 
@@ -69,8 +73,8 @@ transformation_sql: |
   FROM oi
   JOIN o ON oi.order_id = o.order_id
   -- Point-in-time lookup for Customer (SCD2)
-  LEFT JOIN c ON o.customer_id = c.customer_id 
-             AND o.order_date >= c.__valid_from 
+  LEFT JOIN c ON o.customer_id = c.customer_id
+             AND o.order_date >= c.__valid_from
              AND o.order_date < c.__valid_to
   -- Point-in-time lookup for Employee (SCD2)
   LEFT JOIN e ON o.employee_id = e.employee_id

@@ -130,6 +130,22 @@ class TestRecoverZombies:
         orchestrator.etl_control.batch_fail.assert_called_once()
 
 
+def test_run_scopes_and_restores_spark_configuration(orchestrator):
+    orchestrator.config.preserve_all_changes = False
+    orchestrator.config.scd_type = 1
+    orchestrator._apply_spark_configs = MagicMock(return_value={"spark.test": "before"})
+    orchestrator._restore_spark_configs = MagicMock()
+    orchestrator._run_pipeline_once = MagicMock(return_value={"rows_written": 1})
+
+    result = orchestrator.run()
+
+    assert result == {"rows_written": 1}
+    orchestrator._apply_spark_configs.assert_called_once_with()
+    orchestrator._restore_spark_configs.assert_called_once_with(
+        {"spark.test": "before"}
+    )
+
+
 class TestLoadActiveSources:
     def test_load_cdf_full_when_no_watermark(self, orchestrator):
         source = MagicMock()

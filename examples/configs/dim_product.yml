@@ -1,4 +1,4 @@
-table_name: {{ env }}_gold.dim_product
+table_name: {{ target.gold_schema }}.dim_product
 table_type: dimension
 scd_type: 1
 keys:
@@ -6,7 +6,7 @@ keys:
   natural_keys: [product_id]
 
 sources:
-  - name: {{ env }}_silver.products
+  - name: {{ target.silver_schema }}.products
     alias: p
     cdc_strategy: cdf
     primary_keys: [product_id]  # Required for CDF deduplication

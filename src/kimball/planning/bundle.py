@@ -18,7 +18,9 @@ def build_bundle_job(
     project: CompiledProject,
     *,
     job_name: str = "kimball_compiled_job",
-    etl_schema_parameter: str = "{{job.parameters.etl_schema}}",
+    target_name: str,
+    target_parameter: str = "{{job.parameters.target}}",
+    targets_file_parameter: str = "{{job.parameters.targets_file}}",
 ) -> dict[str, Any]:
     """Render one Databricks wheel task per pipeline using compiled DAG edges."""
 
@@ -38,10 +40,10 @@ def build_bundle_job(
                     "run",
                     "--config",
                     node.config_path,
-                    "--profile",
-                    "production",
-                    "--etl-schema",
-                    etl_schema_parameter,
+                    "--target",
+                    target_parameter,
+                    "--targets",
+                    targets_file_parameter,
                 ],
             },
             "libraries": [{"whl": "../dist/*.whl"}],
@@ -60,7 +62,10 @@ def build_bundle_job(
                     # Compensating recovery is only safe under this product
                     # contract: one active writer graph for each target set.
                     "max_concurrent_runs": 1,
-                    "parameters": [{"name": "etl_schema", "default": ""}],
+                    "parameters": [
+                        {"name": "target", "default": target_name},
+                        {"name": "targets_file", "default": "kimball.targets.yml"},
+                    ],
                     "tasks": tasks,
                 }
             }

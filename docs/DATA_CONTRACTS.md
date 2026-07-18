@@ -43,7 +43,8 @@ revision:
 python tools/check_contract_changes.py \
   --previous base-contracts \
   --current contracts \
-  --config configs
+  --config configs \
+  --target prod
 ```
 
 Compatibility rules are consumer-oriented:

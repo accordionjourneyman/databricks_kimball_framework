@@ -85,10 +85,6 @@ class RuntimeOptions:
     skew_factor: int = 5  # Partition Nx larger than median = skewed
     skip_grain_check: bool = False  # Skip expensive pre-merge duplicate validation
 
-    # dbt-inspired validation options
-    skip_validation_if_unchanged: bool = False
-    """Skip all validation if config_fingerprint + source_schema_fingerprint
-    are unchanged since the last successful run (dbt state:modified+ equivalent)."""
     use_approximate_unique: bool = False
     """Use HLL-based approx_count_distinct instead of exact groupBy for uniqueness checks.
     O(n) instead of O(n log n) shuffle. Probabilistic (~1.5% error)."""
@@ -130,6 +126,12 @@ class RuntimeOptions:
         """
         mode_str = os.environ.get("KIMBALL_MODE", "lite").lower()
         mode: Literal["lite", "full"] = "full" if mode_str == "full" else "lite"
+        if "KIMBALL_SKIP_VALIDATION_IF_UNCHANGED" in os.environ:
+            raise ValueError(
+                "KIMBALL_SKIP_VALIDATION_IF_UNCHANGED was removed because unchanged "
+                "schema/configuration does not prove unchanged data. Remove the variable; "
+                "data-quality, natural-key, and foreign-key checks now always run."
+            )
 
         def _flag(env_var: str) -> bool | None:
             """Parse feature flag: '1' -> True, '0' -> False, missing -> None."""
@@ -153,10 +155,6 @@ class RuntimeOptions:
             skew_threshold_mb=int(os.environ.get("KIMBALL_SKEW_THRESHOLD_MB", "256")),
             skew_factor=int(os.environ.get("KIMBALL_SKEW_FACTOR", "5")),
             skip_grain_check=os.environ.get("KIMBALL_SKIP_GRAIN_CHECK", "") == "1",
-            skip_validation_if_unchanged=os.environ.get(
-                "KIMBALL_SKIP_VALIDATION_IF_UNCHANGED", ""
-            )
-            == "1",
             use_approximate_unique=os.environ.get("KIMBALL_USE_APPROXIMATE_UNIQUE", "")
             == "1",
             compile_time_sql_check=os.environ.get("KIMBALL_COMPILE_TIME_SQL_CHECK", "1")

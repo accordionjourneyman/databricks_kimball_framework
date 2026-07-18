@@ -54,4 +54,5 @@ jobs:
           python tools/check_contract_changes.py \
             --previous /tmp/kimball-base/contracts \
             --current contracts \
-            --config examples/configs
+            --config examples/configs \
+            --target prod

@@ -1,4 +1,4 @@
-table_name: {{ env }}_gold.dim_employee
+table_name: {{ target.gold_schema }}.dim_employee
 table_type: dimension
 scd_type: 2
 keys:
@@ -20,7 +20,7 @@ default_rows:
   "-1": "Unknown"
 
 sources:
-  - name: {{ env }}_silver.employees
+  - name: {{ target.silver_schema }}.employees
     alias: e
     cdc_strategy: cdf
     primary_keys: [employee_id]  # Required for CDF deduplication

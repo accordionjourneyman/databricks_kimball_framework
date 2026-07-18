@@ -49,6 +49,7 @@ RUN pip install --no-cache-dir \
     pyyaml \
     jinja2 \
     pydantic \
+    jsonschema \
     pytest \
     pytest-benchmark \
     ruff \

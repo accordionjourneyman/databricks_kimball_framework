@@ -130,6 +130,7 @@ jobs:
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          BUNDLE_VAR_workspace_host: ${{ secrets.DATABRICKS_HOST }}
         run: |
           if [ -z "$DATABRICKS_HOST" ] || [ -z "$DATABRICKS_TOKEN" ]; then
             echo "Skipping ${{ matrix.target }} bundle validation: secrets not configured"

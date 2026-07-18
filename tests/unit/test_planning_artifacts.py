@@ -110,7 +110,7 @@ def test_plan_marks_removed_pipeline_as_breaking():
 
 
 def test_bundle_job_uses_compiled_dependencies_and_one_task_per_pipeline():
-    bundle = build_bundle_job(_project(), job_name="kimball_gold")
+    bundle = build_bundle_job(_project(), job_name="kimball_gold", target_name="prod")
     job = bundle["resources"]["jobs"]["kimball_gold"]
     tasks = job["tasks"]
 
@@ -125,4 +125,6 @@ def test_bundle_job_uses_compiled_dependencies_and_one_task_per_pipeline():
         "run",
         "--config",
     ]
+    assert "--target" in tasks[1]["python_wheel_task"]["parameters"]
+    assert job["parameters"][0] == {"name": "target", "default": "prod"}
     assert job["max_concurrent_runs"] == 1

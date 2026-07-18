@@ -1,4 +1,4 @@
-table_name: {{ env }}_gold.dim_customer
+table_name: {{ target.gold_schema }}.dim_customer
 table_type: dimension
 scd_type: 2
 keys:
@@ -29,7 +29,7 @@ cluster_by: [customer_id]
 optimize_after_merge: true
 
 sources:
-  - name: {{ env }}_silver.customers
+  - name: {{ target.silver_schema }}.customers
     alias: c
     cdc_strategy: cdf
     primary_keys: [customer_id]  # Required for CDF deduplication

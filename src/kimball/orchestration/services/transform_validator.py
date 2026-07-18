@@ -177,51 +177,33 @@ class TransformValidator:
                     )
 
         if getattr(config, "tests", None):
-            if (
-                fingerprint_service.should_skip_validation(ctx)
-                and not contracted_sources
-            ):
-                logger.info(
-                    "Skipping data quality validation: config + source schema "
-                    "fingerprints unchanged since last successful run."
-                )
-            else:
-                logger.info("Running data quality validation on transformed data...")
-                report = self._validator.run_config_tests(
-                    config,
-                    df=transformed_df,
-                    use_approximate_unique=ctx.runtime_options.use_approximate_unique,
-                )
-                report.raise_on_failure()
+            logger.info("Running data quality validation on transformed data...")
+            report = self._validator.run_config_tests(
+                config,
+                df=transformed_df,
+                use_approximate_unique=ctx.runtime_options.use_approximate_unique,
+            )
+            report.raise_on_failure()
 
         if config.table_type == "dimension" and config.natural_keys:
-            if (
-                not fingerprint_service.should_skip_validation(ctx)
-                or contracted_sources
-            ):
-                logger.info("Validating natural key uniqueness (pre-merge gate)...")
-                nk_result = self._validator.validate_natural_key_uniqueness(
-                    transformed_df,
-                    config.natural_keys,
-                    table_name=config.table_name,
+            logger.info("Validating natural key uniqueness (pre-merge gate)...")
+            nk_result = self._validator.validate_natural_key_uniqueness(
+                transformed_df,
+                config.natural_keys,
+                table_name=config.table_name,
+            )
+            logger.info(str(nk_result))
+            if not nk_result.passed:
+                raise DataQualityError(
+                    f"Natural key uniqueness violation in {config.table_name}: "
+                    f"{nk_result.failed_rows} duplicate keys. Details: {nk_result.details}",
+                    details={"sample_failures": nk_result.sample_failures},
                 )
-                logger.info(str(nk_result))
-                if not nk_result.passed:
-                    raise DataQualityError(
-                        f"Natural key uniqueness violation in {config.table_name}: "
-                        f"{nk_result.failed_rows} duplicate keys. Details: {nk_result.details}",
-                        details={"sample_failures": nk_result.sample_failures},
-                    )
-            else:
-                logger.info("Skipping NK uniqueness: fingerprints unchanged.")
 
         if config.table_type == "fact" and (
             config.foreign_keys or config.junk_dimensions
         ):
-            if (
-                not fingerprint_service.should_skip_validation(ctx)
-                or contracted_sources
-            ) and not getattr(config, "tests", None):
+            if not getattr(config, "tests", None):
                 logger.info(
                     "Validating FK integrity against dimensions (pre-merge gate)..."
                 )
@@ -249,7 +231,5 @@ class TransformValidator:
                     for result in fk_report.results:
                         logger.info(str(result))
                     fk_report.raise_on_failure()
-            else:
-                logger.info("Skipping FK integrity: fingerprints unchanged.")
 
         return transformed_df

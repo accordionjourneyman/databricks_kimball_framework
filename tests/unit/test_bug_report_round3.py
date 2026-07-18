@@ -114,7 +114,6 @@ class TestBugDoubleFKValidation:
         orch.spark = MagicMock(spec=SparkSession)
         orch.spark.catalog.tableExists.return_value = True
         orch.runtime_options = MagicMock()
-        orch.runtime_options.skip_validation_if_unchanged = False
         orch.runtime_options.use_approximate_unique = False
         orch._validator = MagicMock()
         orch._validator.run_config_tests.return_value = MagicMock(

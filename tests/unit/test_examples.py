@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from kimball.common.config import ConfigLoader, TableConfig
+from kimball.common.config import ConfigLoader, TableConfig, TargetLoader
 from kimball.planning import ProjectCompiler
 
 ROOT = Path(__file__).parents[2]
@@ -38,7 +38,8 @@ def _assigned_strings(path: Path, names: set[str]) -> dict[str, str]:
 
 
 def test_all_checked_in_yaml_examples_load_strictly() -> None:
-    loader = ConfigLoader(env_vars={"env": "ci"})
+    target = TargetLoader(ROOT / "kimball.targets.yml").load("dev")
+    loader = ConfigLoader(template_context=target.template_context())
     paths = sorted((ROOT / "examples" / "configs").glob("*.yml"))
 
     loaded = [loader.load_config(str(path)) for path in paths]

@@ -4,7 +4,7 @@ This guide will walk you through setting up and running your first Kimball pipel
 
 ## Prerequisites
 
-- Databricks workspace (DBR 13+)
+- Databricks workspace (DBR 17.0 LTS or later)
 - Python 3.10+
 - Delta Lake enabled
 
@@ -54,10 +54,25 @@ INSERT INTO dev_silver.customers VALUES
 
 ### Step 2: Create Configuration
 
+Create `kimball.targets.yml` at the project root. This is versioned and
+non-secret; it supports either separate workspaces or separate catalogs in one
+workspace.
+
+```yaml
+version: 1
+targets:
+  dev:
+    catalog: workspace
+    silver_schema: dev_silver
+    gold_schema: dev_gold
+    etl_schema: dev_kimball_ops
+    checkpoint_root: /Volumes/workspace/dev_kimball_ops/checkpoints
+```
+
 Create `my_configs/dim_customer.yml`:
 
 ```yaml
-table_name: dev_gold.dim_customer
+table_name: {{ target.gold_schema }}.dim_customer
 table_type: dimension
 scd_type: 2
 
@@ -66,9 +81,10 @@ keys:
   natural_keys: [customer_id]
 
 track_history_columns: [first_name, last_name, email, address]
+effective_at: updated_at
 
 sources:
-  - name: dev_silver.customers
+  - name: {{ target.silver_schema }}.customers
     alias: c
     cdc_strategy: cdf
     primary_keys: [customer_id] # Required for CDF deduplication
@@ -88,15 +104,9 @@ audit_columns: true
 
 ### Step 3: Run the Pipeline
 
-```python
-import os
-from kimball import Orchestrator
-
-# Configure ETL schema once at notebook start
-os.environ["KIMBALL_ETL_SCHEMA"] = "dev_gold"
-
-# Run the pipeline
-Orchestrator("my_configs/dim_customer.yml").run()
+```bash
+kimball validate --config my_configs --target dev
+kimball run --config my_configs/dim_customer.yml --target dev
 ```
 
 ### Step 4: Verify Results
@@ -123,8 +133,8 @@ WHERE customer_id = 1;
 
 Run the pipeline again:
 
-```python
-orchestrator.run()
+```bash
+kimball run --config my_configs/dim_customer.yml --target dev
 ```
 
 Verify SCD2 behavior:

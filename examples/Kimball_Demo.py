@@ -295,9 +295,9 @@ print(f"Validated execution levels: {compiled.levels}")
 print(f"Project manifest digest: {manifest['project_digest']}")
 
 # CI/terminal equivalents:
-#   kimball validate examples/configs --profile production
-#   kimball compile examples/configs --output manifest.json
-#   kimball plan examples/configs --previous manifest.json
+#   kimball validate --config examples/configs --target prod
+#   kimball compile --config examples/configs --target prod --output manifest.json
+#   kimball plan --config examples/configs --target prod --against manifest.json
 
 # COMMAND ----------
 

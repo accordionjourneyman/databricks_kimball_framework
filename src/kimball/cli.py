@@ -11,7 +11,7 @@ from pathlib import Path
 import yaml
 from jsonschema import ValidationError as JsonSchemaValidationError
 
-from kimball.common.config import ConfigLoader
+from kimball.common.config import ConfigLoader, TargetConfig, TargetLoader
 from kimball.contracts.compatibility import check_compatibility
 from kimball.contracts.odcs import ODCSContractLoader
 from kimball.planning.bundle import build_bundle_job
@@ -38,13 +38,33 @@ def discover_config_paths(inputs: Sequence[str]) -> list[str]:
     return sorted(discovered)
 
 
-def load_compiled_project(inputs: Sequence[str], profile: Profile) -> CompiledProject:
+def load_target(name: str, path: str) -> TargetConfig:
+    return TargetLoader(path).load(name)
+
+
+def _profile_for_target(target: TargetConfig) -> Profile:
+    profiles: dict[str, Profile] = {
+        "dev": "dev",
+        "test": "test",
+        "prod": "production",
+    }
+    try:
+        return profiles[target.name]
+    except KeyError as exc:
+        raise ValueError(
+            f"Target '{target.name}' is not supported. Use one of: dev, test, prod"
+        ) from exc
+
+
+def load_compiled_project(
+    inputs: Sequence[str], target: TargetConfig
+) -> CompiledProject:
     paths = discover_config_paths(inputs)
     if not paths:
         raise ValueError("No YAML pipeline configurations were found")
-    loader = ConfigLoader()
+    loader = ConfigLoader(template_context=target.template_context())
     entries = [(path, loader.load_config(path)) for path in paths]
-    return ProjectCompiler(profile=profile).compile(entries)
+    return ProjectCompiler(profile=_profile_for_target(target)).compile(entries)
 
 
 def _write_text(path_value: str, content: str) -> None:
@@ -55,9 +75,8 @@ def _write_text(path_value: str, content: str) -> None:
 
 def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", nargs="+", required=True)
-    parser.add_argument(
-        "--profile", choices=("dev", "test", "production"), default="dev"
-    )
+    parser.add_argument("--target", required=True, choices=("dev", "test", "prod"))
+    parser.add_argument("--targets", default="kimball.targets.yml")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -82,8 +101,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     run = commands.add_parser("run", help="Run one pipeline configuration")
     run.add_argument("--config", required=True)
-    run.add_argument("--etl-schema", required=True)
-    run.add_argument("--profile", choices=("dev", "test", "production"), default="dev")
+    run.add_argument("--target", required=True, choices=("dev", "test", "prod"))
+    run.add_argument("--targets", default="kimball.targets.yml")
 
     contract = commands.add_parser(
         "contract", help="Validate and publish ODCS contracts"
@@ -112,7 +131,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _validate(args: argparse.Namespace) -> int:
-    project = load_compiled_project(args.config, args.profile)
+    target = load_target(args.target, args.targets)
+    project = load_compiled_project(args.config, target)
     for warning in project.warnings:
         print(f"WARNING {warning}")
     print(f"Validated {len(project.nodes)} pipelines in {len(project.levels)} levels")
@@ -120,7 +140,8 @@ def _validate(args: argparse.Namespace) -> int:
 
 
 def _compile(args: argparse.Namespace) -> int:
-    project = load_compiled_project(args.config, args.profile)
+    target = load_target(args.target, args.targets)
+    project = load_compiled_project(args.config, target)
     manifest = build_manifest(project)
     rendered = manifest_json(manifest)
     if args.output:
@@ -128,13 +149,16 @@ def _compile(args: argparse.Namespace) -> int:
     else:
         print(rendered, end="")
     if args.bundle_output:
-        bundle = build_bundle_job(project, job_name=args.job_name)
+        bundle = build_bundle_job(
+            project, job_name=args.job_name, target_name=target.name
+        )
         _write_text(args.bundle_output, yaml.safe_dump(bundle, sort_keys=False))
     return 0
 
 
 def _plan(args: argparse.Namespace) -> int:
-    project = load_compiled_project(args.config, args.profile)
+    target = load_target(args.target, args.targets)
+    project = load_compiled_project(args.config, target)
     previous = json.loads(Path(args.against).read_text(encoding="utf-8"))
     plan = diff_manifests(previous, build_manifest(project))
     print(
@@ -155,7 +179,15 @@ def _run(args: argparse.Namespace) -> int:
     # Import lazily so planning commands remain light and side-effect free.
     from kimball.orchestration.orchestrator import Orchestrator
 
-    result = Orchestrator(args.config, etl_schema=args.etl_schema).run()
+    target = load_target(args.target, args.targets)
+    config = ConfigLoader(template_context=target.template_context()).load_config(
+        args.config
+    )
+    result = Orchestrator(
+        config,
+        etl_schema=target.etl_schema,
+        checkpoint_root=target.checkpoint_root,
+    ).run()
     print(json.dumps(result, indent=2, sort_keys=True, default=str))
     return 0
 

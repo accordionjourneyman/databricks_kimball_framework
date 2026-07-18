@@ -1,10 +1,13 @@
 import hashlib
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
+from jinja2 import StrictUndefined, TemplateError
+from jinja2.sandbox import SandboxedEnvironment
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 
@@ -12,6 +15,49 @@ class StrictConfigModel(BaseModel):
     """Base for configuration objects where typos must fail closed."""
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class TargetConfig(StrictConfigModel):
+    """Non-secret data-plane settings for one deployable environment."""
+
+    name: str
+    catalog: str
+    silver_schema: str
+    gold_schema: str
+    etl_schema: str
+    checkpoint_root: str | None = None
+
+    def template_context(self) -> dict[str, Any]:
+        return {"target": self.model_dump(exclude={"name"}), "target_name": self.name}
+
+
+class TargetFile(StrictConfigModel):
+    version: Literal[1]
+    targets: dict[str, dict[str, Any]]
+
+
+class TargetLoader:
+    """Loads the portable, non-secret ``kimball.targets.yml`` descriptor."""
+
+    def __init__(self, path: str | Path = "kimball.targets.yml") -> None:
+        self.path = Path(path)
+
+    def load(self, name: str) -> TargetConfig:
+        try:
+            payload = yaml.safe_load(self.path.read_text(encoding="utf-8"))
+            target_file = TargetFile(**(payload or {}))
+        except (OSError, ValidationError, yaml.YAMLError) as exc:
+            raise ValueError(f"Invalid target descriptor {self.path}: {exc}") from exc
+        target_data = target_file.targets.get(name)
+        if target_data is None:
+            available = ", ".join(sorted(target_file.targets)) or "(none)"
+            raise ValueError(
+                f"Unknown target '{name}' in {self.path}. Available targets: {available}"
+            )
+        try:
+            return TargetConfig(name=name, **target_data)
+        except ValidationError as exc:
+            raise ValueError(f"Invalid target '{name}' in {self.path}: {exc}") from exc
 
 
 class StreamingSourceConfig(StrictConfigModel):
@@ -482,25 +528,37 @@ class TableConfig(StrictConfigModel):
 
 
 class ConfigLoader:
-    def __init__(self, env_vars: dict[str, str] | None = None):
-        self.env_vars = env_vars or os.environ.copy()
+    def __init__(
+        self,
+        env_vars: Mapping[str, str] | None = None,
+        *,
+        template_context: Mapping[str, Any] | None = None,
+    ):
+        # Windows normalizes environment keys to uppercase when copying them.
+        # Keep original keys and lowercase aliases so legacy templates remain
+        # portable while new configurations use explicit ``target.*`` values.
+        raw = dict(env_vars) if env_vars is not None else dict(os.environ)
+        self.env_vars: dict[str, Any] = dict(raw)
+        for key, value in raw.items():
+            self.env_vars.setdefault(str(key).lower(), value)
+        self.template_context = dict(template_context or {})
 
     def load_config(self, file_path: str) -> TableConfig:
-        with open(file_path) as f:
-            rendered = (
-                __import__("jinja2.sandbox", fromlist=["SandboxedEnvironment"])
-                .SandboxedEnvironment(
-                    undefined=__import__(
-                        "jinja2", fromlist=["StrictUndefined"]
-                    ).StrictUndefined
+        try:
+            with open(file_path, encoding="utf-8") as file_handle:
+                rendered = (
+                    SandboxedEnvironment(undefined=StrictUndefined)
+                    .from_string(file_handle.read())
+                    .render({**self.env_vars, **self.template_context})
                 )
-                .from_string(f.read())
-                .render(self.env_vars)
-            )
+        except (OSError, TemplateError) as exc:
+            raise ValueError(
+                f"Configuration template error in {file_path}: {exc}"
+            ) from exc
         try:
             config = TableConfig(**yaml.safe_load(rendered))
             return self.resolve_contract_refs(config, file_path)
-        except ValidationError as e:
+        except (ValidationError, yaml.YAMLError) as e:
             raise ValueError(
                 f"Configuration validation error in {file_path}: {e}"
             ) from e

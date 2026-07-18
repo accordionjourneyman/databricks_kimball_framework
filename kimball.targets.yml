@@ -1,0 +1,20 @@
+version: 1
+targets:
+  dev:
+    catalog: workspace
+    silver_schema: dev_silver
+    gold_schema: dev_gold
+    etl_schema: dev_kimball_ops
+    checkpoint_root: /Volumes/workspace/dev_kimball_ops/checkpoints
+  test:
+    catalog: workspace
+    silver_schema: test_silver
+    gold_schema: test_gold
+    etl_schema: test_kimball_ops
+    checkpoint_root: /Volumes/workspace/test_kimball_ops/checkpoints
+  prod:
+    catalog: workspace
+    silver_schema: prod_silver
+    gold_schema: prod_gold
+    etl_schema: prod_kimball_ops
+    checkpoint_root: /Volumes/workspace/prod_kimball_ops/checkpoints

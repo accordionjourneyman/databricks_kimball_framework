@@ -6,7 +6,7 @@ import os
 from dataclasses import asdict
 
 from kimball.cli import discover_config_paths
-from kimball.common.config import ConfigLoader
+from kimball.common.config import ConfigLoader, TargetLoader
 from kimball.contracts.gate import evaluate_contract_changes, load_contract_directory
 
 
@@ -17,9 +17,8 @@ def main() -> int:
     parser.add_argument("--current", required=True)
     parser.add_argument("--previous")
     parser.add_argument("--config", nargs="*")
-    parser.add_argument(
-        "--profile", choices=("dev", "test", "production"), default="production"
-    )
+    parser.add_argument("--target", required=True, choices=("dev", "test", "prod"))
+    parser.add_argument("--targets", default="kimball.targets.yml")
     args = parser.parse_args()
 
     current = load_contract_directory(args.current)
@@ -29,8 +28,11 @@ def main() -> int:
         # ConfigLoader resolves every exact contract_ref. Project DAG validation is
         # performed separately because a repository may contain alternative demo
         # configurations that are not one deployable project.
-        env_vars = {**os.environ, "env": os.environ.get("env", "ci")}
-        loader = ConfigLoader(env_vars=env_vars)
+        target = TargetLoader(args.targets).load(args.target)
+        loader = ConfigLoader(
+            env_vars=os.environ,
+            template_context=target.template_context(),
+        )
         for path in discover_config_paths(args.config):
             loader.load_config(path)
 

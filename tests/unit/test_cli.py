@@ -4,7 +4,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 from kimball.cli import main
-from kimball.common.config import SourceConfig, TableConfig
+from kimball.common.config import SourceConfig, TableConfig, TargetConfig
 from kimball.contracts.odcs import ODCSContractLoader
 from kimball.planning.compiler import ProjectCompiler
 from kimball.planning.manifest import build_manifest
@@ -22,20 +22,36 @@ def _project():
     return ProjectCompiler(profile="production").compile([("dim.yml", config)])
 
 
+def _target():
+    return TargetConfig(
+        name="prod",
+        catalog="workspace",
+        silver_schema="prod_silver",
+        gold_schema="prod_gold",
+        etl_schema="prod_ops",
+    )
+
+
 def test_validate_command_compiles_project(capsys):
     project = _project()
-    with patch("kimball.cli.load_compiled_project", return_value=project) as load:
-        result = main(["validate", "--config", "configs", "--profile", "production"])
+    with (
+        patch("kimball.cli.load_compiled_project", return_value=project) as load,
+        patch("kimball.cli.load_target", return_value=_target()),
+    ):
+        result = main(["validate", "--config", "configs", "--target", "prod"])
 
     assert result == 0
-    load.assert_called_once_with(["configs"], "production")
+    load.assert_called_once_with(["configs"], _target())
     assert "Validated 1 pipelines" in capsys.readouterr().out
 
 
 def test_compile_command_emits_manifest_json(capsys):
     project = _project()
-    with patch("kimball.cli.load_compiled_project", return_value=project):
-        result = main(["compile", "--config", "dim.yml"])
+    with (
+        patch("kimball.cli.load_compiled_project", return_value=project),
+        patch("kimball.cli.load_target", return_value=_target()),
+    ):
+        result = main(["compile", "--config", "dim.yml", "--target", "prod"])
 
     output = json.loads(capsys.readouterr().out)
     assert result == 0
@@ -47,6 +63,7 @@ def test_plan_command_returns_nonzero_for_breaking_change(capsys):
     with (
         patch("kimball.cli.load_compiled_project") as load,
         patch("kimball.cli.Path.read_text", return_value=json.dumps(previous)),
+        patch("kimball.cli.load_target", return_value=_target()),
     ):
         load.return_value = ProjectCompiler(profile="production").compile([])
         result = main(
@@ -56,6 +73,8 @@ def test_plan_command_returns_nonzero_for_breaking_change(capsys):
                 "configs",
                 "--against",
                 "manifest.json",
+                "--target",
+                "prod",
                 "--fail-on-breaking",
             ]
         )
@@ -67,18 +86,23 @@ def test_plan_command_returns_nonzero_for_breaking_change(capsys):
 def test_run_command_invokes_one_pipeline(capsys):
     orchestrator = MagicMock()
     orchestrator.run.return_value = {"status": "SUCCESS", "rows_written": 3}
-    with patch(
-        "kimball.orchestration.orchestrator.Orchestrator", return_value=orchestrator
+    with (
+        patch(
+            "kimball.orchestration.orchestrator.Orchestrator", return_value=orchestrator
+        ),
+        patch("kimball.cli.load_target", return_value=_target()),
+        patch(
+            "kimball.cli.ConfigLoader.load_config",
+            return_value=_project().nodes["gold.dim_customer"].config,
+        ),
     ):
         result = main(
             [
                 "run",
                 "--config",
                 "dim.yml",
-                "--etl-schema",
-                "ops",
-                "--profile",
-                "production",
+                "--target",
+                "prod",
             ]
         )
 

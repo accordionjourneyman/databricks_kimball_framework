@@ -108,7 +108,7 @@ def _save(scenario: str, scale: str, **kwargs):
 
 
 class TestValidationOptimizations:
-    """Compare full validation vs state-aware skip vs approximate unique."""
+    """Compare exact validation with safe approximate uniqueness checks."""
 
     def test_full_validation_baseline(
         self, spark: SparkSession, bench_db: str, scale, tmp_path
@@ -118,7 +118,6 @@ class TestValidationOptimizations:
         _generate_products(spark, params["products"], bench_db)
         config_path = _write(_make_config(bench_db), tmp_path)
 
-        os.environ.pop("KIMBALL_SKIP_VALIDATION_IF_UNCHANGED", None)
         os.environ.pop("KIMBALL_USE_APPROXIMATE_UNIQUE", None)
 
         start = time.time()
@@ -146,41 +145,6 @@ class TestValidationOptimizations:
             params=params,
         )
 
-    def test_state_aware_skip(
-        self, spark: SparkSession, bench_db: str, scale, tmp_path
-    ):
-        """dbt state:modified+ equivalent: skip validation when fingerprints unchanged."""
-        params = SCALE_PARAMS[scale]
-        _generate_products(spark, params["products"], bench_db)
-        config_path = _write(_make_config(bench_db), tmp_path)
-
-        os.environ["KIMBALL_SKIP_VALIDATION_IF_UNCHANGED"] = "1"
-
-        start = time.time()
-        result = Orchestrator(config_path, spark=spark, etl_schema=bench_db).run()
-        first_ms = (time.time() - start) * 1000
-
-        spark.sql(f"""
-            UPDATE {bench_db}.products_src
-            SET price = price * 1.15
-            WHERE product_id < {params["n_changed"]}
-        """)
-
-        start = time.time()
-        result2 = Orchestrator(config_path, spark=spark, etl_schema=bench_db).run()
-        second_ms = (time.time() - start) * 1000
-
-        assert result["status"] == "SUCCESS"
-        assert result2["status"] == "SUCCESS"
-
-        _save(
-            "validation_state_aware",
-            scale,
-            first_ms=first_ms,
-            second_ms=second_ms,
-            params=params,
-        )
-
     def test_approximate_unique(
         self, spark: SparkSession, bench_db: str, scale, tmp_path
     ):
@@ -189,7 +153,6 @@ class TestValidationOptimizations:
         _generate_products(spark, params["products"], bench_db)
         config_path = _write(_make_config(bench_db), tmp_path)
 
-        os.environ.pop("KIMBALL_SKIP_VALIDATION_IF_UNCHANGED", None)
         os.environ["KIMBALL_USE_APPROXIMATE_UNIQUE"] = "1"
 
         start = time.time()
@@ -211,42 +174,6 @@ class TestValidationOptimizations:
 
         _save(
             "validation_approximate",
-            scale,
-            first_ms=first_ms,
-            second_ms=second_ms,
-            params=params,
-        )
-
-    def test_combined_optimizations(
-        self, spark: SparkSession, bench_db: str, scale, tmp_path
-    ):
-        """Both optimizations: state-aware skip + approximate unique."""
-        params = SCALE_PARAMS[scale]
-        _generate_products(spark, params["products"], bench_db)
-        config_path = _write(_make_config(bench_db), tmp_path)
-
-        os.environ["KIMBALL_SKIP_VALIDATION_IF_UNCHANGED"] = "1"
-        os.environ["KIMBALL_USE_APPROXIMATE_UNIQUE"] = "1"
-
-        start = time.time()
-        result = Orchestrator(config_path, spark=spark, etl_schema=bench_db).run()
-        first_ms = (time.time() - start) * 1000
-
-        spark.sql(f"""
-            UPDATE {bench_db}.products_src
-            SET price = price * 1.15
-            WHERE product_id < {params["n_changed"]}
-        """)
-
-        start = time.time()
-        result2 = Orchestrator(config_path, spark=spark, etl_schema=bench_db).run()
-        second_ms = (time.time() - start) * 1000
-
-        assert result["status"] == "SUCCESS"
-        assert result2["status"] == "SUCCESS"
-
-        _save(
-            "validation_combined",
             scale,
             first_ms=first_ms,
             second_ms=second_ms,

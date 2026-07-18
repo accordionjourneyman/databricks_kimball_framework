@@ -21,10 +21,10 @@ sources:
 ```
 
 ```bash
-kimball validate configs --profile production
-kimball compile configs --profile production --output manifest.json
-kimball plan configs --previous deployed-manifest.json
-kimball bundle configs --profile production --output databricks.yml
+kimball validate --config configs --target prod
+kimball compile --config configs --target prod --output manifest.json
+kimball plan --config configs --target prod --against deployed-manifest.json
+kimball compile --config configs --target prod --bundle-output generated-job.yml
 ```
 
 Production validation rejects:
