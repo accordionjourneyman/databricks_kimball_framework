@@ -17,7 +17,7 @@
 #   docker-compose run --rm kimball-tests python -m pytest tests/unit/ -q
 #   docker-compose run --rm kimball-tests python tools/run_tests.py -t local --integration
 
-FROM python:3.11-bookworm
+FROM python:3.14-bookworm
 
 LABEL org.opencontainers.image.title="Kimball framework integration-test image" \
       org.opencontainers.image.description="Local Spark/Delta test image; not a production runtime image"
