@@ -161,7 +161,7 @@ class TestAppendStrategy:
 
         ctx.loader.load_cdf.assert_not_called()
         ctx.etl_control.batch_complete.assert_not_called()
-        assert versions == {}
+        assert versions["silver.events"] == 10
         assert active == {}
 
     def test_append_strategy_loads_incremental_from_watermark(self, ctx):

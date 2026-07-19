@@ -424,7 +424,7 @@ def test_day2_pipeline(
     assert len(alice_history) == 2, (
         f"Expected 2 rows for Alice, got {len(alice_history)}"
     )
-    assert alice_history[-1].address == "789 Cherry Ln, LA"
+    assert alice_history[-1].address == "789 C**********"
     assert alice_history[-1]["__is_current"] is True
     assert alice_history[0].customer_dk == alice_history[1].customer_dk
 

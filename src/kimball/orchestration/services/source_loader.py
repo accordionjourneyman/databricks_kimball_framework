@@ -79,6 +79,19 @@ class SourceLoader:
             df.createOrReplaceTempView(source.alias)
             active_dfs[source.name] = df
 
+        active_names = {item.source.name for item in plan.active_items}
+        for item in plan.items:
+            if item.source.name not in active_names:
+                source_versions[item.source.name] = (
+                    item.prior_watermark if item.prior_watermark is not None else 0
+                )
+                try:
+                    table_schema = ctx.spark.table(item.source.name).schema
+                    empty_df = ctx.spark.createDataFrame([], table_schema)
+                except Exception:
+                    empty_df = ctx.spark.createDataFrame([], "x int")
+                empty_df.createOrReplaceTempView(item.source.alias)
+
         logger.info(
             "Loaded %d source(s) in %.2fs",
             len(active_dfs),
