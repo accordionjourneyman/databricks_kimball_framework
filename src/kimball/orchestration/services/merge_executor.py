@@ -38,12 +38,14 @@ class MergeExecutor:
     def ensure_target_table(
         self, ctx: PipelineContext, transformed_df: DataFrame
     ) -> bool:
-        if ctx.spark.catalog.tableExists(ctx.config.table_name):
+        if ctx.table_exists(ctx.config.table_name):
             return False
         logger.info(f"Creating table {ctx.config.table_name}...")
         self._create_target_table(ctx, transformed_df)
         if ctx.config.scd_type == 4 and ctx.config.history_table:
             self.table_creator.create_history_table(ctx.config.history_table)
+        # Invalidate cache so subsequent checks see the new table.
+        ctx.invalidate_table(ctx.config.table_name)
         return True
 
     def _create_target_table(
@@ -76,7 +78,7 @@ class MergeExecutor:
     def seed_defaults(self, ctx: PipelineContext, table_created: bool) -> None:
         if not table_created or ctx.config.table_type != "dimension":
             return
-        target_schema = ctx.spark.table(ctx.config.table_name).schema
+        target_schema = ctx.get_target_schema(ctx.config.table_name)
         if ctx.config.scd_type in (2, 7):
             _merger.ensure_scd2_defaults(
                 ctx.config.table_name,
@@ -110,8 +112,8 @@ class MergeExecutor:
         else:
             checkpointed_df = transformed_df
 
-        if ctx.spark.catalog.tableExists(ctx.config.table_name):
-            target_schema = ctx.spark.table(ctx.config.table_name).schema
+        if ctx.table_exists(ctx.config.table_name):
+            target_schema = ctx.get_target_schema(ctx.config.table_name)
             target_columns = {f.name for f in target_schema.fields}
             return self._apply_adaptive_pruning(ctx, checkpointed_df, target_columns)
         return checkpointed_df
@@ -308,10 +310,37 @@ class MergeExecutor:
 
     def get_merge_metrics(self, ctx: PipelineContext) -> dict[str, int]:
         metrics = _merger.get_last_merge_metrics(
-            ctx.config.table_name, batch_id=ctx.batch_id
+            ctx.config.table_name,
+            batch_id=ctx.batch_id,
+            spark=ctx.spark,
         )
         return {
             "rows_read": int(metrics.get("numSourceRows", 0)),
             "rows_written": int(metrics.get("numTargetRowsInserted", 0))
             + int(metrics.get("numTargetRowsUpdated", 0)),
         }
+
+    def generate_skeletons(
+        self, ctx: PipelineContext, source_df: DataFrame, join_keys: list[str]
+    ) -> None:
+        if ctx.config.table_type != "dimension":
+            return
+        if not ctx.table_exists(ctx.config.table_name):
+            return
+        target_schema = ctx.get_target_schema(ctx.config.table_name)
+        if "__is_skeleton" not in {f.name for f in target_schema.fields}:
+            return
+        if not join_keys:
+            return
+        from kimball.processing.skeleton_generator import SkeletonGenerator
+
+        gen = SkeletonGenerator(ctx.spark)
+        surrogate = ctx.config.surrogate_key or "surrogate_key"
+        gen.generate_skeletons(
+            fact_df=source_df,
+            dim_table_name=ctx.config.table_name,
+            fact_join_key=join_keys[0],
+            dim_join_key=join_keys[0],
+            surrogate_key_col=surrogate,
+            batch_id=ctx.batch_id,
+        )

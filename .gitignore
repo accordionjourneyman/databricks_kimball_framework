@@ -43,6 +43,7 @@ wheels/
 # IDE
 .vscode/
 .idea/
+opencode*
 
 # Databricks
 .databricks-connect

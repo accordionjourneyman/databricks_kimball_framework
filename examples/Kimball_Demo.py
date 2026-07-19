@@ -216,12 +216,15 @@ foreign_keys:
       source_columns: [customer_id]
       event_time: order_date
       early_arriving: skeleton
+      validate_resolution: true
+      detect_fanout: true
   - column: product_sk
     references: demo_gold.dim_product
     dimension_key: product_sk
     lookup:
       source_columns: [product_id]
       early_arriving: default
+      detect_fanout: true
 
 sources:
   - name: demo_silver.order_items
@@ -1035,11 +1038,17 @@ foreign_keys:
     dimension_key: date_sk
     role_playing: true
     role: order_date
+    lookup:
+      source_columns: [order_date_sk]
+      detect_fanout: true
   - column: ship_date_sk
     references: demo_gold.dim_date
     dimension_key: date_sk
     role_playing: true
     role: ship_date
+    lookup:
+      source_columns: [ship_date_sk]
+      detect_fanout: true
 measures:
   - name: order_amount
     aggregation: sum

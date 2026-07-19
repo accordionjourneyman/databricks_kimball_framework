@@ -87,6 +87,7 @@ class ETLControlManager:
             self.schema = etl_schema
             self.fq_table = f"{self.schema}.{table_name}"
         self.database = self.schema
+        self._delta_table: DeltaTable | None = None
         self._ensure_table_exists()
 
     @property
@@ -431,10 +432,16 @@ class ETLControlManager:
         record.setdefault("updated_at", datetime.now())
         self._upsert_control_records([record])
 
+    def _get_delta_table(self) -> DeltaTable:
+        """Return a cached DeltaTable handle for the ETL control table."""
+        if self._delta_table is None:
+            self._delta_table = DeltaTable.forName(self.spark, self.fq_table)
+        return self._delta_table
+
     def _upsert_control_records(self, records: list[ETLControlRecord]) -> None:
         if not records:
             return
-        delta_table = DeltaTable.forName(self.spark, self.fq_table)
+        delta_table = self._get_delta_table()
         normalized = []
         for record in records:
             target_table = record.get("target_table")
@@ -494,6 +501,7 @@ class ETLControlManager:
                         max_retries,
                     )
                     time.sleep(0.5 * (attempt + 1))
-                    delta_table = DeltaTable.forName(self.spark, self.fq_table)
+                    self._delta_table = DeltaTable.forName(self.spark, self.fq_table)
+                    delta_table = self._delta_table
                     continue
                 raise

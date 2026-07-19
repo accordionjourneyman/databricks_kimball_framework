@@ -32,6 +32,7 @@ class TransactionManager:
 
     def __init__(self, spark_session: SparkSession | None = None) -> None:
         self.spark = spark_session or get_spark()
+        self._version_cache: dict[str, int] = {}
 
     def _get_table_version(self, table_name: str) -> int:
         """Get the current committed version of a Delta table.
@@ -39,15 +40,27 @@ class TransactionManager:
         Returns ``-1`` when the table does not exist or is not a Delta table.
         Callers should treat ``-1`` as a sentinel meaning "no version available".
         """
+        if table_name in self._version_cache:
+            return self._version_cache[table_name]
+        # Guard: avoid the FAILED DeltaTable.forName probe on first run.
         try:
-            # Optimize: Get version from history(1) instead of full history
+            if not self.spark.catalog.tableExists(table_name):
+                return -1
+        except Exception:
+            return -1
+        try:
             history = DeltaTable.forName(self.spark, table_name).history(1).collect()
             if not history:
-                return -1  # Empty table, arguably version 0 or -1
-            return int(history[0]["version"])
+                return -1
+            version = int(history[0]["version"])
+            self._version_cache[table_name] = version
+            return version
         except AnalysisException:
-            # Table doesn't exist or isn't a Delta table
             return -1
+
+    def invalidate_version(self, table_name: str) -> None:
+        """Clear cached version so next read hits Delta log."""
+        self._version_cache.pop(table_name, None)
 
     def _rollback(self, table_name: str, version: int) -> None:
         """Rollback table to a specific version using RESTORE."""
@@ -75,7 +88,7 @@ class TransactionManager:
             True if rollback occurred, False otherwise.
         """
         try:
-            # Check if table exists first
+            # Check if table exists first — avoids FAILED DeltaTable.forName probe.
             if not self.spark.catalog.tableExists(table_name):
                 logger.info(
                     f"ZOMBIE RECOVERY SKIPPED: Table {table_name} does not exist."
@@ -149,7 +162,8 @@ class TransactionManager:
         try:
             yield
         except Exception as e:
-            # Failure detected - initiate rollback if table state advanced
+            # Invalidate cached version — the failed write may have advanced it.
+            self.invalidate_version(table_name)
             current_version = self._get_table_version(table_name)
 
             if current_version > start_version:
@@ -172,6 +186,9 @@ class TransactionManager:
                     self._rollback(table_name, start_version)
 
             raise e
+        else:
+            # Success — MERGE committed. Invalidate so next batch reads fresh version.
+            self.invalidate_version(table_name)
         finally:
             # Always clear metadata to avoid polluting future commits
             try:

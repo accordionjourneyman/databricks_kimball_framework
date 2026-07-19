@@ -252,6 +252,8 @@ class ForeignKeyLookupConfig(StrictConfigModel):
     early_arriving: Literal["skeleton", "default", "error"] = "skeleton"
     not_applicable_when: str | None = None
     invalid_action: Literal["default", "error"] = "error"
+    validate_resolution: bool = False
+    detect_fanout: bool = True
 
     @model_validator(mode="after")
     def validate_column_mapping(self) -> "ForeignKeyLookupConfig":

@@ -1,8 +1,8 @@
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 # SCD Type 2 Constants
-DEFAULT_VALID_FROM = datetime(1900, 1, 1, 0, 0, 0)
-DEFAULT_VALID_TO = datetime(9999, 12, 31, 23, 59, 59, 999999)
+DEFAULT_VALID_FROM = datetime(1900, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+DEFAULT_VALID_TO = datetime(9999, 12, 31, 0, 0, 0, tzinfo=timezone.utc)
 DEFAULT_START_DATE = date(1900, 1, 1)
 
 # Reserved warehouse members. Real hash keys are not allowed to occupy this
@@ -17,7 +17,7 @@ RESERVED_DIMENSION_KEYS = frozenset(DEFAULT_MEMBERS)
 
 # SQL Strings for use in Spark SQL expressions
 SQL_DEFAULT_VALID_FROM = "cast('1900-01-01 00:00:00' as timestamp)"
-SQL_DEFAULT_VALID_TO = "cast('9999-12-31 23:59:59.999999' as timestamp)"
+SQL_DEFAULT_VALID_TO = "cast('9999-12-31 00:00:00' as timestamp)"
 
 # Spark Configuration Keys
 SPARK_CONF_AUTO_MERGE = "spark.databricks.delta.schema.autoMerge.enabled"

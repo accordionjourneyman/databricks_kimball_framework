@@ -193,7 +193,12 @@ class StreamingOrchestrator:
             if batch_df.isEmpty():
                 logger.info("Micro-batch %s for %s is empty", batch_id, source.name)
                 return
-            batch_df = batch_df.persist()
+            persisted = False
+            try:
+                batch_df = batch_df.persist()
+                persisted = True
+            except Exception as exc:
+                logger.debug("persist() unavailable (%s); continuing without cache", exc)
             batch_spark = batch_df.sparkSession
             batch_df.createOrReplaceTempView(source.alias)
             try:
@@ -211,7 +216,8 @@ class StreamingOrchestrator:
                 raise
             finally:
                 batch_spark.catalog.dropTempView(source.alias)
-                batch_df.unpersist(blocking=False)
+                if persisted:
+                    batch_df.unpersist(blocking=False)
 
         return _foreach
 

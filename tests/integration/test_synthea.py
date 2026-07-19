@@ -157,6 +157,10 @@ foreign_keys:
   - column: patient_id
     references: {test_db}.dim_patient
     dimension_key: patient_id
+    lookup:
+      source_columns: [patient_id]
+      detect_fanout: true
+      validate_resolution: true
 sources:
   - name: {test_db}.encounters
     alias: e
@@ -281,6 +285,9 @@ foreign_keys:
   - column: provider_id
     references: {test_db}.dim_provider
     dimension_key: provider_id
+    lookup:
+      source_columns: [provider_id]
+      detect_fanout: true
 sources:
   - name: {test_db}.encounters
     alias: e
@@ -297,6 +304,9 @@ foreign_keys:
   - column: provider_id
     references: {test_db}.dim_provider
     dimension_key: provider_id
+    lookup:
+      source_columns: [provider_id]
+      detect_fanout: true
 sources:
   - name: {test_db}.conditions
     alias: c

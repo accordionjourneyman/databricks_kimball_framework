@@ -365,6 +365,7 @@ class Orchestrator:
                     join_keys = self.config.merge_keys or []
                 else:
                     join_keys = self.config.natural_keys or []
+                self._merge_executor.generate_skeletons(ctx, source_df, join_keys)
                 self._merge_executor.validate_grain(ctx, source_df, join_keys)
                 self._merge_executor.execute_merge(ctx, source_df, join_keys)
                 merge_executed = True

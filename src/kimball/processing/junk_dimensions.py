@@ -63,7 +63,7 @@ def materialize_junk_dimensions(
                 f"source.`{definition.surrogate_key}`",
             ).whenNotMatchedInsertAll().execute()
         else:
-            combinations.write.format("delta").mode("errorifexists").saveAsTable(
+            combinations.write.format("delta").mode("error").saveAsTable(
                 definition.dimension_table
             )
     return result

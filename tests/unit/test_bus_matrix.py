@@ -103,6 +103,8 @@ foreign_keys:
       source_columns: [customer_id]
       event_time: order_at
       identity_map: silver.customer_identity_map
+      detect_fanout: true
+      validate_resolution: true
 """,
         encoding="utf-8",
     )

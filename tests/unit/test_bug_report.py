@@ -778,6 +778,7 @@ class TestBugGetTableVersionSwallowsErrors:
 
         txn = TransactionManager.__new__(TransactionManager)
         txn.spark = MagicMock(spec=SparkSession)
+        txn._version_cache = {}
 
         mock_dt = MagicMock()
         mock_dt.history.return_value.collect.side_effect = Exception(

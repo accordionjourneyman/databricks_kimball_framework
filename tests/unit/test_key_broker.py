@@ -162,3 +162,124 @@ def test_table_version_is_best_effort() -> None:
 
     spark.sql.side_effect = RuntimeError("history unavailable")
     assert broker._table_version("gold.dim_customer") == -1
+
+
+# ------------------------------------------------------------------ #
+# _validate_resolution tests                                          #
+# ------------------------------------------------------------------ #
+
+
+def _make_fk(*, detect_fanout: bool = True, validate_resolution: bool = False):
+    return ForeignKeyConfig(
+        column="customer_sk",
+        references="gold.dim_customer",
+        dimension_key="customer_sk",
+        lookup={
+            "source_columns": ["customer_id"],
+            "early_arriving": "default",
+            "detect_fanout": detect_fanout,
+            "validate_resolution": validate_resolution,
+        },
+    )
+
+
+def _make_joined_df(total: int, resolved: int):
+    """Create a mock joined DataFrame whose agg().collect() returns known stats."""
+    joined = MagicMock()
+    row = MagicMock()
+    row.__getitem__ = lambda self, key: {"total": total, "resolved": resolved}[key]
+    joined.agg.return_value.collect.return_value = [row]
+    return joined
+
+
+def _make_fact_df(nk_count: int = 0):
+    """Create a mock fact DataFrame for count assertions."""
+    fact = MagicMock()
+    fact.columns = ["customer_id"]
+    if nk_count > 0:
+        distinct_rows = [MagicMock() for _ in range(nk_count)]
+        fact.select.return_value.distinct.return_value.count.return_value = nk_count
+    return fact
+
+
+def _make_dim_spark(duplicate_keys: bool = False):
+    """Create a mock Spark session whose table() returns dimension data."""
+    spark = MagicMock()
+    dim = MagicMock()
+    if duplicate_keys:
+        row = MagicMock()
+        row.__getitem__ = lambda self, key: {"customer_id": 1}[key]
+        dim.groupBy.return_value.agg.return_value.filter.return_value.limit.return_value.collect.return_value = [
+            row
+        ]
+    else:
+        dim.groupBy.return_value.agg.return_value.filter.return_value.limit.return_value.collect.return_value = (
+            []
+        )
+    spark.table.return_value = dim
+    return spark
+
+
+def test_resolution_rate_is_logged(caplog) -> None:
+    spark = _make_dim_spark()
+    broker = KeyBroker(spark)
+    joined = _make_joined_df(total=100, resolved=95)
+
+    with caplog.at_level("INFO", logger="kimball.processing.key_broker"):
+        broker._validate_resolution(_make_fact_df(), joined, _make_fk())
+
+    assert "95/100 resolved (95.0%)" in caplog.text
+    assert "5 sentinels" in caplog.text
+
+
+def test_fanout_raises_on_duplicate_dimension_keys() -> None:
+    spark = _make_dim_spark(duplicate_keys=True)
+    broker = KeyBroker(spark)
+    joined = _make_joined_df(total=100, resolved=100)
+
+    with pytest.raises(DataQualityError, match="Fanout detected"):
+        broker._validate_resolution(_make_fact_df(), joined, _make_fk())
+
+
+def test_fanout_check_skipped_when_disabled() -> None:
+    spark = _make_dim_spark(duplicate_keys=True)
+    broker = KeyBroker(spark)
+    joined = _make_joined_df(total=100, resolved=100)
+
+    broker._validate_resolution(
+        _make_fact_df(), joined, _make_fk(detect_fanout=False)
+    )
+
+
+def test_validate_resolution_raises_on_unresolved_nks() -> None:
+    spark = _make_dim_spark()
+    broker = KeyBroker(spark)
+    joined = _make_joined_df(total=100, resolved=80)
+    fact = _make_fact_df(nk_count=10)
+    joined.filter.return_value.select.return_value.distinct.return_value.count.return_value = (
+        8
+    )
+
+    with pytest.raises(DataQualityError, match="Resolution count mismatch"):
+        broker._validate_resolution(fact, joined, _make_fk(validate_resolution=True))
+
+
+def test_validate_resolution_passes_when_all_nks_resolve() -> None:
+    spark = _make_dim_spark()
+    broker = KeyBroker(spark)
+    joined = _make_joined_df(total=100, resolved=100)
+    fact = _make_fact_df(nk_count=10)
+    joined.filter.return_value.select.return_value.distinct.return_value.count.return_value = (
+        10
+    )
+
+    broker._validate_resolution(fact, joined, _make_fk(validate_resolution=True))
+
+
+def test_validate_resolution_skipped_by_default() -> None:
+    spark = _make_dim_spark()
+    broker = KeyBroker(spark)
+    joined = _make_joined_df(total=100, resolved=80)
+    fact = _make_fact_df(nk_count=10)
+
+    broker._validate_resolution(fact, joined, _make_fk())

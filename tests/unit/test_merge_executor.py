@@ -42,11 +42,11 @@ def executor():
 
 class TestEnsureTargetTable:
     def test_table_exists_returns_false(self, executor, ctx):
-        ctx.spark.catalog.tableExists.return_value = True
+        ctx.table_exists.return_value = True
         assert executor.ensure_target_table(ctx, MagicMock()) is False
 
     def test_table_not_exists_creates_and_returns_true(self, executor, ctx):
-        ctx.spark.catalog.tableExists.return_value = False
+        ctx.table_exists.return_value = False
         executor._create_target_table = MagicMock()
         executor.table_creator.create_history_table = MagicMock()
         result = executor.ensure_target_table(ctx, MagicMock())
@@ -56,7 +56,7 @@ class TestEnsureTargetTable:
     def test_scd4_creates_history_table(self, executor, ctx):
         ctx.config.scd_type = 4
         ctx.config.history_table = "test_history"
-        ctx.spark.catalog.tableExists.return_value = False
+        ctx.table_exists.return_value = False
         executor._create_target_table = MagicMock()
         executor.table_creator.create_history_table = MagicMock()
         executor.ensure_target_table(ctx, MagicMock())
@@ -118,7 +118,7 @@ class TestSeedDefaults:
     def test_scd2_calls_ensure_scd2_defaults(self, executor, ctx):
         ctx.config.scd_type = 2
         ctx.config.surrogate_key = "sk"
-        ctx.spark.table.return_value.schema = MagicMock()
+        ctx.get_target_schema.return_value = MagicMock()
         with patch(
             "kimball.orchestration.services.merge_executor._merger.ensure_scd2_defaults"
         ) as mock_fn:
@@ -128,7 +128,7 @@ class TestSeedDefaults:
     def test_scd1_calls_ensure_scd1_defaults(self, executor, ctx):
         ctx.config.scd_type = 1
         ctx.config.surrogate_key = "sk"
-        ctx.spark.table.return_value.schema = MagicMock()
+        ctx.get_target_schema.return_value = MagicMock()
         with patch(
             "kimball.orchestration.services.merge_executor._merger.ensure_scd1_defaults"
         ) as mock_fn:
@@ -142,7 +142,7 @@ class TestPrepareSourceDF:
         ctx.spark.sparkContext.getCheckpointDir.return_value = "/checkpoint"
         transformed_df = MagicMock()
         transformed_df.checkpoint.return_value = MagicMock()
-        ctx.spark.catalog.tableExists.return_value = False
+        ctx.table_exists.return_value = False
         result = executor.prepare_source_df(ctx, transformed_df)
         transformed_df.checkpoint.assert_called_once()
         assert result is not None
@@ -152,7 +152,7 @@ class TestPrepareSourceDF:
         ctx.spark.sparkContext.getCheckpointDir.return_value = None
         transformed_df = MagicMock()
         transformed_df.localCheckpoint.return_value = MagicMock()
-        ctx.spark.catalog.tableExists.return_value = False
+        ctx.table_exists.return_value = False
         result = executor.prepare_source_df(ctx, transformed_df)
         transformed_df.localCheckpoint.assert_called_once()
         assert result is not None
@@ -165,7 +165,7 @@ class TestPrepareSourceDF:
         transformed_df = MagicMock()
         transformed_df.checkpoint.side_effect = PySparkException("checkpoint failed")
         transformed_df.localCheckpoint.return_value = MagicMock()
-        ctx.spark.catalog.tableExists.return_value = False
+        ctx.table_exists.return_value = False
         result = executor.prepare_source_df(ctx, transformed_df)
         transformed_df.localCheckpoint.assert_called_once()
         assert result is not None
@@ -173,7 +173,7 @@ class TestPrepareSourceDF:
     def test_no_truncation(self, executor, ctx):
         ctx.config.enable_lineage_truncation = False
         transformed_df = MagicMock()
-        ctx.spark.catalog.tableExists.return_value = False
+        ctx.table_exists.return_value = False
         result = executor.prepare_source_df(ctx, transformed_df)
         assert result is transformed_df
 
@@ -181,10 +181,10 @@ class TestPrepareSourceDF:
         ctx.config.enable_lineage_truncation = False
         transformed_df = MagicMock()
         transformed_df.columns = ["col1", "col2"]
-        ctx.spark.catalog.tableExists.return_value = True
+        ctx.table_exists.return_value = True
         target_schema = MagicMock()
         target_schema.fields = [MagicMock(name="col1")]
-        ctx.spark.table.return_value.schema = target_schema
+        ctx.get_target_schema.return_value = target_schema
         executor._apply_adaptive_pruning = MagicMock(return_value=transformed_df)
         executor.prepare_source_df(ctx, transformed_df)
         executor._apply_adaptive_pruning.assert_called_once()

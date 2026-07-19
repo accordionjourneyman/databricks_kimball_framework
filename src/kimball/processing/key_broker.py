@@ -393,6 +393,8 @@ class KeyBroker:
             )
             joined = joined.withColumn(fk.durable_column, durable.cast("bigint"))
 
+        self._validate_resolution(fact_df, joined, fk)
+
         if lookup.invalid_action == "error":
             invalid = joined.filter(
                 ~not_applicable & ~missing_identity & bad_value
@@ -449,6 +451,67 @@ class KeyBroker:
                 if any(name.startswith(value) for value in internal_prefixes)
             ]
         )
+
+    def _validate_resolution(
+        self,
+        fact_df: DataFrame,
+        joined: DataFrame,
+        fk: ForeignKeyConfig,
+    ) -> None:
+        lookup = fk.lookup
+        assert lookup is not None and fk.references is not None
+
+        stats = joined.agg(
+            F.count("*").alias("total"),
+            F.sum(F.when(F.col(fk.column) >= 0, F.lit(1)).otherwise(F.lit(0))).alias(
+                "resolved"
+            ),
+        ).collect()[0]
+        total = stats["total"]
+        resolved = stats["resolved"]
+        sentinel = total - resolved
+        rate = (resolved / total * 100) if total > 0 else 100.0
+
+        logger.info(
+            "Key resolution for %s: %d/%d resolved (%.1f%%), %d sentinels",
+            fk.column,
+            resolved,
+            total,
+            rate,
+            sentinel,
+        )
+
+        if lookup.detect_fanout:
+            dimension_columns = lookup.dimension_columns or lookup.source_columns
+            dimension = self.spark.table(fk.references)
+            dim_dupes = (
+                dimension.groupBy(*dimension_columns)
+                .agg(F.count("*").alias("__cnt"))
+                .filter(F.col("__cnt") > 1)
+                .limit(1)
+                .collect()
+            )
+            if dim_dupes:
+                sample = {k: dim_dupes[0][k] for k in dimension_columns}
+                raise DataQualityError(
+                    f"Fanout detected: dimension {fk.references} has duplicate keys "
+                    f"for {dimension_columns}. Sample duplicate: {sample}"
+                )
+
+        if lookup.validate_resolution:
+            fact_nk_distinct = fact_df.select(
+                *lookup.source_columns
+            ).distinct().count()
+            resolved_nk_distinct = joined.filter(
+                F.col(fk.column) >= 0
+            ).select(*lookup.source_columns).distinct().count()
+            if fact_nk_distinct != resolved_nk_distinct:
+                raise DataQualityError(
+                    f"Resolution count mismatch for {fk.column}: "
+                    f"{fact_nk_distinct} distinct NKs in fact, "
+                    f"{resolved_nk_distinct} resolved. "
+                    f"{fact_nk_distinct - resolved_nk_distinct} unresolved."
+                )
 
     def _table_version(self, table_name: str) -> int:
         try:
