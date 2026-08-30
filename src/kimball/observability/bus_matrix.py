@@ -62,7 +62,7 @@ def validate_conformed_dimensions(
     for dim_name, refs in dim_references.items():
         if len(refs) > 1:
             # Get unique physical tables
-            physical_tables = set(ref[1] for ref in refs)
+            physical_tables = {ref[1] for ref in refs}
             if len(physical_tables) > 1:
                 fact_names = [ref[0] for ref in refs]
                 warnings.append(

@@ -22,6 +22,16 @@ def optimize_table(table_name: str, cluster_by: list[str] | None = None) -> None
     )
 
 
+def vacuum_table(table_name: str, retention_hours: int = 168) -> None:
+    if retention_hours < 168:
+        raise ValueError("VACUUM retention must be at least 168 hours (7 days)")
+    logger.info(f"Vacuuming table {table_name} (retain {retention_hours}h)...")
+    get_spark().sql(
+        f"VACUUM {quote_table_name(table_name)} RETAIN {retention_hours} HOURS"
+    )
+    logger.info(f"Vacuumed {table_name}")
+
+
 def get_last_merge_metrics(
     table_name: str,
     batch_id: str | None = None,

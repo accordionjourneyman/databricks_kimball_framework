@@ -1,0 +1,8 @@
+name: kimball_phase2_smoke
+version: 1.0.0
+config-version: 2
+profile: kimball_phase2_smoke
+model-paths: [models]
+seed-paths: [seeds]
+target-path: target
+clean-targets: [target, dbt_packages, logs]

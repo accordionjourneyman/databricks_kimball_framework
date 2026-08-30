@@ -72,14 +72,12 @@ def spark():
         mock_db_sdk.dbutils = MagicMock()
         sys.modules["databricks.sdk.runtime"] = mock_db_sdk
 
-    if _is_databricks_runtime():
-        from pyspark.sql import SparkSession
+    from pyspark.sql import SparkSession
 
+    if _is_databricks_runtime():
         session = SparkSession.builder.getOrCreate()
     else:
         import tempfile
-
-        from pyspark.sql import SparkSession
 
         warehouse_dir = tempfile.mkdtemp(prefix="spark-warehouse-bench-")
         import os

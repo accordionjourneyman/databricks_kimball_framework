@@ -197,7 +197,6 @@ def _make_fact_df(nk_count: int = 0):
     fact = MagicMock()
     fact.columns = ["customer_id"]
     if nk_count > 0:
-        distinct_rows = [MagicMock() for _ in range(nk_count)]
         fact.select.return_value.distinct.return_value.count.return_value = nk_count
     return fact
 
@@ -213,9 +212,7 @@ def _make_dim_spark(duplicate_keys: bool = False):
             row
         ]
     else:
-        dim.groupBy.return_value.agg.return_value.filter.return_value.limit.return_value.collect.return_value = (
-            []
-        )
+        dim.groupBy.return_value.agg.return_value.filter.return_value.limit.return_value.collect.return_value = []
     spark.table.return_value = dim
     return spark
 
@@ -246,9 +243,7 @@ def test_fanout_check_skipped_when_disabled() -> None:
     broker = KeyBroker(spark)
     joined = _make_joined_df(total=100, resolved=100)
 
-    broker._validate_resolution(
-        _make_fact_df(), joined, _make_fk(detect_fanout=False)
-    )
+    broker._validate_resolution(_make_fact_df(), joined, _make_fk(detect_fanout=False))
 
 
 def test_validate_resolution_raises_on_unresolved_nks() -> None:
@@ -256,9 +251,7 @@ def test_validate_resolution_raises_on_unresolved_nks() -> None:
     broker = KeyBroker(spark)
     joined = _make_joined_df(total=100, resolved=80)
     fact = _make_fact_df(nk_count=10)
-    joined.filter.return_value.select.return_value.distinct.return_value.count.return_value = (
-        8
-    )
+    joined.filter.return_value.select.return_value.distinct.return_value.count.return_value = 8
 
     with pytest.raises(DataQualityError, match="Resolution count mismatch"):
         broker._validate_resolution(fact, joined, _make_fk(validate_resolution=True))
@@ -269,9 +262,7 @@ def test_validate_resolution_passes_when_all_nks_resolve() -> None:
     broker = KeyBroker(spark)
     joined = _make_joined_df(total=100, resolved=100)
     fact = _make_fact_df(nk_count=10)
-    joined.filter.return_value.select.return_value.distinct.return_value.count.return_value = (
-        10
-    )
+    joined.filter.return_value.select.return_value.distinct.return_value.count.return_value = 10
 
     broker._validate_resolution(fact, joined, _make_fk(validate_resolution=True))
 

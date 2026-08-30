@@ -57,7 +57,9 @@ transformation_sql: |
   SELECT location_id, zone_name, borough, update_timestamp FROM z
 """)
 
-        orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result = orchestrator.run()
         assert result["status"] == "SUCCESS"
 
@@ -74,7 +76,9 @@ transformation_sql: |
             WHERE location_id = 1
         """)
 
-        orchestrator2 = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator2 = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result2 = orchestrator2.run()
         assert result2["status"] == "SUCCESS"
 
@@ -138,7 +142,9 @@ transformation_sql: |
   FROM t
 """)
 
-        orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result = orchestrator.run()
         assert result["status"] == "SUCCESS"
 
@@ -187,7 +193,9 @@ transformation_sql: |
   SELECT trip_id, pickup_datetime, dropoff_datetime, pickup_location_id, fare_amount FROM t
 """)
 
-        orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result = orchestrator.run()
         assert result["status"] == "SUCCESS"
         assert spark.table(f"{test_db}.fact_trips").count() == 1
@@ -197,7 +205,9 @@ transformation_sql: |
             ('t2', TIMESTAMP '2024-03-15 23:50:00', TIMESTAMP '2024-03-16 00:10:00', 2, 15.0)
         """)
 
-        orchestrator2 = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator2 = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result2 = orchestrator2.run()
         assert result2["status"] == "SUCCESS"
         assert spark.table(f"{test_db}.fact_trips").count() == 2

@@ -14,7 +14,6 @@ import logging
 import os
 import time
 import uuid
-import warnings
 from typing import Any, cast
 
 from pyspark.errors import AnalysisException, PySparkException
@@ -31,14 +30,8 @@ from kimball.common.constants import (
 )
 from kimball.common.errors import NonRetriableError, RetriableError
 from kimball.common.runtime import RuntimeOptions
-from kimball.common.spark_session import get_spark
-from kimball.observability.resilience import (
-    PipelineCheckpoint,  # noqa: F401 — kept for test patch compatibility
-    QueryMetricsCollector,
-    StagingCleanupManager,
-    _feature_enabled,
-)
 from kimball.observability.temporal_state import commit_temporal_state_updates
+from kimball.orchestration.runtime import PipelineRuntime
 from kimball.orchestration.services.context import PipelineContext
 from kimball.orchestration.services.merge_executor import MergeExecutor
 from kimball.orchestration.services.recovery import RecoveryService
@@ -48,17 +41,11 @@ from kimball.orchestration.services.work_plan import (
     SourceWorkPlan,
     build_source_work_plan,
 )
-from kimball.orchestration.transaction import TransactionManager
 from kimball.orchestration.watermark import (
     ETLControlManager,
     compute_source_schema_fingerprint,
-    get_etl_schema,
-)
-from kimball.processing import (
-    merger as _merger,  # noqa: F401 — kept for test patch compatibility
 )
 from kimball.processing.loader import DataLoader
-from kimball.processing.table_creator import TableCreator
 
 logger = logging.getLogger(__name__)
 
@@ -66,79 +53,43 @@ logger = logging.getLogger(__name__)
 class Orchestrator:
     """Coordinates the ETL process by delegating to focused service classes."""
 
-    def __init__(
-        self,
-        config_path: str | TableConfig,
-        spark: SparkSession | None = None,
-        etl_schema: str | None = None,
-        watermark_database: str | None = None,
-        enable_metrics: bool = True,
-        checkpoint_table: str | None = None,
-        checkpoint_root: str | None = None,
-        loader: DataLoader | None = None,
-        etl_control: ETLControlManager | None = None,
-        table_creator: TableCreator | None = None,
-        cleanup_manager: StagingCleanupManager | None = None,
-        transaction_manager: TransactionManager | None = None,
-    ):
-        self.config_loader = ConfigLoader()
-        if isinstance(config_path, str):
-            self.config = self.config_loader.load_config(config_path)
-        else:
-            self.config = config_path
-        self.spark = spark or get_spark()
-        self.runtime_options = RuntimeOptions.from_environment()
-
-        if watermark_database is not None:
-            warnings.warn(
-                "The 'watermark_database' parameter is deprecated. Use 'etl_schema' instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            if etl_schema is None:
-                etl_schema = watermark_database
-
-        if etl_schema is None:
-            etl_schema = get_etl_schema()
-        if etl_schema is None:
-            if "." in self.config.table_name:
-                etl_schema = self.config.table_name.split(".")[0]
-            else:
-                raise ValueError(
-                    "ETL schema must be specified via one of:\n"
-                    "  1. Set KIMBALL_ETL_SCHEMA environment variable\n"
-                    "  2. Pass etl_schema parameter to Orchestrator\n"
-                    "  3. Use fully-qualified table names (db.table) in config"
-                )
-
-        if checkpoint_root is None:
-            checkpoint_root = os.getenv("KIMBALL_CHECKPOINT_ROOT")
-        if checkpoint_root:
-            logger.info(f"Setting Spark checkpoint directory to: {checkpoint_root}")
-            self.spark.sparkContext.setCheckpointDir(checkpoint_root)
-
-        self.etl_control = etl_control or ETLControlManager(
-            etl_schema=etl_schema, spark_session=self.spark
-        )
-        self.loader = loader or DataLoader(spark_session=self.spark)
-        self.transaction_manager = transaction_manager or TransactionManager(self.spark)
-
-        self.metrics_collector = (
-            QueryMetricsCollector()
-            if enable_metrics and _feature_enabled("metrics")
-            else None
-        )
-        self.checkpoint_manager = (
-            _feature_enabled("checkpoints") and checkpoint_table is not None
-        )
-        self.cleanup_manager = cleanup_manager or (
-            StagingCleanupManager() if _feature_enabled("staging_cleanup") else None
-        )
-
+    def __init__(self, config: TableConfig, runtime: PipelineRuntime) -> None:
+        """Create an orchestrator from a validated config and shared runtime."""
+        self.config = config
+        self.runtime = runtime
+        self.spark = runtime.spark
+        self.runtime_options = runtime.options
+        self.etl_control = runtime.etl_control
+        self.loader = runtime.loader
+        self.transaction_manager = runtime.transaction_manager
+        self.metrics_collector = runtime.metrics_collector
         self._source_loader = SourceLoader()
         self._transform_validator = TransformValidator()
-        self._merge_executor = MergeExecutor(table_creator)
+        self._merge_executor = MergeExecutor(runtime.table_creator)
         self._recovery_service = RecoveryService(self.transaction_manager)
+
+    @classmethod
+    def from_config(
+        cls,
+        config: TableConfig | str,
+        *,
+        spark: SparkSession | None = None,
+        etl_schema: str | None = None,
+        checkpoint_root: str | None = None,
+        enable_metrics: bool = True,
+    ) -> Orchestrator:
+        """Load a configuration and build its runtime convenience bundle."""
+        table_config = (
+            ConfigLoader().load_config(config) if isinstance(config, str) else config
+        )
+        runtime = PipelineRuntime.for_config(
+            table_config,
+            spark=spark,
+            etl_schema=etl_schema,
+            checkpoint_root=checkpoint_root,
+            enable_metrics=enable_metrics,
+        )
+        return cls(table_config, runtime)
 
     @property
     def _validator(self):
@@ -217,20 +168,6 @@ class Orchestrator:
             ),
         )
 
-    def _run_compile_time_sql_check(self) -> None:
-        if not self.runtime_options.compile_time_sql_check:
-            return
-        if not self.config.transformation_sql:
-            return
-        issues = self.config_loader.validate_transformation_sql(
-            self.config, spark=self.spark
-        )
-        if issues:
-            raise ValueError(
-                f"Compile-time SQL validation failed for {self.config.table_name}:\n"
-                + "\n".join(f"  - {i}" for i in issues)
-            )
-
     def _apply_spark_configs(self) -> dict[str, str | None]:
         previous: dict[str, str | None] = {}
         try:
@@ -299,10 +236,8 @@ class Orchestrator:
         return self._run_pipeline_once()
 
     def _run_with_version_loop(self, max_iterations: int = 100) -> dict[str, Any]:
-        iteration = 0
         combined_result = {"rows_read": 0, "rows_written": 0}
-        while iteration < max_iterations:
-            iteration += 1
+        for iteration in range(1, max_iterations + 1):
             result = self._run_pipeline_once()
             if result.get("active_sources") == 0:
                 logger.info("Preserve All Changes: All CDF sources caught up")
@@ -316,16 +251,23 @@ class Orchestrator:
     def _run_pipeline_once(self) -> dict[str, Any]:
         logger.info(f"Starting pipeline for {self.config.table_name}")
         batch_id = str(uuid.uuid4())
-        pipeline_start = time.time()
         ctx = self._make_context(batch_id)
 
         if self.metrics_collector:
             self.metrics_collector.start_collection()
 
+        pre_pipeline_start = time.time()
+
         self._recovery_service.recover_zombies(ctx)
         work_plan = self._build_source_work_plan()
         ctx.work_plan = work_plan
         active_names = [item.source_name for item in work_plan.active_items]
+
+        if self.metrics_collector:
+            self.metrics_collector.add_operation_metric(
+                "pre_pipeline_overhead",
+                duration_ms=(time.time() - pre_pipeline_start) * 1000,
+            )
         if not active_names:
             if self.metrics_collector:
                 self.metrics_collector.stop_collection()
@@ -339,12 +281,23 @@ class Orchestrator:
                 "metrics": {},
                 "validation_metrics": [],
             }
-        self.etl_control.batch_start_all(
-            self.config.table_name, active_names, run_batch_id=batch_id
-        )
+        batch_writes_start = time.time()
+
+        # H4 Optimization: Skip synchronous 'RUNNING' writes to reduce Delta operations.
+        # The completion write (batch_complete_all) will later upsert the SUCCESS state.
+        if os.environ.get("KIMBALL_BATCH_CONTROL_WRITES") != "1":
+            self.etl_control.batch_start_all(
+                self.config.table_name, active_names, run_batch_id=batch_id
+            )
+        if self.metrics_collector:
+            self.metrics_collector.add_operation_metric(
+                "etl_control_batch_start",
+                duration_ms=(time.time() - batch_writes_start) * 1000,
+            )
 
         active_dfs: dict[str, Any] = {}
         try:
+            merge_start = time.time()
             with self.transaction_manager.table_transaction(
                 self.config.table_name, batch_id
             ):
@@ -376,16 +329,15 @@ class Orchestrator:
 
                 if self.metrics_collector:
                     self.metrics_collector.add_operation_metric(
-                        "merge",
-                        duration_ms=(time.time() - pipeline_start) * 1000,
+                        "merge_and_load",
+                        duration_ms=(time.time() - merge_start) * 1000,
                         rows_read=total_rows_read,
                         rows_written=total_rows_written,
                     )
 
                 if merge_executed:
-                    config_fingerprint = self.config_loader.compute_fingerprint(
-                        self.config
-                    )
+                    batch_complete_start = time.time()
+                    config_fingerprint = ConfigLoader().compute_fingerprint(self.config)
                     self.etl_control.batch_complete_all(
                         self.config.table_name,
                         [
@@ -404,6 +356,11 @@ class Orchestrator:
                             for item in work_plan.active_items
                         ],
                     )
+                    if self.metrics_collector:
+                        self.metrics_collector.add_operation_metric(
+                            "etl_control_batch_complete",
+                            duration_ms=(time.time() - batch_complete_start) * 1000,
+                        )
                     try:
                         commit_temporal_state_updates(ctx)
                     except Exception:
@@ -417,7 +374,7 @@ class Orchestrator:
                         )
                 else:
                     logger.info(
-                        "Merge skipped — no rows after transformation. "
+                        "Merge skipped: no rows after transformation. "
                         "Watermarks will NOT be advanced."
                     )
 
@@ -466,13 +423,11 @@ class Orchestrator:
         self, max_retries: int = 3, backoff_seconds: int = 30
     ) -> dict[str, Any]:
         attempt = 0
-        last_error = None
         while attempt <= max_retries:
             try:
                 return self.run()
             except RetriableError as e:
                 attempt += 1
-                last_error = e
                 if attempt <= max_retries:
                     wait_time = backoff_seconds * (2 ** (attempt - 1))
                     logger.info(
@@ -485,6 +440,4 @@ class Orchestrator:
                 raise
             except Exception:
                 raise
-        if last_error:
-            raise last_error
-        raise RuntimeError("Max retries exceeded with unknown error")
+        raise RuntimeError("run_with_retry exhausted retries without a result")

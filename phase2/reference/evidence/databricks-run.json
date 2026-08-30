@@ -1,0 +1,133 @@
+{
+  "cleanup_duration": 0,
+  "creator_user_name": "t.diogo.marques@gmail.com",
+  "effective_performance_target": "PERFORMANCE_OPTIMIZED",
+  "end_time": 1784854440672,
+  "environments": [
+    {
+      "environment_key": "phase2_env",
+      "spec": {
+        "dependencies": [
+          "dbt-core==1.11.7",
+          "dbt-databricks==1.12.2"
+        ],
+        "environment_version": "4"
+      }
+    }
+  ],
+  "execution_duration": 0,
+  "format": "MULTI_TASK",
+  "job_id": 506550333697497,
+  "job_run_id": 54427316072543,
+  "number_in_job": 54427316072543,
+  "original_attempt_run_id": 54427316072543,
+  "run_duration": 326939,
+  "run_id": 54427316072543,
+  "run_name": "[phase2] dbt-framework-conformance",
+  "run_page_url": "https://dbc-7bded16a-1785.cloud.databricks.com/?o=1505289208203470#job/506550333697497/run/54427316072543",
+  "run_type": "JOB_RUN",
+  "setup_duration": 0,
+  "start_time": 1784854113733,
+  "state": {
+    "life_cycle_state": "TERMINATED",
+    "result_state": "SUCCESS",
+    "state_message": "",
+    "user_cancelled_or_timedout": false
+  },
+  "status": {
+    "state": "TERMINATED",
+    "termination_details": {
+      "code": "SUCCESS",
+      "message": "",
+      "type": "SUCCESS"
+    }
+  },
+  "tasks": [
+    {
+      "attempt_number": 0,
+      "cleanup_duration": 0,
+      "depends_on": [
+        {
+          "task_key": "dbt_reference"
+        }
+      ],
+      "effective_performance_target": "PERFORMANCE_OPTIMIZED",
+      "end_time": 1784854440320,
+      "environment_key": "phase2_env",
+      "execution_duration": 115000,
+      "run_id": 922289598320951,
+      "run_if": "ALL_SUCCESS",
+      "run_page_url": "https://dbc-7bded16a-1785.cloud.databricks.com/?o=1505289208203470#job/506550333697497/run/922289598320951",
+      "setup_duration": 2000,
+      "spark_python_task": {
+        "parameters": [
+          "workspace",
+          "phase2_dbt_conformance",
+          "phase2_framework_conformance"
+        ],
+        "python_file": "/Users/t.diogo.marques@gmail.com/phase2-conformance/framework_conformance.py"
+      },
+      "start_time": 1784854322945,
+      "state": {
+        "life_cycle_state": "TERMINATED",
+        "result_state": "SUCCESS",
+        "state_message": "",
+        "user_cancelled_or_timedout": false
+      },
+      "status": {
+        "state": "TERMINATED",
+        "termination_details": {
+          "code": "SUCCESS",
+          "message": "",
+          "type": "SUCCESS"
+        }
+      },
+      "task_key": "framework_reconciliation"
+    },
+    {
+      "attempt_number": 0,
+      "cleanup_duration": 0,
+      "dbt_task": {
+        "catalog": "workspace",
+        "commands": [
+          "dbt seed --full-refresh",
+          "dbt run --full-refresh --vars '{max_event_seq: 3}'",
+          "dbt snapshot --vars '{max_event_seq: 3}'",
+          "dbt test --vars '{max_event_seq: 3}'",
+          "dbt run --vars '{max_event_seq: 14}'",
+          "dbt snapshot --vars '{max_event_seq: 14}'",
+          "dbt test --vars '{max_event_seq: 14}'"
+        ],
+        "project_directory": "/Users/t.diogo.marques@gmail.com/phase2-conformance/reference",
+        "schema": "phase2_dbt_conformance",
+        "source": "WORKSPACE",
+        "warehouse_id": "437af890146c0e82"
+      },
+      "effective_performance_target": "PERFORMANCE_OPTIMIZED",
+      "end_time": 1784854322509,
+      "environment_key": "phase2_env",
+      "execution_duration": 205000,
+      "run_id": 418284333977409,
+      "run_if": "ALL_SUCCESS",
+      "run_page_url": "https://dbc-7bded16a-1785.cloud.databricks.com/?o=1505289208203470#job/506550333697497/run/418284333977409",
+      "setup_duration": 3000,
+      "start_time": 1784854113760,
+      "state": {
+        "life_cycle_state": "TERMINATED",
+        "result_state": "SUCCESS",
+        "state_message": "",
+        "user_cancelled_or_timedout": false
+      },
+      "status": {
+        "state": "TERMINATED",
+        "termination_details": {
+          "code": "SUCCESS",
+          "message": "",
+          "type": "SUCCESS"
+        }
+      },
+      "task_key": "dbt_reference"
+    }
+  ],
+  "trigger": "ONE_TIME"
+}

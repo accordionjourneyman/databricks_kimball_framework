@@ -47,7 +47,9 @@ transformation_sql: |
   SELECT customer_id, name, updated_at FROM c
 """)
 
-    result = Orchestrator(valid_config, spark=spark, etl_schema=test_db).run()
+    result = Orchestrator.from_config(
+        valid_config, spark=spark, etl_schema=test_db
+    ).run()
     assert result["status"] == "SUCCESS"
     events = spark.table(f"{test_db}.etl_data_quality_events")
     assert events.filter("contract_id = 'test.customer'").count() > 0
@@ -73,7 +75,7 @@ transformation_sql: |
   SELECT customer_id FROM c
 """)
     with pytest.raises(ContractValidationError, match="type changed"):
-        Orchestrator(invalid_config, spark=spark, etl_schema=test_db).run()
+        Orchestrator.from_config(invalid_config, spark=spark, etl_schema=test_db).run()
     assert not spark.catalog.tableExists(f"{test_db}.dim_should_not_exist")
     assert (
         spark.table(f"{test_db}.etl_data_quality_events")

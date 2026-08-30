@@ -43,11 +43,11 @@ class SourceLoader:
                 df = ctx.loader.load_full_snapshot(
                     source.name, format=source.format, options=source.options
                 )
+            elif item.starting_version is None or item.ending_version is None:
+                raise ValueError(
+                    f"Incremental source {source.name} has no planned version range"
+                )
             else:
-                if item.starting_version is None or item.ending_version is None:
-                    raise ValueError(
-                        f"Incremental source {source.name} has no planned version range"
-                    )
                 df = ctx.loader.load_cdf(
                     source.name,
                     starting_version=item.starting_version,
@@ -56,7 +56,7 @@ class SourceLoader:
                 )
 
             if source.cdc_strategy == "append":
-                metadata = [
+                if metadata := [
                     column
                     for column in (
                         "_change_type",
@@ -64,8 +64,7 @@ class SourceLoader:
                         "_commit_timestamp",
                     )
                     if column in df.columns
-                ]
-                if metadata:
+                ]:
                     df = df.drop(*metadata)
 
             if (

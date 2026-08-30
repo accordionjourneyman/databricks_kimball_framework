@@ -1,0 +1,16 @@
+table_name: framework_result.dim_customer
+table_type: dimension
+scd_type: 2
+effective_at: invoice_ts
+keys:
+  surrogate_key: customer_sk
+  natural_keys: [source_system, customer_id]
+track_history_columns: [country, customer_segment]
+sources:
+  - name: phase2_source.retail_events
+    alias: events
+    cdc_strategy: full
+transformation_sql: |
+  SELECT source_system, customer_id, country, customer_segment, invoice_ts
+  FROM events
+  WHERE customer_id IS NOT NULL

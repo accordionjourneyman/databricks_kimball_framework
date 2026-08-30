@@ -1,0 +1,62 @@
+name: Feature Request
+description: Suggest a new feature or enhancement
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: |
+        Describe the use case, not the solution. "I need to deploy
+        pipelines via Airflow" is better than "Add an Airflow
+        operator class."
+      placeholder: |
+        Today I schedule kimball pipelines via Databricks Jobs, but
+        my team standardizes on Airflow for all data engineering
+        work. I would like to use kimball as a library inside an
+        Airflow DAG.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed solution
+      description: What would the ideal API or behavior look like?
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: |
+        What else did you consider? Why is this better? Common
+        alternatives include:
+        - Calling the CLI from a BashOperator
+        - Using DatabricksRunOperator with a packaged job
+        - Switching to a different framework
+    validations:
+      required: false
+
+  - type: dropdown
+    id: contribution
+    attributes:
+      label: Willingness to contribute
+      options:
+        - "I will submit a PR"
+        - "I will write the documentation"
+        - "Discussion only"
+        - "Unsure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: |
+        Link to docs, blog posts, or prior art. Describe your
+        team size, data volume, and current tooling if relevant.
+    validations:
+      required: false

@@ -1,0 +1,19 @@
+
+    
+    
+    
+    create table dbt_baseline.smoke_input (`id` bigint,`value` string)
+    
+    
+    
+    
+    
+  ;
+    -- dbt seed --
+    
+          insert into dbt_baseline.smoke_input values
+          (cast(%s as bigint),cast(%s as string)),(cast(%s as bigint),cast(%s as string)),(cast(%s as bigint),cast(%s as string))
+      
+
+;
+  

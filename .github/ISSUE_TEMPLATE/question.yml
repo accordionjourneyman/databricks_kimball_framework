@@ -1,0 +1,70 @@
+name: Question
+description: Ask a usage question
+labels: ["question"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: What do you want to know?
+      description: |
+        Be specific. "How do I use SCD2?" is too broad; "How do I
+        configure SCD2 when the source has CDF on a column that
+        is not a natural key?" is answerable.
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What have you already tried?
+      description: |
+        List the docs pages you read, the configs you tried, and
+        any relevant search terms. This helps us improve the docs
+        if the answer is not findable.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Framework version
+      placeholder: "kimball 0.2.0"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.11.9"
+    validations:
+      required: false
+
+  - type: input
+    id: pyspark
+    attributes:
+      label: PySpark version
+      placeholder: "4.0.1"
+    validations:
+      required: false
+
+  - type: input
+    id: delta
+    attributes:
+      label: Delta Lake version
+      placeholder: "4.2.0"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime environment
+      options:
+        - "Databricks Runtime 17.0 LTS (Spark 4.0 / Delta 4.x)"
+        - "Databricks Runtime 16.4 LTS (Spark 3.5 / Delta 3.x)"
+        - "Local Spark (pip install pyspark delta-spark)"
+        - "Databricks Connect"
+        - "Other (describe in comments)"
+    validations:
+      required: false

@@ -62,17 +62,17 @@ def _target(spark: SparkSession, table: str) -> None:
 def _source(spark: SparkSession, keys: int, versions: int) -> DataFrame:
     rows = []
     for key in range(1, keys + 1):
-        for version in range(versions):
-            rows.append(
-                {
-                    "customer_id": key,
-                    "name": f"Customer_{key}",
-                    "email": f"customer_{key}_v{version}@example.com",
-                    "updated_at": f"2024-{version + 1:02d}-01",
-                    "_change_type": "insert",
-                    "_commit_version": version + 1,
-                }
-            )
+        rows.extend(
+            {
+                "customer_id": key,
+                "name": f"Customer_{key}",
+                "email": f"customer_{key}_v{version}@example.com",
+                "updated_at": f"2024-{version + 1:02d}-01",
+                "_change_type": "insert",
+                "_commit_version": version + 1,
+            }
+            for version in range(versions)
+        )
     return spark.createDataFrame(rows, SOURCE_SCHEMA)
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from functools import reduce
+from typing import Any
 
 from delta.tables import DeltaTable
 from pyspark.sql import Column, DataFrame, SparkSession
@@ -36,29 +37,24 @@ def _any_null(columns: list[str]) -> Column:
 
 
 def _placeholder(field, *, status: str = "NOT_YET_AVAILABLE") -> Column:
-    from typing import Any
-
     data_type = field.dataType
-    value: Any
-    if isinstance(data_type, StringType):
-        value = "Not Yet Available"
-    elif isinstance(data_type, (IntegerType, LongType, ShortType)):
-        value = -3
-    elif isinstance(data_type, DecimalType):
-        value = -3
-    elif isinstance(data_type, (DoubleType, FloatType)):
-        value = -3.0
-    elif isinstance(data_type, BooleanType):
-        value = False
-    elif isinstance(data_type, TimestampType):
-        value = DEFAULT_VALID_FROM
-    elif isinstance(data_type, DateType):
-        value = DEFAULT_VALID_FROM.date()
-    else:
-        raise ValueError(
-            f"Skeleton requires an explicit substitute for {field.name} ({data_type})"
-        )
-    return F.lit(value).cast(data_type)
+    for types, value in _PLACEHOLDER_MAP:
+        if isinstance(data_type, types):
+            return F.lit(value).cast(data_type)
+    raise ValueError(
+        f"Skeleton requires an explicit substitute for {field.name} ({data_type})"
+    )
+
+
+_PLACEHOLDER_MAP: list[tuple[type | tuple[type, ...], Any]] = [
+    (StringType, "Not Yet Available"),
+    ((IntegerType, LongType, ShortType), -3),
+    (DecimalType, -3),
+    ((DoubleType, FloatType), -3.0),
+    (BooleanType, False),
+    (TimestampType, DEFAULT_VALID_FROM),
+    (DateType, DEFAULT_VALID_FROM.date()),
+]
 
 
 class KeyBroker:
@@ -96,8 +92,9 @@ class KeyBroker:
             required_fact_columns = set(fk.lookup.source_columns)
             if fk.lookup.event_time:
                 required_fact_columns.add(fk.lookup.event_time)
-            missing_fact_columns = sorted(required_fact_columns - set(resolved.columns))
-            if missing_fact_columns:
+            if missing_fact_columns := sorted(
+                required_fact_columns - set(resolved.columns)
+            ):
                 raise DataQualityError(
                     f"Brokered relationship {fk.column} is missing fact columns: "
                     + ", ".join(missing_fact_columns)
@@ -198,10 +195,9 @@ class KeyBroker:
             "__is_skeleton",
         }
         required.update(lookup.dimension_columns or lookup.source_columns)
-        missing_columns = sorted(
+        if missing_columns := sorted(
             c for c in required if c and c not in dimension.columns
-        )
-        if missing_columns:
+        ):
             raise DataQualityError(
                 f"Dimension {fk.references} does not satisfy its Type 7 contract: "
                 + ", ".join(missing_columns)
@@ -278,7 +274,7 @@ class KeyBroker:
                 selected.append(F.lit("skeleton").alias(name))
             elif name == "__etl_batch_id":
                 selected.append(F.lit(batch_id).alias(name))
-            elif name == "__etl_processed_at" or name == "__skeleton_created_at":
+            elif name in ["__etl_processed_at", "__skeleton_created_at"]:
                 selected.append(F.current_timestamp().alias(name))
             elif name in substitutes:
                 selected.append(
@@ -288,10 +284,12 @@ class KeyBroker:
                 selected.append(_placeholder(field).alias(name))
         skeletons = skeletons.select(*selected)
 
-        condition = " AND ".join(
-            f"target.`{name}` = source.`{name}`" for name in dimension_columns
+        condition = (
+            " AND ".join(
+                f"target.`{name}` = source.`{name}`" for name in dimension_columns
+            )
+            + " AND target.__valid_from = source.__valid_from"
         )
-        condition += " AND target.__valid_from = source.__valid_from"
         DeltaTable.forName(self.spark, fk.references).alias("target").merge(
             skeletons.alias("source"), condition
         ).whenNotMatchedInsertAll().execute()
@@ -321,10 +319,9 @@ class KeyBroker:
             required_dimension_columns.add(fk.durable_dimension_key)
         if fk.relationship == "type7":
             required_dimension_columns.update({"__valid_from", "__valid_to"})
-        missing_dimension_columns = sorted(
+        if missing_dimension_columns := sorted(
             required_dimension_columns - set(dimension.columns)
-        )
-        if missing_dimension_columns:
+        ):
             raise DataQualityError(
                 f"Dimension {fk.references} is missing broker columns: "
                 + ", ".join(missing_dimension_columns)
@@ -481,17 +478,16 @@ class KeyBroker:
             sentinel,
         )
 
-        if lookup.detect_fanout:
+        if lookup.detect_fanout and fk.relationship != "type7":
             dimension_columns = lookup.dimension_columns or lookup.source_columns
             dimension = self.spark.table(fk.references)
-            dim_dupes = (
+            if dim_dupes := (
                 dimension.groupBy(*dimension_columns)
                 .agg(F.count("*").alias("__cnt"))
                 .filter(F.col("__cnt") > 1)
                 .limit(1)
                 .collect()
-            )
-            if dim_dupes:
+            ):
                 sample = {k: dim_dupes[0][k] for k in dimension_columns}
                 raise DataQualityError(
                     f"Fanout detected: dimension {fk.references} has duplicate keys "
@@ -499,12 +495,13 @@ class KeyBroker:
                 )
 
         if lookup.validate_resolution:
-            fact_nk_distinct = fact_df.select(
-                *lookup.source_columns
-            ).distinct().count()
-            resolved_nk_distinct = joined.filter(
-                F.col(fk.column) >= 0
-            ).select(*lookup.source_columns).distinct().count()
+            fact_nk_distinct = fact_df.select(*lookup.source_columns).distinct().count()
+            resolved_nk_distinct = (
+                joined.filter(F.col(fk.column) >= 0)
+                .select(*lookup.source_columns)
+                .distinct()
+                .count()
+            )
             if fact_nk_distinct != resolved_nk_distinct:
                 raise DataQualityError(
                     f"Resolution count mismatch for {fk.column}: "

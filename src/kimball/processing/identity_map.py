@@ -86,8 +86,7 @@ def load_validated_identity_map(
 ) -> DataFrame:
     """Load a governed temporal identity map and fail closed before joining it."""
     frame = spark.table(table_name)
-    missing = sorted(set(IDENTITY_MAP_COLUMNS) - set(frame.columns))
-    if missing:
+    if missing := sorted(set(IDENTITY_MAP_COLUMNS) - set(frame.columns)):
         raise IdentityMapError(
             f"identity map {table_name} is missing: {', '.join(missing)}"
         )

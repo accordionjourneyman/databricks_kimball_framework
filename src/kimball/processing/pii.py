@@ -34,7 +34,7 @@ def apply_pii_masking(
     """Apply declared PII handling before validation and target persistence.
 
     ``tokenize`` is deterministic keyed HMAC-SHA-256 pseudonymization.
-    ``fast_hash`` (and legacy alias ``hash``) is non-cryptographic xxhash64
+    ``fast_hash`` is non-cryptographic xxhash64
     equality encoding and must not be represented as a security boundary.
     Masked values are strings, including when the source column is numeric.
     """
@@ -53,12 +53,7 @@ def apply_pii_masking(
         if strategy == "null":
             df = df.withColumn(col_name, F.lit(None).cast(df.schema[col_name].dataType))
             continue
-        if strategy in {"fast_hash", "hash"}:
-            if strategy == "hash":
-                logger.warning(
-                    "PII strategy 'hash' is a legacy non-cryptographic alias; "
-                    "use 'fast_hash' or keyed 'tokenize'"
-                )
+        if strategy == "fast_hash":
             df = df.withColumn(
                 col_name, xxhash64(F.col(col_name).cast("string"), F.lit(col_name))
             )

@@ -35,11 +35,11 @@ def default_checkpoint_path(
     """Return a default checkpoint path for ``source_table``."""
     if root is None:
         root = os.environ.get("KIMBALL_STREAMING_CHECKPOINT_ROOT")
-        if root is None:
-            if os.environ.get("DATABRICKS_RUNTIME_VERSION"):
-                root = "/Volumes/workspace/default/kimball_checkpoints"
-            else:
-                root = "/tmp/kimball_streaming_checkpoints"
+    if root is None:
+        if os.environ.get("DATABRICKS_RUNTIME_VERSION"):
+            root = "/Volumes/workspace/default/kimball_checkpoints"
+        else:
+            root = "/tmp/kimball_streaming_checkpoints"
     parts: list[str] = []
     if etl_schema:
         parts.append(etl_schema)

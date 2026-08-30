@@ -87,7 +87,6 @@ PII equality encoding and security pseudonymization are distinct:
   `env://NAME` or `databricks://scope/key` reference at runtime.
 - `fast_hash` uses unsalted `xxhash64`; it is only a fast analytical encoding
   and does not protect low-entropy values from dictionary attacks.
-- `hash` is a deprecated alias for `fast_hash` and emits a warning.
 - `mask`, `null`, and `drop` implement display reduction/data minimization.
 
 Secrets and secret values are excluded from manifests and error messages.

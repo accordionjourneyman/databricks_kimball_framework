@@ -107,8 +107,7 @@ def _get_remote_base_dir(ws: Any) -> str:
     The /Workspace/Users root is protected; we must write under the
     authenticated user's own folder. Override with KIMBALL_WORKSPACE_DIR.
     """
-    override = os.environ.get("KIMBALL_WORKSPACE_DIR")
-    if override:
+    if override := os.environ.get("KIMBALL_WORKSPACE_DIR"):
         return override.rstrip("/")
 
     try:
@@ -149,10 +148,23 @@ def _upload_wheel(wheel: Path, ws: Any) -> str:
 
 
 def _sync_tests(remote_tests_dir: str, ws: Any) -> None:
-    """Upload integration/golden tests to workspace files."""
+    """Upload integration/golden tests to workspace files.
+
+    Deletes the entire remote tests directory before uploading to ensure
+    stale files from previous runs are not left behind.
+    """
     from databricks.sdk.service.workspace import ImportFormat
 
     print(f"Syncing tests to {remote_tests_dir}...")
+
+    # Delete the entire remote tests directory to remove stale files.
+    try:
+        ws.workspace.delete(remote_tests_dir, recursive=True)
+        print(f"  cleared remote: {remote_tests_dir}")
+    except Exception:
+        pass  # Directory may not exist yet
+
+    # Upload current local files.
     local_tests = REPO_ROOT / "tests"
     for path in local_tests.rglob("*"):
         if not path.is_file():
@@ -370,10 +382,14 @@ def _poll_run(ws: Any, run_id: int) -> int:
 
 def _find_job_by_name(ws: Any, name: str) -> int | None:
     """Return the first job ID matching the given name, or None."""
-    for job in ws.jobs.list():
-        if job.settings and job.settings.name == name:
-            return job.job_id
-    return None
+    return next(
+        (
+            job.job_id
+            for job in ws.jobs.list()
+            if job.settings and job.settings.name == name
+        ),
+        None,
+    )
 
 
 def _print_run_output(ws: Any, run_id: int) -> None:
@@ -424,7 +440,9 @@ class _DryRunWorkspace:
     def mkdirs(self, path: str) -> None:
         print(f"  [dry-run] mkdirs: {path}")
 
-    def upload(self, path: str, content: bytes, *, overwrite: bool = False) -> None:
+    def upload(
+        self, path: str, content: bytes, *, overwrite: bool = False, **kwargs: Any
+    ) -> None:
         size = len(content) if content else 0
         print(f"  [dry-run] upload: {path} ({size} bytes, overwrite={overwrite})")
 
@@ -480,8 +498,21 @@ def _run_dry_run(test_path: str) -> int:
     runner_path = _create_runner_script(ws, remote_tests_dir)
 
     catalog = os.environ.get("KIMBALL_TEST_CATALOG", "spark_catalog")
-    remote_test_path = f"{remote_tests_dir}/{Path(test_path).name}"
+    remote_test_path = _remote_test_path(remote_tests_dir, test_path)
     return _run_job(ws, None, wheel_path, runner_path, remote_test_path, catalog)
+
+
+def _remote_test_path(remote_tests_dir: str, test_path: str) -> str:
+    """Map a local path under ``tests/`` to its uploaded workspace path."""
+    local = Path(test_path)
+    parts = local.parts
+    try:
+        tests_index = parts.index("tests")
+    except ValueError:
+        relative = Path(local.name)
+    else:
+        relative = Path(*parts[tests_index + 1 :])
+    return f"{remote_tests_dir}/{relative.as_posix()}"
 
 
 def main() -> int:
@@ -551,7 +582,7 @@ def main() -> int:
 
     catalog = os.environ.get("KIMBALL_TEST_CATALOG", "spark_catalog")
     # The remote runner receives the workspace path to the tests, not the local path
-    remote_test_path = f"{remote_tests_dir}/{Path(args.test_path).name}"
+    remote_test_path = _remote_test_path(remote_tests_dir, args.test_path)
     return _run_job(
         ws,
         args.cluster_id,

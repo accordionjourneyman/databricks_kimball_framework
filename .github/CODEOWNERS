@@ -1,0 +1,4 @@
+# CODEOWNERS - default reviewers for pull requests.
+# Each PR automatically requests review from the owners of the paths it touches.
+# `*` is the catch-all default owner for the whole repository.
+* @accordionjourneyman

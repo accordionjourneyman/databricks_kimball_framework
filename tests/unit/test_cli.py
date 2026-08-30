@@ -176,3 +176,78 @@ def test_contract_publish_records_deployed_version(capsys):
     assert result == 0
     registry.publish_contract.assert_called_once()
     assert "Published customer-contract 1.0.0" in capsys.readouterr().out
+
+
+def test_cli_config_error_renders_structured_fix_hint(capsys):
+    with patch("kimball.cli.load_target", return_value=_target()):
+        result = main(["validate", "--config", "nonexistent/*.yml", "--target", "prod"])
+    assert result == 1
+    err = capsys.readouterr().err
+    assert "CONFIG" in err
+    assert "Fix:" in err
+
+
+def test_deploy_without_against_uses_empty_manifest(capsys):
+    project = _project()
+    fake_result = MagicMock()
+    fake_result.to_dict.return_value = {"blocked": False}
+    fake_result.blocked = False
+    with (
+        patch("kimball.cli.load_target", return_value=_target()),
+        patch("kimball.cli.load_compiled_project", return_value=project),
+        patch("kimball.cli.build_manifest", return_value={"pipelines": []}),
+        patch("kimball.common.spark_session.get_spark", return_value=MagicMock()),
+        patch(
+            "kimball.ops.runtime_profile.detect_runtime_profile",
+            return_value=MagicMock(),
+        ),
+        patch("kimball.ops.spark_adapters.build_providers", return_value=MagicMock()),
+        patch("kimball.ops.deploy.deploy", return_value=fake_result) as dfn,
+    ):
+        result = main(["deploy", "--config", "configs", "--target", "prod"])
+    assert result == 0
+    dfn.assert_called_once()
+    # First positional arg is the previous manifest; omitted --against -> empty.
+    assert dfn.call_args.args[0] == {"pipelines": []}
+
+
+def test_inspect_limit_truncates_batch_list(capsys):
+    report = {
+        "target_table": "gold.t",
+        "runtime": {"flavor": "classic", "supports_commit_tagging": True},
+        "control_table_exists": True,
+        "reconciliation": {
+            "verdict": "consistent",
+            "watermark_version": 1,
+            "target_version": 1,
+            "zombie_batches": 0,
+            "zombie_commits": 0,
+            "evidence": "",
+            "remediation": "",
+            "runbook_link": None,
+        },
+        "writer_contract": {"verdict": "clean", "suspicious_commits": 0},
+        "source_health": [],
+        "batches": [
+            {
+                "status": "SUCCESS",
+                "source_table": "s",
+                "batch_id": str(i),
+                "last_processed_version": i,
+            }
+            for i in range(12)
+        ],
+    }
+    with (
+        patch(
+            "kimball.cli._ops_runtime_and_providers",
+            return_value=(MagicMock(), MagicMock()),
+        ),
+        patch("kimball.ops.inspect.inspect_target", return_value=report),
+    ):
+        result = main(
+            ["inspect", "--target", "prod", "--table", "gold.t", "--limit", "5"]
+        )
+    out = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert len(out["batches"]) == 5

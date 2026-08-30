@@ -80,7 +80,9 @@ transformation_sql: |
   JOIN i ON o.order_id = i.order_id
 """)
 
-        orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result = orchestrator.run()
         assert result["status"] == "SUCCESS"
 
@@ -140,7 +142,9 @@ transformation_sql: |
   SELECT review_id, order_id, review_score, review_creation_timestamp FROM r
 """)
 
-        orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result = orchestrator.run()
         assert result["status"] == "SUCCESS"
 
@@ -153,7 +157,9 @@ transformation_sql: |
             ('r2', 'o2', 3, TIMESTAMP '2024-01-22 14:00:00')
         """)
 
-        orchestrator2 = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator2 = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result2 = orchestrator2.run()
         assert result2["status"] == "SUCCESS"
 
@@ -202,7 +208,9 @@ transformation_sql: |
   SELECT product_id, product_category, product_weight_g, updated_at FROM p
 """)
 
-        orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result = orchestrator.run()
         assert result["status"] == "SUCCESS"
 
@@ -212,7 +220,9 @@ transformation_sql: |
             WHERE product_id = 1
         """)
 
-        orchestrator2 = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator2 = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result2 = orchestrator2.run()
         assert result2["status"] == "SUCCESS"
 

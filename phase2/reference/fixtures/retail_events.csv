@@ -1,0 +1,15 @@
+event_seq,fixture_state,source_system,line_id,invoice_no,stock_code,description,quantity,invoice_ts,unit_price,customer_id,country,customer_segment,event_type
+1,baseline,uci,uci-536365-1,536365,85123A,WHITE HANGING HEART T-LIGHT HOLDER,6,2010-12-01 08:26:00,2.55,17850,United Kingdom,retail,sale
+2,baseline,uci,uci-536365-2,536365,71053,WHITE METAL LANTERN,6,2010-12-01 08:26:00,3.39,17850,United Kingdom,retail,sale
+3,baseline,uci,uci-536367-1,536367,84879,ASSORTED COLOUR BIRD ORNAMENT,32,2010-12-01 08:34:00,1.69,13047,United Kingdom,wholesale,sale
+4,dimension_changes,uci,uci-change-customer-17850,,85123A,WHITE HANGING HEART T-LIGHT HOLDER,0,2010-12-02 09:00:00,2.55,17850,France,retail,dimension_change
+5,dimension_changes,uci,uci-change-product-71053,,71053,WHITE METAL LANTERN CORRECTED,0,2010-12-02 09:05:00,3.39,17850,France,retail,dimension_change
+6,incremental,uci,uci-536368-1,536368,85123A,WHITE HANGING HEART T-LIGHT HOLDER,2,2010-12-02 10:00:00,2.55,17850,France,retail,sale
+7,replay,uci,uci-536368-1,536368,85123A,WHITE HANGING HEART T-LIGHT HOLDER,2,2010-12-02 10:00:00,2.55,17850,France,retail,sale
+8,late_dimension,uci,uci-late-customer-99999,,22752,SET 7 BABUSHKA NESTING BOXES,0,2010-12-01 07:00:00,7.65,99999,Germany,retail,dimension_change
+9,late_fact,uci,uci-536360-1,536360,22752,SET 7 BABUSHKA NESTING BOXES,1,2010-12-01 07:30:00,7.65,99999,Germany,retail,sale
+10,unknowns,uci,uci-536369-1,536369,85123A,WHITE HANGING HEART T-LIGHT HOLDER,1,2010-12-03 11:00:00,2.55,,United Kingdom,,sale
+11,duplicates,uci,uci-duplicate-customer,,85123A,WHITE HANGING HEART T-LIGHT HOLDER,0,2010-12-03 12:00:00,2.55,17850,Spain,retail,dimension_change
+12,orphans,uci,uci-536370-1,536370,MISSING,UNKNOWN PRODUCT,1,2010-12-03 12:30:00,1.00,77777,,,sale
+13,identity,erp,erp-900001-1,900001,85123A,WHITE HANGING HEART T-LIGHT HOLDER,3,2010-12-04 09:00:00,2.55,17850,France,retail,sale
+14,cancellation,uci,uci-C536365-1,C536365,85123A,WHITE HANGING HEART T-LIGHT HOLDER,-6,2010-12-05 10:00:00,2.55,17850,France,retail,cancellation

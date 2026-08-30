@@ -8,8 +8,8 @@ This document outlines known limitations, design choices, and potential edge cas
 
 | SCD Type | Delete Behavior                                             |
 | -------- | ----------------------------------------------------------- |
-| **SCD1** | Sets `__is_deleted = true` (row preserved)                  |
-| **SCD2/SCD7 source delete** | Expires row (`__is_current = false`, `__is_deleted = true`) |
+| `SCD1`   | Sets `__is_deleted = true` (row preserved)                  |
+| `SCD2` / `SCD7` source delete | Expires row (`__is_current = false`, `__is_deleted = true`) |
 
 An ordinary attribute supersession expires the old row with
 `__is_deleted = false`; deletion status is reserved for an actual source
@@ -31,6 +31,7 @@ delete.
 - **Single-writer contract:** safety requires one active writer for each target and no unrelated commit between the failed write and `RESTORE`. Compiled Databricks jobs set `max_concurrent_runs: 1`; external schedulers must enforce the same rule.
 - **Serverless Limitation:** On Databricks Serverless, setting `spark.databricks.delta.commitInfo.userMetadata` is restricted.
   - **Impact:** Crashed batches cannot be tagged, so zombie recovery cannot identify their commits automatically. The pipeline continues without compensating rollback protection.
+  - **Status:** This is a separate issue from the `checkpoint_location` / UC volumes fix (the streaming layer now writes to `/Volumes/<catalog>/<schema>/<volume>` on Databricks). The `userMetadata` restriction has no current mitigation; if you need crash-recovery tagging, run on a classic cluster.
 
 ## 3. Concurrency & Locking
 
@@ -73,13 +74,19 @@ delete.
 
 ## 8. Idempotency Contracts
 
-The framework provides the following guarantees for repeated runs of the same batch:
+The framework provides the following guarantees for repeated runs of the same batch.
+
+> **Note:** The "Merge Strategy" column names below are internal
+> implementation labels used by the framework's SCD strategies.
+> They are not top-level config options you set in YAML. The
+> strategies themselves are selected automatically based on
+> `scd_type` and `cdc_strategy`.
 
 | Merge Strategy          | Idempotency Guarantee              | Notes                                                                                                                    |
 | ----------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| **upsert** (default)    | ✅ **Idempotent**                  | Same batch replayed → same result. Delta MERGE is inherently idempotent when matching on natural/merge keys.             |
-| **append**              | ❌ **NOT idempotent**              | Repeated runs will create duplicates. User must ensure upstream deduplication or use watermark to prevent re-processing. |
-| **partition_overwrite** | ✅ **Idempotent within partition** | Same partition rewritten → same result. Idempotent as long as partition bounds are deterministic.                        |
+| `upsert` (default)      | Idempotent                         | Same batch replayed → same result. Delta MERGE is inherently idempotent when matching on natural/merge keys.             |
+| `append`                | NOT idempotent                     | Repeated runs will create duplicates. User must ensure upstream deduplication or use watermark to prevent re-processing. |
+| `partition_overwrite`   | Idempotent within partition        | Same partition rewritten → same result. Idempotent as long as partition bounds are deterministic.                        |
 
 ### Ensuring Idempotency
 
@@ -137,3 +144,47 @@ the following limitations compared to the batch path:
 Checkpoint directories are tied to the Spark application. Moving or copying
 them may cause corruption. Always use a persistent location (DBFS, S3, ADLS)
 for production streaming checkpoints.
+
+## 10. VACUUM Scheduling
+
+- **Safety Gate:** VACUUM is disabled by default. Set `KIMBALL_ENABLE_VACUUM=1`
+  environment variable to enable execution.
+- **Default Retention:** 168 hours (7 days). Configurable per-table via
+  `vacuum_retention_hours`.
+- **History Impact:** Once VACUUM runs, Delta time travel to pre-VACUUM
+  versions is no longer possible. This affects crash recovery (Section 2)
+  which relies on `RESTORE TABLE` with Delta history.
+- **Recommendation:** Keep retention hours >= 168 in production. Lower
+  values are suitable for dev/test environments only.
+
+## 11. UC-native ROW FILTER
+
+- **Requires Unity Catalog:** ROW FILTER only works on UC-enabled tables.
+  Tables in the legacy hive_metastore catalog are not affected.
+- **Function Creation:** Each filter creates a UC function in the target
+  schema. Ensure the pipeline service principal has `CREATE FUNCTION`
+  permission on the target schema.
+- **No DLT Support:** ROW FILTER is enforced at query time by the UC
+  authorization layer. DLT materialized views do not propagate filters.
+
+## 12. ABAC Tag Policies
+
+- **Requires Unity Catalog:** ABAC policies require UC tags and UC policies.
+  They are not available on hive_metastore tables.
+- **Policy Scope:** Policies are created at the catalog level and applied
+  to schemas. Ensure the pipeline service principal has `CREATE POLICY`
+  permission on the target catalog.
+- **Tag Matching:** Column matching uses `hasTag('tag')` or
+  `hasTagValue('tag','value')`. Tags must be registered via UC before
+  policies reference them.
+
+## 13. Generated Columns
+
+- **Immutable:** Generated columns cannot be updated via MERGE or INSERT.
+  The expression must derive the value from other columns in the same row.
+- **Expression Safety:** Framework validates expressions against a blocklist
+  of dangerous SQL functions (e.g., `current_timestamp`, `rand`) to prevent
+  non-deterministic values.
+- **Schema Evolution:** Adding new source columns that generated columns
+  depend on requires recreating the table. The framework does not support
+  `ALTER TABLE ADD COLUMN` for generated columns.

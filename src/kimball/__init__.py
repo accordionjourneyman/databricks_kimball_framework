@@ -10,19 +10,7 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from kimball.common.errors import (
-        ConfigurationError,
-        DeltaConcurrentModificationError,
-        ETLControlConflictError,
-        ETLControlNotFoundError,
-        KimballError,
-        NonRetriableError,
-        RetriableError,
-        SchemaMismatchError,
-        SourceTableBusyError,
-        TransformationSQLError,
-        TransientSparkError,
-    )
+    from kimball.common.errors import KimballError, NonRetriableError, RetriableError
     from kimball.common.runtime import RuntimeOptions
     from kimball.observability.bus_matrix import generate_bus_matrix
     from kimball.observability.resilience import (
@@ -70,14 +58,6 @@ __all__ = [
     "KimballError",
     "RetriableError",
     "NonRetriableError",
-    "SourceTableBusyError",
-    "DeltaConcurrentModificationError",
-    "TransientSparkError",
-    "ETLControlConflictError",
-    "ConfigurationError",
-    "TransformationSQLError",
-    "SchemaMismatchError",
-    "ETLControlNotFoundError",
 ]
 
 _LAZY_IMPORTS: dict[str, tuple[str, str]] = {

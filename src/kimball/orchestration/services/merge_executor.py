@@ -70,8 +70,7 @@ class MergeExecutor:
         self.table_creator.create_table_with_clustering(
             table_name=ctx.config.table_name,
             schema_df=schema_df,
-            config=ctx.config.model_dump(),
-            cluster_by=cluster_cols or [],
+            config={**ctx.config.model_dump(), "cluster_by": cluster_cols or []},
             surrogate_key_col=ctx.config.surrogate_key,
         )
 
@@ -101,8 +100,7 @@ class MergeExecutor:
         if getattr(ctx.config, "enable_lineage_truncation", False):
             logger.info("Creating DataFrame checkpoint for merge operation...")
             try:
-                checkpoint_dir = ctx.spark.sparkContext.getCheckpointDir()
-                if checkpoint_dir:
+                if ctx.spark.sparkContext.getCheckpointDir():
                     checkpointed_df = transformed_df.checkpoint()
                 else:
                     checkpointed_df = transformed_df.localCheckpoint()
@@ -115,54 +113,24 @@ class MergeExecutor:
         if ctx.table_exists(ctx.config.table_name):
             target_schema = ctx.get_target_schema(ctx.config.table_name)
             target_columns = {f.name for f in target_schema.fields}
-            return self._apply_adaptive_pruning(ctx, checkpointed_df, target_columns)
+            return self._evolve_schema_if_needed(ctx, checkpointed_df, target_columns)
         return checkpointed_df
 
-    def _apply_adaptive_pruning(
+    def _evolve_schema_if_needed(
         self, ctx: PipelineContext, df: DataFrame, target_columns: set[str]
     ) -> DataFrame:
-        protection_set: set[str] = set()
-        if ctx.config.natural_keys:
-            protection_set.update(ctx.config.natural_keys)
-        if ctx.config.merge_keys:
-            protection_set.update(ctx.config.merge_keys)
-        if ctx.config.surrogate_key:
-            protection_set.add(ctx.config.surrogate_key)
-        if ctx.config.track_history_columns:
-            protection_set.update(ctx.config.track_history_columns)
-        if ctx.config.current_value_columns:
-            protection_set.update(ctx.config.current_value_columns)
-        if ctx.config.foreign_keys:
-            for fk in ctx.config.foreign_keys:
-                protection_set.add(fk.column)
-        protection_set |= SYSTEM_COLUMNS
-        protection_set |= CDF_COLUMNS
+        """Add opted-in source columns that are absent from the target schema."""
+        if not ctx.config.schema_evolution:
+            return df
 
-        cols_to_keep: list[str] = []
-        cols_dropped: list[str] = []
-        cols_added_to_target: list[str] = []
-
-        for c in df.columns:
-            if c in target_columns or c in protection_set:
-                cols_to_keep.append(c)
-                if (
-                    c not in target_columns
-                    and c not in SYSTEM_COLUMNS
-                    and c not in CDF_COLUMNS
-                ):
-                    cols_added_to_target.append(c)
-            else:
-                cols_dropped.append(c)
-
-        if ctx.config.schema_evolution and cols_added_to_target:
-            self._evolve_target_schema(ctx, cols_added_to_target)
-
-        if cols_dropped:
-            logger.info(
-                f"Adaptive pruning: keeping {len(cols_to_keep)}/{len(df.columns)} columns, "
-                f"dropping {len(cols_dropped)} unused columns"
-            )
-            return df.select(*cols_to_keep)
+        if new_columns := [
+            column
+            for column in df.columns
+            if column not in target_columns
+            and column not in SYSTEM_COLUMNS
+            and column not in CDF_COLUMNS
+        ]:
+            self._evolve_target_schema(ctx, new_columns)
         return df
 
     def _evolve_target_schema(
@@ -184,10 +152,7 @@ class MergeExecutor:
                         f"ALTER TABLE {quote_table_name(ctx.config.table_name)} "
                         f"ADD COLUMNS ({col_name} {src_type.simpleString()})"
                     )
-                    if (
-                        ctx.config.table_type == "dimension"
-                        and ctx.config.null_policy.mode == "kimball"
-                    ):
+                    if ctx.config.table_type == "dimension":
                         replacement = ctx.config.null_policy.attribute_substitutes.get(
                             col_name, replacement_for_type(src_type)
                         )
@@ -235,13 +200,42 @@ class MergeExecutor:
                 "duplicates expected in the source batch)"
             )
             return
+
+        use_approximate = getattr(
+            ctx.runtime_options, "approx_grain_check", False
+        ) or getattr(ctx.runtime_options, "use_approximate_unique", False)
+
+        if use_approximate:
+            from pyspark.sql.functions import approx_count_distinct, struct
+
+            logger.info(
+                f"Using approximate grain validation for {ctx.config.table_name}"
+            )
+            if metrics := source_df.agg(
+                spark_count("*").alias("total"),
+                approx_count_distinct(struct(*join_keys)).alias("distinct"),
+            ).first():
+                total = metrics["total"]
+                distinct = metrics["distinct"]
+                if total > distinct * 1.05:
+                    msg = (
+                        f"Approximate grain violation in {ctx.config.table_name}: "
+                        f"Estimated {distinct} unique keys vs {total} total rows for grain {join_keys}. "
+                        "Fix upstream deduplication before loading."
+                    )
+                    if grain_mode == "warn":
+                        logger.warning(msg)
+                    else:
+                        raise ValueError(msg)
+            ctx.validated_grains.add(grain_key)
+            return
+
         grain_violations = (
             source_df.groupBy(*join_keys)
             .agg(spark_count("*").alias("__grain_count"))
             .filter("__grain_count > 1")
         )
-        sample_violations = grain_violations.limit(5).collect()
-        if sample_violations:
+        if sample_violations := grain_violations.limit(5).collect():
             violation_keys = [
                 {k: row[k] for k in join_keys} for row in sample_violations
             ]
@@ -306,6 +300,15 @@ class MergeExecutor:
                 logger.info(
                     "Skipping inline OPTIMIZE. "
                     "Set KIMBALL_ENABLE_INLINE_OPTIMIZE=1 to enable."
+                )
+        if getattr(ctx.config, "vacuum_after_merge", False) is True:
+            if os.environ.get("KIMBALL_ENABLE_VACUUM") == "1":
+                _merger.vacuum_table(
+                    ctx.config.table_name, ctx.config.vacuum_retention_hours
+                )
+            else:
+                logger.info(
+                    "Skipping inline VACUUM. Set KIMBALL_ENABLE_VACUUM=1 to enable."
                 )
 
     def get_merge_metrics(self, ctx: PipelineContext) -> dict[str, int]:

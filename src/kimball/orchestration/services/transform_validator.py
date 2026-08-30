@@ -62,14 +62,13 @@ class TransformValidator:
                             f"Add '_change_type' to your SELECT clause for proper SCD2 delete handling."
                         )
                         break
+        elif len(config.sources) == 1:
+            source_name = config.sources[0].name
+            transformed_df = active_dfs[source_name]
         else:
-            if len(config.sources) == 1:
-                source_name = config.sources[0].name
-                transformed_df = active_dfs[source_name]
-            else:
-                raise ValueError(
-                    "transformation_sql is required for multi-source pipelines"
-                )
+            raise ValueError(
+                "transformation_sql is required for multi-source pipelines"
+            )
 
         if config.pii and config.pii.columns:
             from kimball.processing.pii import apply_pii_masking
@@ -129,14 +128,11 @@ class TransformValidator:
 
             validate_fact_output_columns(config, transformed_df.columns)
 
-        # Contract data rules are intentionally never fingerprint-skipped: source
-        # content can change while both configuration and schema remain stable.
-        contracted_sources = [
+        if contracted_sources := [
             source
             for source in config.sources
             if isinstance(source.contract, SourceContractConfig)
-        ]
-        if contracted_sources:
+        ]:
             schema = getattr(ctx.etl_control, "schema", None) or "default"
             obs = config.observability
             writer = DataQualityEventSink(
@@ -213,37 +209,38 @@ class TransformValidator:
                 )
             ctx.validated_grains.add(tuple(config.natural_keys))
 
-        if config.table_type == "fact" and (
-            config.foreign_keys or config.junk_dimensions
+        if (
+            config.table_type == "fact"
+            and (config.foreign_keys or config.junk_dimensions)
+            and not getattr(config, "tests", None)
         ):
-            if not getattr(config, "tests", None):
-                logger.info(
-                    "Validating FK integrity against dimensions (pre-merge gate)..."
+            logger.info(
+                "Validating FK integrity against dimensions (pre-merge gate)..."
+            )
+            fk_defs = [
+                {
+                    "column": fk.column,
+                    "dimension_table": fk.references,
+                    "dimension_key": fk.dimension_key or fk.column,
+                    "current_only": fk.relationship != "type7",
+                }
+                for fk in config.foreign_keys or []
+                if hasattr(fk, "references") and fk.references
+            ]
+            fk_defs.extend(
+                {
+                    "column": junk.surrogate_key,
+                    "dimension_table": junk.dimension_table,
+                    "dimension_key": junk.surrogate_key,
+                }
+                for junk in config.junk_dimensions
+            )
+            if fk_defs:
+                fk_report = self._validator.validate_fact_fk_integrity(
+                    transformed_df, fk_defs
                 )
-                fk_defs = [
-                    {
-                        "column": fk.column,
-                        "dimension_table": fk.references,
-                        "dimension_key": fk.dimension_key or fk.column,
-                        "current_only": fk.relationship != "type7",
-                    }
-                    for fk in config.foreign_keys or []
-                    if hasattr(fk, "references") and fk.references
-                ]
-                fk_defs.extend(
-                    {
-                        "column": junk.surrogate_key,
-                        "dimension_table": junk.dimension_table,
-                        "dimension_key": junk.surrogate_key,
-                    }
-                    for junk in config.junk_dimensions
-                )
-                if fk_defs:
-                    fk_report = self._validator.validate_fact_fk_integrity(
-                        transformed_df, fk_defs
-                    )
-                    for result in fk_report.results:
-                        logger.info(str(result))
-                    fk_report.raise_on_failure()
+                for result in fk_report.results:
+                    logger.info(str(result))
+                fk_report.raise_on_failure()
 
         return transformed_df

@@ -1,0 +1,14 @@
+kimball_phase2_smoke:
+  target: local
+  outputs:
+    local:
+      type: spark
+      method: thrift
+      host: "{{ env_var('DBT_HOST', 'spark-thrift') }}"
+      port: "{{ env_var('DBT_PORT', '10000') | int }}"
+      user: dbt
+      schema: dbt_baseline
+      auth: NONE
+      connect_retries: 5
+      connect_timeout: 30
+      retry_all: true

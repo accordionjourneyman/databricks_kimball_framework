@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -146,8 +146,7 @@ class ProjectCompiler:
                     )
                 )
 
-        cycle = self._find_cycle(nodes)
-        if cycle:
+        if cycle := self._find_cycle(nodes):
             issues.append(
                 ProjectIssue(
                     "DEPENDENCY_CYCLE",
@@ -157,8 +156,7 @@ class ProjectCompiler:
                 )
             )
 
-        errors = [issue for issue in issues if issue.severity == "error"]
-        if errors:
+        if errors := [issue for issue in issues if issue.severity == "error"]:
             raise ProjectValidationError(errors)
 
         return CompiledProject(
@@ -241,11 +239,3 @@ class ProjectCompiler:
             completed.update(ready)
             remaining.difference_update(ready)
         return tuple(levels)
-
-
-def compile_project(
-    entries: Iterable[tuple[str, TableConfig]], profile: Profile = "dev"
-) -> CompiledProject:
-    """Convenience wrapper for callers that hold an iterable of configs."""
-
-    return ProjectCompiler(profile=profile).compile(list(entries))

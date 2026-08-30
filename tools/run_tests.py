@@ -109,8 +109,6 @@ def parse_args() -> argparse.Namespace:
 
 def build_pytest_args(args: argparse.Namespace) -> list[str]:
     """Build the pytest command line arguments."""
-    cmd = ["python", "-m", "pytest"]
-
     # Determine which test paths to run
     test_paths = ["tests/unit/"]
     if args.integration:
@@ -119,8 +117,7 @@ def build_pytest_args(args: argparse.Namespace) -> list[str]:
         # --unit-only takes precedence
         test_paths = ["tests/unit/"]
 
-    cmd.extend(test_paths)
-
+    cmd = ["python", "-m", "pytest", *test_paths]
     if args.keyword:
         cmd.extend(["-k", args.keyword])
 

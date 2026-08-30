@@ -10,8 +10,8 @@ from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 
 from kimball.common.config import ConfigLoader, TableConfig, TestDefinition
+from kimball.orchestration.validation import DataQualityValidator, TestSeverity
 from kimball.processing.hashing import compute_hashdiff
-from kimball.validation import DataQualityValidator, TestSeverity
 
 
 def _remote_only() -> bool:

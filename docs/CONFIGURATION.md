@@ -6,7 +6,7 @@ Complete reference for YAML configuration files.
 
 ```yaml
 # Required: Target table name
-table_name: {{ env }}_gold.dim_customer
+table_name: {{ target.gold_schema }}.dim_customer
 
 # Required: Table type
 table_type: dimension  # or: fact
@@ -39,7 +39,7 @@ schema_evolution: true
 
 # Required: Source tables
 sources:
-  - name: {{ env }}_silver.customers
+  - name: {{ target.silver_schema }}.customers
     alias: c
     cdc_strategy: cdf  # or: full
     primary_keys: [customer_id]  # Required for CDF deduplication
@@ -70,7 +70,7 @@ Full table name including catalog and schema. Supports Jinja2 templating.
 **Example:**
 
 ```yaml
-table_name: {{ env }}_gold.dim_customer
+table_name: {{ target.gold_schema }}.dim_customer
 ```
 
 ### table_type
@@ -97,14 +97,15 @@ Slowly Changing Dimension type (dimensions only).
 > [!NOTE]
 > **SCD2 Multi-Version Batches**: When multiple changes for the same natural key
 > occur within a single batch, the framework preserves ALL versions using a
-> canonical single-pass SCD2 merge stages all source versions and preserves their validity chain
-> intermediate history rows). Set `preserve_all_changes: true` to enable this.
+> canonical single-pass SCD2 merge that stages all source versions and preserves
+> their validity chain (including intermediate history rows). Set
+> `preserve_all_changes: true` to enable this.
 
 ### merge_keys (facts only)
 
 **Required for fact tables.** List of "degenerate dimension" columns that
 uniquely identify a fact row and serve as the MERGE condition. Facts do not
-have surrogate keys (per Kimball design) — `merge_keys` is the equivalent of
+have surrogate keys (per Kimball design) â€” `merge_keys` is the equivalent of
 `keys.natural_keys` for dimensions.
 
 ```yaml
@@ -399,7 +400,6 @@ pii:
 | --- | --- | --- |
 | `tokenize` | Deterministic keyed HMAC-SHA-256, null preserving. Requires `secret_ref`. | Security pseudonymization and equality joins where every producer uses the same controlled key. |
 | `fast_hash` | Unsalted `xxhash64`; deterministic but vulnerable to dictionary attacks. | Non-sensitive equality encoding only. |
-| `hash` | Deprecated alias for `fast_hash`; emits a warning. | Migration only. |
 | `mask` | Produces a string mask and optional visible prefix. | Limited display; numeric inputs are not cast back to a numeric type. |
 | `null` | Replaces values with typed null. | Schema-preserving data minimization. |
 | `drop` | Removes the column from the transformed DataFrame. | Strongest pipeline-level minimization. |
@@ -440,23 +440,37 @@ The framework automatically manages these columns:
 
 - `__is_deleted` - Boolean flag for soft-deleted rows
 
-## Environment Variables
+## Environment Variables and Per-Target Templating
 
-Use Jinja2 templating for environment-specific values:
+Use Jinja2 templating for environment-specific values. The
+framework injects a `target` context built from your
+`kimball.targets.yml`:
 
 ```yaml
-table_name: {{ env }}_gold.dim_customer
+table_name: {{ target.gold_schema }}.dim_customer
 sources:
-  - name: {{ env }}_silver.customers
+  - name: {{ target.silver_schema }}.customers
 ```
 
-Set the `env` variable before running:
+The available `target.*` keys are:
+
+| Key | Source | Example |
+| --- | --- | --- |
+| `target.name` | `--target` CLI flag | `dev`, `test`, `prod` |
+| `target.catalog` | `kimball.targets.yml` | `dev_catalog` |
+| `target.silver_schema` | `kimball.targets.yml` | `dev_silver` |
+| `target.gold_schema` | `kimball.targets.yml` | `dev_gold` |
+| `target.etl_schema` | `kimball.targets.yml` | `dev_etl_control` |
+| `target.checkpoint_root` | `kimball.targets.yml` (optional) | `/Volumes/.../checkpoints` |
+
+To use the templating layer directly outside the framework:
 
 ```python
-from jinja2 import Template
+from kimball.common.config import ConfigLoader, TargetLoader
 
-config_template = Template(open("config.yml").read())
-config_yaml = config_template.render(env="prod")
+target = TargetLoader("kimball.targets.yml").load("prod")
+config = ConfigLoader(template_context=target.template_context())
+table_config = config.load_config("my_table.yml")
 ```
 
 ## Complete Examples
@@ -467,6 +481,24 @@ See `examples/configs/` for:
 - `dim_product.yml` - SCD1 dimension
 - `fact_sales.yml` - Fact with brokered Type 7 customer keys
 - `tests/golden/dim_customer.yml` - SCD7 regression fixture
+
+## Target to Profile Mapping
+
+The `--target` CLI flag selects a deployment environment from
+`kimball.targets.yml`. Internally, each target name is mapped to
+a **profile** that controls how the pipeline is compiled
+(`src/kimball/cli.py:_profile_for_target`):
+
+| `--target` | Internal profile |
+| ---------- | ---------------- |
+| `dev`      | `dev`            |
+| `test`     | `test`           |
+| `prod`     | `production`     |
+
+`dev` and `test` enable developer-facing checks (extra data
+quality validation, grain sampling, debug logging). `prod`
+(`production`) is the lean profile intended for production
+workloads.
 
 ## Performance Features (Feature Flags)
 

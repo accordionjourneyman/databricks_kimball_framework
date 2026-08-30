@@ -13,7 +13,6 @@ import pytest
 from pyspark.sql import SparkSession
 
 from kimball.orchestration.orchestrator import Orchestrator
-from kimball.processing.late_arriving_dimension import LateArrivingDimensionProcessor
 from kimball.processing.skeleton_generator import SkeletonGenerator
 
 pytestmark = pytest.mark.usefixtures("spark")
@@ -74,6 +73,7 @@ class TestSkeletonGeneratorDirect:
         assert skeleton["__is_skeleton"]
         assert skeleton["__is_current"]
         assert skeleton["name"] is None
+        assert skeleton["customer_sk"] is not None
         assert skeleton["__etl_batch_id"] == "test-batch-001"
 
     def test_no_skeletons_when_all_keys_exist(self, spark: SparkSession, test_db):
@@ -159,134 +159,6 @@ class TestSkeletonGeneratorDirect:
 
 
 # =====================================================================
-# Skeleton hydration tests (LateArrivingDimensionProcessor)
-# =====================================================================
-
-
-class TestSkeletonHydration:
-    """Test that skeleton rows are hydrated with real data."""
-
-    def test_hydration_updates_skeleton_with_real_data(
-        self, spark: SparkSession, test_db
-    ):
-        """Skeleton row should be updated when real data arrives."""
-        spark.sql(f"""
-            CREATE TABLE {test_db}.dim_customer (
-                customer_sk BIGINT,
-                customer_id INT,
-                name STRING,
-                city STRING,
-                __is_current BOOLEAN,
-                __valid_from TIMESTAMP,
-                __valid_to TIMESTAMP,
-                __etl_processed_at TIMESTAMP,
-                __etl_batch_id STRING,
-                __is_skeleton BOOLEAN,
-                __skeleton_created_at TIMESTAMP,
-                __is_deleted BOOLEAN
-            ) USING DELTA
-        """)
-        # Insert a skeleton row (as SkeletonGenerator would create it)
-        spark.sql(f"""
-            INSERT INTO {test_db}.dim_customer VALUES
-            (1, 20, NULL, NULL, true, timestamp('1800-01-01'), NULL,
-             current_timestamp(), 'SKELETON_GEN', true, current_timestamp(), false)
-        """)
-
-        # Real data arrives for customer_id=20
-        real_data = [(20, "Bob", "Porto")]
-        source_df = spark.createDataFrame(real_data, ["customer_id", "name", "city"])
-
-        processor = LateArrivingDimensionProcessor(spark)
-        updated = processor.update_skeletons_with_real_data(
-            dimension_table=f"{test_db}.dim_customer",
-            source_df=source_df,
-            natural_keys=["customer_id"],
-        )
-
-        assert updated == 1, f"Expected exactly 1 skeleton hydrated, got {updated}"
-
-        rows = spark.table(f"{test_db}.dim_customer").collect()
-        assert len(rows) == 1
-        bob = rows[0]
-        assert bob["customer_id"] == 20
-        assert bob["name"] == "Bob"
-        assert bob["city"] == "Porto"
-        assert not bob["__is_skeleton"]
-
-    def test_hydration_preserves_existing_non_skeleton_rows(
-        self, spark: SparkSession, test_db
-    ):
-        """Hydration should not touch non-skeleton rows."""
-        spark.sql(f"""
-            CREATE TABLE {test_db}.dim_cust2 (
-                customer_sk BIGINT,
-                customer_id INT,
-                name STRING,
-                __is_current BOOLEAN,
-                __valid_from TIMESTAMP,
-                __valid_to TIMESTAMP,
-                __etl_processed_at TIMESTAMP,
-                __etl_batch_id STRING,
-                __is_skeleton BOOLEAN,
-                __skeleton_created_at TIMESTAMP,
-                __is_deleted BOOLEAN
-            ) USING DELTA
-        """)
-        spark.sql(f"""
-            INSERT INTO {test_db}.dim_cust2 VALUES
-            (1, 10, 'Alice', true, current_timestamp(), NULL,
-             current_timestamp(), 'INIT', false, NULL, false),
-            (2, 20, NULL, true, timestamp('1800-01-01'), NULL,
-             current_timestamp(), 'SKELETON_GEN', true, current_timestamp(), false)
-        """)
-
-        # Real data arrives for customer_id=20 only
-        source_df = spark.createDataFrame([(20, "Bob")], ["customer_id", "name"])
-
-        processor = LateArrivingDimensionProcessor(spark)
-        processor.update_skeletons_with_real_data(
-            dimension_table=f"{test_db}.dim_cust2",
-            source_df=source_df,
-            natural_keys=["customer_id"],
-        )
-
-        rows = spark.table(f"{test_db}.dim_cust2").orderBy("customer_id").collect()
-        assert len(rows) == 2
-        alice = rows[0]
-        assert alice["name"] == "Alice"
-        assert not alice["__is_skeleton"]
-        bob = rows[1]
-        assert bob["name"] == "Bob"
-        assert not bob["__is_skeleton"]
-
-    def test_no_hydration_when_no_skeletons_exist(self, spark: SparkSession, test_db):
-        """If no skeleton rows exist, hydration is a no-op."""
-        spark.sql(f"""
-            CREATE TABLE {test_db}.dim_no_skel (
-                sk BIGINT,
-                entity_id INT,
-                name STRING,
-                __is_skeleton BOOLEAN
-            ) USING DELTA
-        """)
-        spark.sql(f"INSERT INTO {test_db}.dim_no_skel VALUES (1, 10, 'Alice', false)")
-
-        source_df = spark.createDataFrame([(10, "Bob")], ["entity_id", "name"])
-
-        processor = LateArrivingDimensionProcessor(spark)
-        updated = processor.update_skeletons_with_real_data(
-            dimension_table=f"{test_db}.dim_no_skel",
-            source_df=source_df,
-            natural_keys=["entity_id"],
-        )
-
-        assert updated == 0
-        rows = spark.table(f"{test_db}.dim_no_skel").collect()
-        assert rows[0]["name"] == "Alice"  # Unchanged
-
-
-# =====================================================================
 # Full Orchestrator pipeline with skeleton generation
 # =====================================================================
 
@@ -350,7 +222,9 @@ transformation_sql: |
   SELECT DISTINCT customer_id, CAST(NULL AS STRING) AS name FROM o
 """)
 
-        orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result = orchestrator.run()
         assert result["status"] == "SUCCESS"
 
@@ -368,65 +242,6 @@ transformation_sql: |
 
         skeleton = [r for r in rows if r["customer_id"] == 20][0]
         assert skeleton["__is_skeleton"]
-
-    def test_skeleton_hydration_via_late_arriving_processor(
-        self, spark: SparkSession, test_db: str, tmp_config
-    ):
-        """Full lifecycle: create skeleton -> hydrate with real data."""
-        # Step 1: Create dimension with skeleton for customer_id=20
-        spark.sql(f"""
-            CREATE TABLE {test_db}.dim_cust_hydration (
-                customer_sk BIGINT,
-                customer_id INT,
-                name STRING,
-                city STRING,
-                __is_current BOOLEAN,
-                __valid_from TIMESTAMP,
-                __valid_to TIMESTAMP,
-                __etl_processed_at TIMESTAMP,
-                __etl_batch_id STRING,
-                __is_skeleton BOOLEAN,
-                __skeleton_created_at TIMESTAMP,
-                __is_deleted BOOLEAN
-            ) USING DELTA
-        """)
-        spark.sql(f"""
-            INSERT INTO {test_db}.dim_cust_hydration VALUES
-            (1, 10, 'Alice', 'Lisbon', true, current_timestamp(), NULL,
-             current_timestamp(), 'INIT', false, NULL, false),
-            (2, 20, NULL, NULL, true, timestamp('1800-01-01'), NULL,
-             current_timestamp(), 'SKELETON_GEN', true, current_timestamp(), false)
-        """)
-
-        # Step 2: Real data arrives for customer_id=20
-        real_data = [(20, "Bob", "Porto")]
-        source_df = spark.createDataFrame(real_data, ["customer_id", "name", "city"])
-
-        processor = LateArrivingDimensionProcessor(spark)
-        updated = processor.update_skeletons_with_real_data(
-            dimension_table=f"{test_db}.dim_cust_hydration",
-            source_df=source_df,
-            natural_keys=["customer_id"],
-        )
-
-        assert updated == 1, f"Expected exactly 1 skeleton hydrated, got {updated}"
-
-        # Step 3: Verify final state
-        rows = (
-            spark.table(f"{test_db}.dim_cust_hydration")
-            .orderBy("customer_id")
-            .collect()
-        )
-        assert len(rows) == 2
-
-        alice = [r for r in rows if r["customer_id"] == 10][0]
-        assert alice["name"] == "Alice"
-        assert not alice["__is_skeleton"]
-
-        bob = [r for r in rows if r["customer_id"] == 20][0]
-        assert bob["name"] == "Bob"
-        assert bob["city"] == "Porto"
-        assert not bob["__is_skeleton"]
 
     def test_scd2_skeleton_merge_and_hydration(
         self, spark: SparkSession, test_db: str, tmp_config
@@ -495,7 +310,9 @@ transformation_sql: |
   SELECT product_id, name, price, updated_at FROM p
 """)
 
-        orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result = orchestrator.run()
         assert result["status"] == "SUCCESS"
 

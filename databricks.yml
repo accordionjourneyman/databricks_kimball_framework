@@ -21,26 +21,61 @@ resources:
       description: "Run integration and benchmark tests for the Kimball Framework"
       max_concurrent_runs: 1
       tasks:
-        - task_key: run_tests
+        - task_key: warmup
+          description: "Pay cold-start cost so shard tasks reuse the warm session"
+          environment_key: test_env
+          spark_python_task:
+            python_file: warmup.py
+          timeout_seconds: 600
+
+        - task_key: scd_shard
+          description: "SCD core tests"
+          depends_on:
+            - task_key: warmup
+          environment_key: test_env
           spark_python_task:
             python_file: run_tests.py
             parameters:
-              - "{{job.parameters.test_path || 'tests/integration'}}"
+              - "--shard"
+              - "scd"
               - "{{job.parameters.catalog || 'spark_catalog'}}"
-          new_cluster:
-            spark_version: "17.0.x-scala2.13"
-            node_type_id: "i3.xlarge"
-            num_workers: 2
-            data_security_mode: "SINGLE_USER"
-            runtime_engine: "STANDARD"
-          libraries:
-            - whl: dist/*.whl
-            - pypi:
-                package: pytest
-          timeout_seconds: 3600
+          timeout_seconds: 1800
+
+        - task_key: services_shard
+          description: "Framework service tests"
+          depends_on:
+            - task_key: warmup
+          environment_key: test_env
+          spark_python_task:
+            python_file: run_tests.py
+            parameters:
+              - "--shard"
+              - "services"
+              - "{{job.parameters.catalog || 'spark_catalog'}}"
+          timeout_seconds: 1800
+
+        - task_key: datasets_shard
+          description: "Full dataset + benchmark tests"
+          depends_on:
+            - task_key: warmup
+          environment_key: test_env
+          spark_python_task:
+            python_file: run_tests.py
+            parameters:
+              - "--shard"
+              - "datasets"
+              - "{{job.parameters.catalog || 'spark_catalog'}}"
+          timeout_seconds: 1800
+
+      environments:
+        - environment_key: test_env
+          spec:
+            environment_version: "5"
+            dependencies:
+              - dist/*.whl
+              - pytest
+
       parameters:
-        - name: test_path
-          default: "tests/integration"
         - name: catalog
           default: "spark_catalog"
       schedule:

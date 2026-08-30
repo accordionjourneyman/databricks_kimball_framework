@@ -104,6 +104,23 @@ class TestRecoverZombies:
             "RESTORE TABLE `test_table` TO VERSION AS OF 2"
         )
 
+    def test_recovers_compound_batch_metadata(self, manager, spark_mock):
+        spark_mock.catalog.tableExists.return_value = True
+        delta_table = MagicMock()
+        delta_table.history.return_value.collect.return_value = [
+            {"version": 3, "userMetadata": "workflow=gold; batch_id=batch-1 "},
+        ]
+        with patch(
+            "kimball.orchestration.transaction.DeltaTable.forName",
+            return_value=delta_table,
+        ):
+            result = manager.recover_zombies("test_table", "batch-1")
+
+        assert result is True
+        spark_mock.sql.assert_called_once_with(
+            "RESTORE TABLE `test_table` TO VERSION AS OF 2"
+        )
+
     def test_handles_restore_below_zero(self, manager, spark_mock):
         spark_mock.catalog.tableExists.return_value = True
         delta_table = MagicMock()
@@ -172,4 +189,3 @@ class TestTableTransaction:
         manager._get_table_version = MagicMock(return_value=5)
         with manager.table_transaction("test_table", "batch-1"):
             pass
-        assert True

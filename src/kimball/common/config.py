@@ -143,9 +143,11 @@ class ContractQualityRule(StrictConfigModel):
 
     @model_validator(mode="after")
     def validate_rule_shape(self) -> "ContractQualityRule":
-        if self.rule in {"not_null", "null_rate", "accepted_values"}:
-            if not self.column:
-                raise ValueError(f"{self.rule} requires column")
+        if (
+            self.rule in {"not_null", "null_rate", "accepted_values"}
+            and not self.column
+        ):
+            raise ValueError(f"{self.rule} requires column")
         if self.rule == "null_rate" and self.max_ratio is None:
             raise ValueError("null_rate requires max_ratio")
         if self.rule == "accepted_values" and self.values is None:
@@ -310,17 +312,15 @@ class ForeignKeyConfig(StrictConfigModel):
 
 
 class NullPolicyConfig(StrictConfigModel):
-    mode: Literal["kimball", "legacy"] = "kimball"
     attribute_substitutes: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_substitutes(self) -> "NullPolicyConfig":
-        invalid = [
+        if invalid := [
             name
             for name, value in self.attribute_substitutes.items()
             if value is None or (isinstance(value, str) and not value.strip())
-        ]
-        if invalid:
+        ]:
             raise ValueError(
                 "attribute_substitutes values must be non-null and non-blank: "
                 + ", ".join(sorted(invalid))
@@ -335,7 +335,7 @@ class PIIColumnConfig(StrictConfigModel):
     """
 
     column: str
-    strategy: Literal["tokenize", "fast_hash", "hash", "mask", "null", "drop"] = "mask"
+    strategy: Literal["tokenize", "fast_hash", "mask", "null", "drop"] = "mask"
     secret_ref: str | None = None
     reveal_prefix: int = Field(default=0, ge=0)
     mask_char: str = Field(default="*", max_length=1)
@@ -367,6 +367,49 @@ class PIIPolicy(StrictConfigModel):
     @property
     def drop_columns(self) -> list[str]:
         return [c.column for c in self.columns if c.strategy == "drop"]
+
+
+class RowFilterConfig(StrictConfigModel):
+    """Unity Catalog row-level security via ``ALTER TABLE SET ROW FILTER``.
+
+    Declares a SQL UDF that returns a boolean per row.  Rows for which the
+    function returns ``False`` are hidden from queries.
+    """
+
+    function_name: str
+    function_body: str
+    column: str
+    grant_to: list[str] | None = None
+
+
+class GeneratedColumnConfig(StrictConfigModel):
+    """Definition of a Delta generated column.
+
+    Delta requires the generated column's data type to be declared explicitly;
+    deriving it from the expression is not reliable and can produce DDL that
+    fails only after a deployment has started.
+    """
+
+    expression: str
+    data_type: str
+
+
+class ABACPolicyConfig(StrictConfigModel):
+    """Attribute-Based Access Control policy applied at catalog/schema/table scope.
+
+    Policies reference governed tags: apply a tag to a column and the policy
+    activates automatically for matching users.
+    """
+
+    policy_name: str
+    policy_type: Literal["row_filter", "column_mask"]
+    udf_name: str
+    udf_body: str
+    target_groups: list[str]
+    match_tag: str
+    function_argument: str = "matched_value"
+    tag_value: str | None = None
+    scope: Literal["catalog", "schema", "table"] = "schema"
 
 
 class TestDefinition(StrictConfigModel):
@@ -445,7 +488,10 @@ class TableConfig(StrictConfigModel):
     default_rows: dict[str, Any] | None = None
     schema_evolution: bool = False
     cluster_by: list[str] | None = None
+    generated_columns: dict[str, GeneratedColumnConfig] | None = None
     optimize_after_merge: bool = False
+    vacuum_after_merge: bool = False
+    vacuum_retention_hours: int = Field(default=168, ge=168)
     merge_keys: list[str] | None = None
     foreign_keys: list[ForeignKeyConfig] | None = None
     tests: list[TestDefinition] | None = Field(default=None)
@@ -455,6 +501,8 @@ class TableConfig(StrictConfigModel):
     grain_validation: Literal["error", "warn", "skip"] = "error"
     declare_constraints: bool = True
     pii: PIIPolicy | None = None
+    row_filter: RowFilterConfig | None = None
+    abac_policies: list[ABACPolicyConfig] | None = None
     append_only: bool = False
     observability: ObservabilityConfig | None = None
     grain: str | None = None

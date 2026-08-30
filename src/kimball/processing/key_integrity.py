@@ -26,21 +26,16 @@ def validate_type7_keys(
     )
     pairs = None
     for kind, key_column, fingerprint_column in definitions:
-        frames = []
-        for incoming, frame in ((True, source), (False, target)):
-            if (
-                key_column not in frame.columns
-                or fingerprint_column not in frame.columns
-            ):
-                continue
-            frames.append(
-                frame.select(
-                    F.lit(kind).alias("__key_kind"),
-                    F.col(key_column).cast("long").alias("__key"),
-                    F.col(fingerprint_column).alias("__fingerprint"),
-                    F.lit(incoming).alias("__incoming"),
-                )
+        frames = [
+            frame.select(
+                F.lit(kind).alias("__key_kind"),
+                F.col(key_column).cast("long").alias("__key"),
+                F.col(fingerprint_column).alias("__fingerprint"),
+                F.lit(incoming).alias("__incoming"),
             )
+            for incoming, frame in ((True, source), (False, target))
+            if key_column in frame.columns and fingerprint_column in frame.columns
+        ]
         if not frames:
             continue
         domain = frames[0]
@@ -50,7 +45,7 @@ def validate_type7_keys(
     if pairs is None:
         raise DataQualityError("Type 7 key fingerprints are missing")
 
-    violations = (
+    if violations := (
         pairs.filter(
             F.col("__key").isNotNull()
             & F.col("__fingerprint").isNotNull()
@@ -70,8 +65,7 @@ def validate_type7_keys(
         )
         .limit(1)
         .collect()
-    )
-    if violations:
+    ):
         row = violations[0]
         raise DataQualityError(
             f"Type 7 {row['__key_kind']} key collision/reserved-key violation "

@@ -51,10 +51,7 @@ def apply_dimension_null_policy(
     identity_columns: list[str],
 ) -> DataFrame:
     """Reject null identities and replace null descriptive attributes once."""
-    if policy.mode == "legacy":
-        return df
-    missing = [name for name in identity_columns if name not in df.columns]
-    if missing:
+    if missing := [name for name in identity_columns if name not in df.columns]:
         raise DataQualityError(
             "Dimension identity columns are missing: " + ", ".join(sorted(missing))
         )
@@ -69,7 +66,7 @@ def apply_dimension_null_policy(
     result = df
     identity = set(identity_columns)
     substitutes = policy.attribute_substitutes
-    for field in df.schema.fields:
+    for field in result.schema.fields:
         if field.name in identity or field.name.startswith("_"):
             continue
         replacement = (

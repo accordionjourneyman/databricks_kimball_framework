@@ -59,7 +59,9 @@ transformation_sql: |
   SELECT patient_id, first_name, last_name, city, state, marital_status, updated_at FROM p
 """)
 
-        orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result = orchestrator.run()
         assert result["status"] == "SUCCESS"
 
@@ -69,7 +71,9 @@ transformation_sql: |
             WHERE patient_id = 1
         """)
 
-        orchestrator2 = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator2 = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result2 = orchestrator2.run()
         assert result2["status"] == "SUCCESS"
 
@@ -159,6 +163,7 @@ foreign_keys:
     dimension_key: patient_id
     lookup:
       source_columns: [patient_id]
+      early_arriving: error
       detect_fanout: true
       validate_resolution: true
 sources:
@@ -172,11 +177,15 @@ transformation_sql: |
 """)
 
         assert (
-            Orchestrator(dim_config, spark=spark, etl_schema=test_db).run()["status"]
+            Orchestrator.from_config(dim_config, spark=spark, etl_schema=test_db).run()[
+                "status"
+            ]
             == "SUCCESS"
         )
         assert (
-            Orchestrator(fact_config, spark=spark, etl_schema=test_db).run()["status"]
+            Orchestrator.from_config(
+                fact_config, spark=spark, etl_schema=test_db
+            ).run()["status"]
             == "SUCCESS"
         )
 
@@ -205,7 +214,7 @@ transformation_sql: |
             ('e4', 999, 10, 'emergency', TIMESTAMP '2024-04-01 08:00:00')
         """)
         with pytest.raises(DataQualityError):
-            Orchestrator(fact_config, spark=spark, etl_schema=test_db).run()
+            Orchestrator.from_config(fact_config, spark=spark, etl_schema=test_db).run()
 
         for t in [
             f"{test_db}.fact_encounters",
@@ -287,6 +296,7 @@ foreign_keys:
     dimension_key: provider_id
     lookup:
       source_columns: [provider_id]
+      early_arriving: error
       detect_fanout: true
 sources:
   - name: {test_db}.encounters
@@ -306,6 +316,7 @@ foreign_keys:
     dimension_key: provider_id
     lookup:
       source_columns: [provider_id]
+      early_arriving: error
       detect_fanout: true
 sources:
   - name: {test_db}.conditions
@@ -316,15 +327,21 @@ transformation_sql: |
 """)
 
         assert (
-            Orchestrator(dim_config, spark=spark, etl_schema=test_db).run()["status"]
+            Orchestrator.from_config(dim_config, spark=spark, etl_schema=test_db).run()[
+                "status"
+            ]
             == "SUCCESS"
         )
         assert (
-            Orchestrator(enc_config, spark=spark, etl_schema=test_db).run()["status"]
+            Orchestrator.from_config(enc_config, spark=spark, etl_schema=test_db).run()[
+                "status"
+            ]
             == "SUCCESS"
         )
         assert (
-            Orchestrator(cond_config, spark=spark, etl_schema=test_db).run()["status"]
+            Orchestrator.from_config(
+                cond_config, spark=spark, etl_schema=test_db
+            ).run()["status"]
             == "SUCCESS"
         )
 
@@ -356,7 +373,7 @@ transformation_sql: |
             ('c3', 2, 999, 'Z99.9', DATE '2024-03-10')
         """)
         with pytest.raises(DataQualityError):
-            Orchestrator(cond_config, spark=spark, etl_schema=test_db).run()
+            Orchestrator.from_config(cond_config, spark=spark, etl_schema=test_db).run()
 
         for t in [
             f"{test_db}.fact_encounters",

@@ -9,7 +9,9 @@ class TestGetSpark:
         with patch.dict(
             "sys.modules", {"databricks.sdk.runtime": MagicMock(spark=mock_spark)}
         ):
+            from kimball.common import spark_session
             from kimball.common.spark_session import get_spark
 
+            spark_session._active_spark = None
             result = get_spark()
             assert result is mock_spark

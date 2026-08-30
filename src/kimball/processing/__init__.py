@@ -20,7 +20,11 @@ from kimball.processing.scd2 import merge_scd2
 from kimball.processing.scd4 import merge_scd4
 from kimball.processing.scd6 import merge_scd6
 from kimball.processing.table_creator import TableCreator
-from kimball.processing.table_ops import get_last_merge_metrics, optimize_table
+from kimball.processing.table_ops import (
+    get_last_merge_metrics,
+    optimize_table,
+    vacuum_table,
+)
 
 __all__ = [
     "DataLoader",
@@ -38,4 +42,5 @@ __all__ = [
     "merge_scd6",
     "optimize_table",
     "seed_default_rows",
+    "vacuum_table",
 ]

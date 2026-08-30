@@ -26,8 +26,9 @@ class RecoveryService:
             )
             return False
 
-        running_batches = ctx.etl_control.get_running_batches(ctx.config.table_name)
-        if running_batches:
+        if running_batches := ctx.etl_control.get_running_batches(
+            ctx.config.table_name, ttl_minutes=None
+        ):
             logger.info(
                 f"Found {len(running_batches)} incomplete batches. Attempting recovery..."
             )
@@ -58,12 +59,15 @@ class RecoveryService:
             ctx.spark.sql(
                 f"DROP TABLE IF EXISTS {quote_table_name(ctx.config.table_name)}"
             )
-        if ctx.config.scd_type == 4 and ctx.config.history_table:
-            if ctx.spark.catalog.tableExists(ctx.config.history_table):
-                logger.info(f"Dropping history table {ctx.config.history_table}")
-                ctx.spark.sql(
-                    f"DROP TABLE IF EXISTS {quote_table_name(ctx.config.history_table)}"
-                )
+        if (
+            ctx.config.scd_type == 4
+            and ctx.config.history_table
+            and ctx.spark.catalog.tableExists(ctx.config.history_table)
+        ):
+            logger.info(f"Dropping history table {ctx.config.history_table}")
+            ctx.spark.sql(
+                f"DROP TABLE IF EXISTS {quote_table_name(ctx.config.history_table)}"
+            )
 
         for source in ctx.config.sources:
             ctx.etl_control.reset_watermark(ctx.config.table_name, source.name)

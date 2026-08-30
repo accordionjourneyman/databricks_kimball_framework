@@ -1,0 +1,87 @@
+{
+  "dbt_output": {
+    "artifacts_link": "https://us-east-2.storage.cloud.databricks.com/api/2.0/fs/files/WorkspaceInternal/Jobs/FileStore/job-result/job-506550333697497/run-418284333977409/dbt-output.tar.gz?v=1&workspaceId=1505289208203470&wkt=cp&X-Databricks-TTL=1799992&X-Databricks-Consumer-Network-Zone=internet&sn=ohio-prod&X-Databricks-Key-Version=01f0c8c3-bc99-1fa7-bb53-c51a7b2a15f3&X-Databricks-Issued=20260724T005437Z&X-Databricks-Signature=ARoOCqrpPg3Zc_wQtRB8x2WRwKKPjdtSIkR0wA5R7r70Bq2Xvw"
+  },
+  "logs": "\n\n\n\n\n+ dbt seed --full-refresh\n\u001b[0m00:49:14  Running with dbt=1.11.7\n\u001b[0m00:49:16  Registered adapter: databricks=1.12.2\n\u001b[0m00:49:16  Unable to do partial parsing because saved manifest not found. Starting full parse.\n\u001b[0m00:49:19  Found 5 models, 1 snapshot, 9 data tests, 1 seed, 1 source, 769 macros\n\u001b[0m00:49:19  \n\u001b[0m00:49:19  Concurrency: 8 threads (target='databricks_cluster')\n\u001b[0m00:49:19  \n\u001b[0m00:49:34  1 of 1 START seed file phase2_dbt_conformance_source.retail_events ............. [RUN]\n\u001b[0m00:49:48  1 of 1 OK loaded seed file phase2_dbt_conformance_source.retail_events ......... [\u001b[32mCREATE 14\u001b[0m in 14.28s]\n\u001b[0m00:49:48  \n\u001b[0m00:49:48  Finished running 1 seed in 0 hours 0 minutes and 29.27 seconds (29.27s).\n\u001b[0m00:49:48  \n\u001b[0m00:49:48  \u001b[32mCompleted successfully\u001b[0m\n\u001b[0m00:49:48  \n\u001b[0m00:49:48  Done. PASS=1 WARN=0 ERROR=0 SKIP=0 NO-OP=0 TOTAL=1\n\n+ dbt run --full-refresh --vars '{max_event_seq: 3}'\n\u001b[0m00:49:51  Running with dbt=1.11.7\n\u001b[0m00:49:53  Registered adapter: databricks=1.12.2\n\u001b[0m00:49:53  Unable to do partial parsing because config vars, config profile, or config target have changed\n\u001b[0m00:49:56  Found 5 models, 1 snapshot, 9 data tests, 1 seed, 1 source, 769 macros\n\u001b[0m00:49:56  \n\u001b[0m00:49:56  Concurrency: 8 threads (target='databricks_cluster')\n\u001b[0m00:49:56  \n\u001b[0m00:49:59  1 of 5 START sql view model phase2_dbt_conformance.identity_crosswalk .......... [RUN]\n\u001b[0m00:49:59  2 of 5 START sql view model phase2_dbt_conformance.stg_retail_events ........... [RUN]\n\u001b[0m00:50:00  1 of 5 OK created sql view model phase2_dbt_conformance.identity_crosswalk ..... [\u001b[32mOK\u001b[0m in 1.01s]\n\u001b[0m00:50:00  2 of 5 OK created sql view model phase2_dbt_conformance.stg_retail_events ...... [\u001b[32mOK\u001b[0m in 1.21s]\n\u001b[0m00:50:00  3 of 5 START sql view model phase2_dbt_conformance.dim_customer ................ [RUN]\n\u001b[0m00:50:00  4 of 5 START sql incremental model phase2_dbt_conformance.dim_product .......... [RUN]\n\u001b[0m00:50:02  3 of 5 OK created sql view model phase2_dbt_conformance.dim_customer ........... [\u001b[32mOK\u001b[0m in 1.82s]\n\u001b[0m00:50:02  5 of 5 START sql incremental model phase2_dbt_conformance.fact_sales ........... [RUN]\n\u001b[0m00:50:07  4 of 5 OK created sql incremental model phase2_dbt_conformance.dim_product ..... [\u001b[32mOK\u001b[0m in 7.54s]\n\u001b[0m00:50:10  5 of 5 OK created sql incremental model phase2_dbt_conformance.fact_sales ...... [\u001b[32mOK\u001b[0m in 7.76s]\n\u001b[0m00:50:10  \n\u001b[0m00:50:10  Finished running 2 incremental models, 3 view models in 0 hours 0 minutes and 13.53 seconds (13.53s).\n\u001b[0m00:50:10  \n\u001b[0m00:50:10  \u001b[32mCompleted successfully\u001b[0m\n\u001b[0m00:50:10  \n\u001b[0m00:50:10  Done. PASS=5 WARN=0 ERROR=0 SKIP=0 NO-OP=0 TOTAL=5\n\n+ dbt snapshot --vars '{max_event_seq: 3}'\n\u001b[0m00:50:12  Running with dbt=1.11.7\n\u001b[0m00:50:14  Registered adapter: databricks=1.12.2\n\u001b[0m00:50:15  Found 5 models, 1 snapshot, 9 data tests, 1 seed, 1 source, 769 macros\n\u001b[0m00:50:15  \n\u001b[0m00:50:15  Concurrency: 8 threads (target='databricks_cluster')\n\u001b[0m00:50:15  \n\u001b[0m00:50:17  1 of 1 START snapshot phase2_dbt_conformance_snapshots.customer_snapshot ....... [RUN]\n\u001b[0m00:50:24  1 of 1 OK snapshotted phase2_dbt_conformance_snapshots.customer_snapshot ....... [\u001b[32mOK\u001b[0m in 6.65s]\n\u001b[0m00:50:24  \n\u001b[0m00:50:24  Finished running 1 snapshot in 0 hours 0 minutes and 9.25 seconds (9.25s).\n\u001b[0m00:50:24  \n\u001b[0m00:50:24  \u001b[32mCompleted successfully\u001b[0m\n\u001b[0m00:50:24  \n\u001b[0m00:50:24  Done. PASS=1 WARN=0 ERROR=0 SKIP=0 NO-OP=0 TOTAL=1\n\n+ dbt test --vars '{max_event_seq: 3}'\n\u001b[0m00:50:26  Running with dbt=1.11.7\n\u001b[0m00:50:28  Registered adapter: databricks=1.12.2\n\u001b[0m00:50:29  Found 5 models, 1 snapshot, 9 data tests, 1 seed, 1 source, 769 macros\n\u001b[0m00:50:29  \n\u001b[0m00:50:29  Concurrency: 8 threads (target='databricks_cluster')\n\u001b[0m00:50:29  \n\u001b[0m00:50:30  1 of 9 START test accepted_values_fact_sales_customer_resolution__MATCHED__UNKNOWN__SKELETON  [RUN]\n\u001b[0m00:50:30  3 of 9 START test dim_customer_one_current ..................................... [RUN]\n\u001b[0m00:50:30  4 of 9 START test fact_sales_grain ............................................. [RUN]\n\u001b[0m00:50:30  2 of 9 START test dim_customer_no_temporal_overlap ............................. [RUN]\n\u001b[0m00:50:30  5 of 9 START test not_null_dim_customer_customer_id ............................ [RUN]\n\u001b[0m00:50:30  7 of 9 START test not_null_fact_sales_line_id .................................. [RUN]\n\u001b[0m00:50:30  8 of 9 START test source_not_null_retail_retail_events_event_seq ............... [RUN]\n\u001b[0m00:50:30  6 of 9 START test not_null_dim_product_stock_code .............................. [RUN]\n\u001b[0m00:50:32  6 of 9 PASS not_null_dim_product_stock_code .................................... [\u001b[32mPASS\u001b[0m in 2.60s]\n\u001b[0m00:50:32  9 of 9 START test source_unique_retail_retail_events_event_seq ................. [RUN]\n\u001b[0m00:50:33  8 of 9 PASS source_not_null_retail_retail_events_event_seq ..................... [\u001b[32mPASS\u001b[0m in 3.13s]\n\u001b[0m00:50:33  7 of 9 PASS not_null_fact_sales_line_id ........................................ [\u001b[32mPASS\u001b[0m in 3.34s]\n\u001b[0m00:50:34  1 of 9 PASS accepted_values_fact_sales_customer_resolution__MATCHED__UNKNOWN__SKELETON  [\u001b[32mPASS\u001b[0m in 3.70s]\n\u001b[0m00:50:34  5 of 9 PASS not_null_dim_customer_customer_id .................................. [\u001b[32mPASS\u001b[0m in 3.87s]\n\u001b[0m00:50:34  3 of 9 PASS dim_customer_one_current ........................................... [\u001b[32mPASS\u001b[0m in 4.11s]\n\u001b[0m00:50:34  4 of 9 PASS fact_sales_grain ................................................... [\u001b[32mPASS\u001b[0m in 4.26s]\n\u001b[0m00:50:35  9 of 9 PASS source_unique_retail_retail_events_event_seq ....................... [\u001b[32mPASS\u001b[0m in 2.96s]\n\u001b[0m00:50:36  2 of 9 PASS dim_customer_no_temporal_overlap ................................... [\u001b[32mPASS\u001b[0m in 5.84s]\n\u001b[0m00:50:36  \n\u001b[0m00:50:36  Finished running 9 data tests in 0 hours 0 minutes and 7.07 seconds (7.07s).\n\u001b[0m00:50:36  \n\u001b[0m00:50:36  \u001b[32mCompleted successfully\u001b[0m\n\u001b[0m00:50:36  \n\u001b[0m00:50:36  Done. PASS=9 WARN=0 ERROR=0 SKIP=0 NO-OP=0 TOTAL=9\n\n+ dbt run --vars '{max_event_seq: 14}'\n\u001b[0m00:50:38  Running with dbt=1.11.7\n\u001b[0m00:50:40  Registered adapter: databricks=1.12.2\n\u001b[0m00:50:40  Unable to do partial parsing because config vars, config profile, or config target have changed\n\u001b[0m00:50:43  Found 5 models, 1 snapshot, 9 data tests, 1 seed, 1 source, 769 macros\n\u001b[0m00:50:43  \n\u001b[0m00:50:43  Concurrency: 8 threads (target='databricks_cluster')\n\u001b[0m00:50:43  \n\u001b[0m00:50:45  1 of 5 START sql view model phase2_dbt_conformance.identity_crosswalk .......... [RUN]\n\u001b[0m00:50:45  2 of 5 START sql view model phase2_dbt_conformance.stg_retail_events ........... [RUN]\n\u001b[0m00:50:46  1 of 5 OK created sql view model phase2_dbt_conformance.identity_crosswalk ..... [\u001b[32mOK\u001b[0m in 1.38s]\n\u001b[0m00:50:46  2 of 5 OK created sql view model phase2_dbt_conformance.stg_retail_events ...... [\u001b[32mOK\u001b[0m in 1.53s]\n\u001b[0m00:50:46  3 of 5 START sql view model phase2_dbt_conformance.dim_customer ................ [RUN]\n\u001b[0m00:50:46  4 of 5 START sql incremental model phase2_dbt_conformance.dim_product .......... [RUN]\n\u001b[0m00:50:48  3 of 5 OK created sql view model phase2_dbt_conformance.dim_customer ........... [\u001b[32mOK\u001b[0m in 1.82s]\n\u001b[0m00:50:48  5 of 5 START sql incremental model phase2_dbt_conformance.fact_sales ........... [RUN]\n\u001b[0m00:51:01  4 of 5 OK created sql incremental model phase2_dbt_conformance.dim_product ..... [\u001b[32mOK\u001b[0m in 14.63s]\n\u001b[0m00:51:01  5 of 5 OK created sql incremental model phase2_dbt_conformance.fact_sales ...... [\u001b[32mOK\u001b[0m in 12.89s]\n\u001b[0m00:51:01  \n\u001b[0m00:51:01  Finished running 2 incremental models, 3 view models in 0 hours 0 minutes and 17.87 seconds (17.87s).\n\u001b[0m00:51:01  \n\u001b[0m00:51:01  \u001b[32mCompleted successfully\u001b[0m\n\u001b[0m00:51:01  \n\u001b[0m00:51:01  Done. PASS=5 WARN=0 ERROR=0 SKIP=0 NO-OP=0 TOTAL=5\n\n+ dbt snapshot --vars '{max_event_seq: 14}'\n\u001b[0m00:51:03  Running with dbt=1.11.7\n\u001b[0m00:51:05  Registered adapter: databricks=1.12.2\n\u001b[0m00:51:06  Found 5 models, 1 snapshot, 9 data tests, 1 seed, 1 source, 769 macros\n\u001b[0m00:51:06  \n\u001b[0m00:51:06  Concurrency: 8 threads (target='databricks_cluster')\n\u001b[0m00:51:06  \n\u001b[0m00:51:07  1 of 1 START snapshot phase2_dbt_conformance_snapshots.customer_snapshot ....... [RUN]\n\u001b[0m00:51:17  1 of 1 OK snapshotted phase2_dbt_conformance_snapshots.customer_snapshot ....... [\u001b[32mOK\u001b[0m in 9.96s]\n\u001b[0m00:51:17  \n\u001b[0m00:51:17  Finished running 1 snapshot in 0 hours 0 minutes and 11.83 seconds (11.83s).\n\u001b[0m00:51:17  \n\u001b[0m00:51:17  \u001b[32mCompleted successfully\u001b[0m\n\u001b[0m00:51:17  \n\u001b[0m00:51:17  Done. PASS=1 WARN=0 ERROR=0 SKIP=0 NO-OP=0 TOTAL=1\n\n+ dbt test --vars '{max_event_seq: 14}'\n\u001b[0m00:51:20  Running with dbt=1.11.7\n\u001b[0m00:51:21  Registered adapter: databricks=1.12.2\n\u001b[0m00:51:22  Found 5 models, 1 snapshot, 9 data tests, 1 seed, 1 source, 769 macros\n\u001b[0m00:51:22  \n\u001b[0m00:51:22  Concurrency: 8 threads (target='databricks_cluster')\n\u001b[0m00:51:22  \n\u001b[0m00:51:23  1 of 9 START test accepted_values_fact_sales_customer_resolution__MATCHED__UNKNOWN__SKELETON  [RUN]\n\u001b[0m00:51:23  2 of 9 START test dim_customer_no_temporal_overlap ............................. [RUN]\n\u001b[0m00:51:23  3 of 9 START test dim_customer_one_current ..................................... [RUN]\n\u001b[0m00:51:23  4 of 9 START test fact_sales_grain ............................................. [RUN]\n\u001b[0m00:51:23  5 of 9 START test not_null_dim_customer_customer_id ............................ [RUN]\n\u001b[0m00:51:23  6 of 9 START test not_null_dim_product_stock_code .............................. [RUN]\n\u001b[0m00:51:23  7 of 9 START test not_null_fact_sales_line_id .................................. [RUN]\n\u001b[0m00:51:23  8 of 9 START test source_not_null_retail_retail_events_event_seq ............... [RUN]\n\u001b[0m00:51:25  8 of 9 PASS source_not_null_retail_retail_events_event_seq ..................... [\u001b[32mPASS\u001b[0m in 1.83s]\n\u001b[0m00:51:25  9 of 9 START test source_unique_retail_retail_events_event_seq ................. [RUN]\n\u001b[0m00:51:26  7 of 9 PASS not_null_fact_sales_line_id ........................................ [\u001b[32mPASS\u001b[0m in 2.75s]\n\u001b[0m00:51:26  5 of 9 PASS not_null_dim_customer_customer_id .................................. [\u001b[32mPASS\u001b[0m in 3.00s]\n\u001b[0m00:51:26  4 of 9 PASS fact_sales_grain ................................................... [\u001b[32mPASS\u001b[0m in 3.00s]\n\u001b[0m00:51:26  1 of 9 PASS accepted_values_fact_sales_customer_resolution__MATCHED__UNKNOWN__SKELETON  [\u001b[32mPASS\u001b[0m in 3.08s]\n\u001b[0m00:51:26  6 of 9 PASS not_null_dim_product_stock_code .................................... [\u001b[32mPASS\u001b[0m in 3.17s]\n\u001b[0m00:51:27  9 of 9 PASS source_unique_retail_retail_events_event_seq ....................... [\u001b[32mPASS\u001b[0m in 1.48s]\n\u001b[0m00:51:27  3 of 9 PASS dim_customer_one_current ........................................... [\u001b[32mPASS\u001b[0m in 3.72s]\n\u001b[0m00:51:28  2 of 9 PASS dim_customer_no_temporal_overlap ................................... [\u001b[32mPASS\u001b[0m in 4.37s]\n\u001b[0m00:51:28  \n\u001b[0m00:51:28  Finished running 9 data tests in 0 hours 0 minutes and 5.61 seconds (5.61s).\n\u001b[0m00:51:28  \n\u001b[0m00:51:28  \u001b[32mCompleted successfully\u001b[0m\n\u001b[0m00:51:28  \n\u001b[0m00:51:28  Done. PASS=9 WARN=0 ERROR=0 SKIP=0 NO-OP=0 TOTAL=9\n",
+  "logs_truncated": false,
+  "metadata": {
+    "cleanup_duration": 0,
+    "creator_user_name": "t.diogo.marques@gmail.com",
+    "effective_performance_target": "PERFORMANCE_OPTIMIZED",
+    "end_time": 1784854322509,
+    "execution_duration": 205000,
+    "format": "MULTI_TASK",
+    "job_id": 506550333697497,
+    "job_run_id": 54427316072543,
+    "number_in_job": 418284333977409,
+    "original_attempt_run_id": 418284333977409,
+    "parent_run_id": 54427316072543,
+    "run_id": 418284333977409,
+    "run_name": "dbt_reference",
+    "run_page_url": "https://dbc-7bded16a-1785.cloud.databricks.com/?o=1505289208203470#job/506550333697497/run/418284333977409",
+    "run_type": "JOB_RUN",
+    "setup_duration": 3000,
+    "start_time": 1784854113760,
+    "state": {
+      "life_cycle_state": "TERMINATED",
+      "result_state": "SUCCESS",
+      "state_message": "",
+      "user_cancelled_or_timedout": false
+    },
+    "status": {
+      "state": "TERMINATED",
+      "termination_details": {
+        "code": "SUCCESS",
+        "message": "",
+        "type": "SUCCESS"
+      }
+    },
+    "task_key": "dbt_reference",
+    "tasks": [
+      {
+        "attempt_number": 0,
+        "cleanup_duration": 0,
+        "dbt_task": {
+          "catalog": "workspace",
+          "commands": [
+            "dbt seed --full-refresh",
+            "dbt run --full-refresh --vars '{max_event_seq: 3}'",
+            "dbt snapshot --vars '{max_event_seq: 3}'",
+            "dbt test --vars '{max_event_seq: 3}'",
+            "dbt run --vars '{max_event_seq: 14}'",
+            "dbt snapshot --vars '{max_event_seq: 14}'",
+            "dbt test --vars '{max_event_seq: 14}'"
+          ],
+          "project_directory": "/Users/t.diogo.marques@gmail.com/phase2-conformance/reference",
+          "schema": "phase2_dbt_conformance",
+          "source": "WORKSPACE",
+          "warehouse_id": "437af890146c0e82"
+        },
+        "effective_performance_target": "PERFORMANCE_OPTIMIZED",
+        "end_time": 1784854322509,
+        "environment_key": "phase2_env",
+        "execution_duration": 205000,
+        "run_id": 418284333977409,
+        "run_page_url": "https://dbc-7bded16a-1785.cloud.databricks.com/?o=1505289208203470#job/506550333697497/run/418284333977409",
+        "setup_duration": 3000,
+        "start_time": 1784854113760,
+        "state": {
+          "life_cycle_state": "TERMINATED",
+          "result_state": "SUCCESS",
+          "state_message": "",
+          "user_cancelled_or_timedout": false
+        },
+        "status": {
+          "state": "TERMINATED",
+          "termination_details": {
+            "code": "SUCCESS",
+            "message": "",
+            "type": "SUCCESS"
+          }
+        },
+        "task_key": "dbt_reference"
+      }
+    ],
+    "trigger": "ONE_TIME"
+  }
+}

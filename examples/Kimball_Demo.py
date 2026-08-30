@@ -17,7 +17,7 @@ _nb_path = (
     .get()
 )
 # Go up: examples → pyspark → implementations → repo_root
-_pyspark_root = "/Workspace" + os.path.dirname(os.path.dirname(_nb_path)) + "/"
+_pyspark_root = f"/Workspace{os.path.dirname(os.path.dirname(_nb_path))}/"
 _repo_root = os.path.dirname(os.path.dirname(_pyspark_root))
 subprocess.check_call(["pip", "install", _pyspark_root, "-q"])
 print(f"✓ Installed kimball from {_repo_root}")
@@ -39,6 +39,7 @@ print(f"✓ Installed kimball from {_repo_root}")
 # ETL Configuration
 import time
 from delta.tables import DeltaTable
+from pyspark.sql import DataFrame
 
 # Benchmark metrics storage
 benchmark_metrics = []
@@ -308,13 +309,16 @@ print(f"Project manifest digest: {manifest['project_digest']}")
 # COMMAND ----------
 
 
-def ingest_silver(table_name, data, schema, merge_keys):
+def ingest_silver(table_name, data, schema=None, merge_keys=None):
     """
     Ingests data into a Silver Delta table with CDF enabled.
+
+    ``data`` can be a list of tuples (with a DDL ``schema`` string) or a
+    pre-built ``DataFrame`` (in which case ``schema`` is ignored).
     """
     full_table_name = f"demo_silver.{table_name}"
 
-    df = spark.createDataFrame(data, schema=schema)
+    df = data if isinstance(data, DataFrame) else spark.createDataFrame(data, schema=schema)
 
     if not spark.catalog.tableExists(full_table_name):
         print(f"Creating table {full_table_name}...")
@@ -352,58 +356,20 @@ def ingest_silver(table_name, data, schema, merge_keys):
 spark.sql("CREATE DATABASE IF NOT EXISTS demo_silver")
 spark.sql("CREATE DATABASE IF NOT EXISTS demo_gold")
 
-# --- Day 1 Data ---
-customers_data = [
-    (
-        1,
-        "Alice",
-        "Smith",
-        "alice@example.com",
-        "123 Apple St, NY",
-        "2025-01-01T10:00:00",
-    ),
-    (
-        2,
-        "Bob",
-        "Jones",
-        "bob@example.com",
-        "456 Banana Blvd, SF",
-        "2025-01-01T10:00:00",
-    ),
-]
-customers_schema = "customer_id INT, first_name STRING, last_name STRING, email STRING, address STRING, updated_at STRING"
-
-products_data = [
-    (101, "Laptop", "Electronics", 1000.00, "2025-01-01T10:00:00"),
-    (102, "Mouse", "Electronics", 20.00, "2025-01-01T10:00:00"),
-]
-products_schema = (
-    "product_id INT, name STRING, category STRING, unit_cost DOUBLE, updated_at STRING"
-)
-
-orders_data = [
-    (1001, 1, "2025-01-01", "Completed", "2025-01-01T12:00:00"),
-    (1002, 2, "2025-01-01", "Processing", "2025-01-01T13:00:00"),
-]
-orders_schema = (
-    "order_id INT, customer_id INT, order_date STRING, status STRING, updated_at STRING"
-)
-
-order_items_data = [(5001, 1001, 101, 1, 1200.00), (5002, 1002, 102, 2, 50.00)]
-order_items_schema = (
-    "order_item_id INT, order_id INT, product_id INT, quantity INT, sales_amount DOUBLE"
-)
-
 # --- Ingest Day 1 ---
+from examples.data import (
+    customers_day1,
+    orders_day1,
+    order_items_day1,
+    products_day1,
+)
+
 _t_load_start = time.perf_counter()
 
-day1_tasks = [
-    ("customers", customers_data, customers_schema, ["customer_id"]),
-    ("products", products_data, products_schema, ["product_id"]),
-    ("orders", orders_data, orders_schema, ["order_id"]),
-    ("order_items", order_items_data, order_items_schema, ["order_item_id"]),
-]
-ingest_parallel(day1_tasks)
+ingest_silver("customers", customers_day1(spark), merge_keys=["customer_id"])
+ingest_silver("products", products_day1(spark), merge_keys=["product_id"])
+ingest_silver("orders", orders_day1(spark), merge_keys=["order_id"])
+ingest_silver("order_items", order_items_day1(spark), merge_keys=["order_item_id"])
 
 _day1_load_time = time.perf_counter() - _t_load_start
 
@@ -471,60 +437,20 @@ display(spark.table("demo_gold.fact_sales"))
 
 # COMMAND ----------
 
-# --- Day 2 Data ---
-customers_day2 = [
-    (
-        1,
-        "Alice",
-        "Smith",
-        "alice@example.com",
-        "789 Cherry Ln, LA",
-        "2025-01-02T09:00:00",
-    ),  # Updated
-    (
-        2,
-        "Bob",
-        "Jones",
-        "bob@example.com",
-        "456 Banana Blvd, SF",
-        "2025-01-01T10:00:00",
-    ),  # Same
-    (
-        3,
-        "Charlie",
-        "Brown",
-        "charlie@example.com",
-        "321 Date Dr, TX",
-        "2025-01-02T10:00:00",
-    ),  # New
-]
-
-products_day2 = [
-    (101, "Laptop", "Electronics", 900.00, "2025-01-02T09:00:00"),  # Updated Cost
-    (102, "Mouse", "Electronics", 20.00, "2025-01-01T10:00:00"),  # Same
-    (103, "Keyboard", "Electronics", 50.00, "2025-01-02T10:00:00"),  # New
-]
-
-orders_day2 = [
-    (1003, 1, "2025-01-02", "Processing", "2025-01-02T11:00:00"),  # Alice's new order
-    (1004, 3, "2025-01-02", "Shipped", "2025-01-02T14:00:00"),  # Charlie's order
-]
-
-order_items_day2 = [
-    (5003, 1003, 102, 1, 25.00),  # Alice buys Mouse
-    (5004, 1004, 103, 1, 60.00),  # Charlie buys Keyboard
-]
-
 # --- Ingest Day 2 ---
+from examples.data import (
+    customers_day2,
+    orders_day2,
+    order_items_day2,
+    products_day2,
+)
+
 _t_load_start = time.perf_counter()
 
-day2_tasks = [
-    ("customers", customers_day2, customers_schema, ["customer_id"]),
-    ("products", products_day2, products_schema, ["product_id"]),
-    ("orders", orders_day2, orders_schema, ["order_id"]),
-    ("order_items", order_items_day2, order_items_schema, ["order_item_id"]),
-]
-ingest_parallel(day2_tasks)
+ingest_silver("customers", customers_day2(spark), merge_keys=["customer_id"])
+ingest_silver("products", products_day2(spark), merge_keys=["product_id"])
+ingest_silver("orders", orders_day2(spark), merge_keys=["order_id"])
+ingest_silver("order_items", order_items_day2(spark), merge_keys=["order_item_id"])
 
 _day2_load_time = time.perf_counter() - _t_load_start
 
@@ -821,9 +747,7 @@ for row in bob_check:
     print(row)
 
 assert len(bob_check) >= 1, "Bob should still exist in dimension (soft delete)"
-# The current version should be marked as deleted
-current_bob = [r for r in bob_check if r["__is_current"] == True]
-if current_bob:
+if current_bob := [r for r in bob_check if r["__is_current"] == True]:
     assert current_bob[0]["__is_deleted"] == True, (
         "Bob's current row should be marked as deleted"
     )
@@ -944,7 +868,7 @@ for row in fk_check:
 
 # All FKs should be either VALID or SKELETON (not MISSING or NULL)
 missing_fks = [r for r in fk_check if r["fk_status"] == "MISSING"]
-assert len(missing_fks) == 0, f"Found {len(missing_fks)} facts with missing FKs"
+assert not missing_fks, f"Found {len(missing_fks)} facts with missing FKs"
 
 print("\n✅ FK Integrity Test Passed")
 

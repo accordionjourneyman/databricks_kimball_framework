@@ -9,8 +9,6 @@ from pyspark.sql.types import LongType, StringType, StructField, StructType
 
 from kimball.processing.merge_helpers import (
     apply_schema_evolution,
-    build_expire_set,
-    build_insert_values,
     build_merge_condition,
     dedup_cdf,
     filter_cdf_deletes,
@@ -209,34 +207,6 @@ class TestGetCurrentDf:
         df.filter.return_value = filtered
         result = get_current_df(df)
         assert result is filtered
-
-
-class TestBuildExpireSet:
-    def test_returns_correct_keys(self):
-        result = build_expire_set("source.updated_at")
-        assert result["__is_current"] == "false"
-        assert result["__valid_to"] == "source.updated_at"
-        assert result["__etl_processed_at"] == "current_timestamp()"
-
-
-class TestBuildInsertValues:
-    def test_maps_source_columns(self):
-        df = MagicMock()
-        df.columns = ["customer_id", "name", "_change_type", "__etl_processed_at"]
-        result = build_insert_values(df, ["customer_id"], "sk", "source.updated_at")
-        assert result["customer_id"] == "source.__orig_customer_id"
-        assert result["name"] == "source.name"
-        assert result["__is_current"] == "true"
-        assert result["__is_skeleton"] == "false"
-        assert "_change_type" not in result
-
-    def test_include_history_false(self):
-        df = MagicMock()
-        df.columns = ["customer_id"]
-        result = build_insert_values(
-            df, ["customer_id"], "sk", "source.updated_at", include_history=False
-        )
-        assert "__is_skeleton" not in result
 
 
 class TestApplySchemaEvolution:

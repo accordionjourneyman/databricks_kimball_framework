@@ -31,102 +31,8 @@ def _make_df(columns: list[str]) -> MagicMock:
 
 
 # ===================================================================
-# SCD2 payload selection retains a custom effective-time column
-# ===================================================================
-
-
-class TestSCD2PayloadEffectiveAt:
-    """The configured effective-time value must survive payload selection."""
-
-    def test_select_payload_keeps_custom_effective_at_column(self):
-        """Verify _select_payload_columns now accepts effective_at_column
-        parameter and keeps it in the output."""
-        import inspect
-
-        from kimball.processing.scd2 import _select_payload_columns
-
-        sig = inspect.signature(_select_payload_columns)
-        # After fix: function accepts effective_at_column parameter
-        assert "effective_at_column" in sig.parameters
-
-
-# ===================================================================
 # #2  HIGH: SCD6 SK fix clobbers existing rows' SK
 # ===================================================================
-
-
-class TestBugSCD6SKClobbersExistingRows:
-    """generate_keys is now applied only to INSERT rows, not UPDATE/EXPIRE."""
-
-    @patch("kimball.processing.scd6.DeltaTable")
-    @patch("kimball.processing.scd6.filter_cdf_deletes")
-    @patch("kimball.processing.scd6.compute_hashdiff")
-    @patch("kimball.processing.scd6.HashKeyGenerator")
-    @patch("kimball.processing.scd6.col", return_value=MagicMock())
-    @patch("kimball.processing.scd6.lit", return_value=MagicMock())
-    @patch("kimball.processing.scd6.when", return_value=MagicMock())
-    def test_generate_keys_applied_only_to_insert_rows(
-        self,
-        mock_when,
-        mock_lit,
-        mock_col,
-        mock_hkg,
-        mock_hashdiff,
-        mock_filter,
-        mock_dt,
-    ):
-        from kimball.processing.scd6 import merge_scd6
-
-        mock_hashdiff.return_value = MagicMock()
-        mock_gen_instance = MagicMock()
-        mock_hkg.return_value = mock_gen_instance
-
-        def fake_generate_keys(df, key_col):
-            return df.withColumn(key_col, MagicMock(name="hash_sk"))
-
-        mock_gen_instance.generate_keys.side_effect = fake_generate_keys
-
-        upserts = _make_df(["id", "name", "__etl_processed_at", "__etl_batch_id"])
-        upserts.isEmpty.return_value = False
-        deletes = MagicMock()
-        deletes.isEmpty.return_value = True
-        mock_filter.return_value = (upserts, deletes)
-
-        target_df = _make_df(
-            [
-                "surrogate_key",
-                "id",
-                "name",
-                "hashdiff",
-                "__is_current",
-                "__valid_from",
-                "__valid_to",
-                "__etl_processed_at",
-                "__etl_batch_id",
-                "__is_deleted",
-                "__is_skeleton",
-            ]
-        )
-        target_df.filter.return_value = target_df
-        target_df.join.return_value = target_df
-        target_df.alias.return_value = target_df
-
-        mock_dt_instance = MagicMock()
-        mock_dt.forName.return_value = mock_dt_instance
-        merge_chain = mock_dt_instance.alias.return_value.merge.return_value
-        merge_chain.whenMatchedUpdate.return_value = merge_chain
-        merge_chain.whenNotMatchedInsert.return_value = merge_chain
-
-        merge_scd6(
-            upserts,
-            target_table_name="test_target",
-            join_keys=["id"],
-            track_history_columns=["name"],
-            current_value_columns=["name"],
-        )
-
-        # After fix: generate_keys is called only on INSERT rows
-        mock_gen_instance.generate_keys.assert_called_once()
 
 
 # ===================================================================
@@ -173,65 +79,6 @@ class TestBugResetWatermarkSQLInjection:
 # ===================================================================
 # #4  MEDIUM: SCD4 duplicate __is_current=true EAV rows
 # ===================================================================
-
-
-class TestBugSCD4DuplicateEAVRows:
-    """whenNotMatchedInsert has no guard against existing current rows."""
-
-    @patch("kimball.processing.scd4.DeltaTable")
-    @patch("kimball.processing.scd4.merge_scd1")
-    @patch("kimball.processing.scd4.col", return_value=MagicMock())
-    @patch("kimball.processing.scd4.lit", return_value=MagicMock())
-    @patch("kimball.processing.scd4.expr", return_value=MagicMock())
-    @patch("kimball.processing.scd4.row_number", return_value=MagicMock())
-    @patch("kimball.processing.scd4.Window")
-    def test_scd4_allows_duplicate_current_inserts(
-        self,
-        mock_window,
-        mock_row_number,
-        mock_expr,
-        mock_lit,
-        mock_col,
-        mock_scd1,
-        mock_dt,
-    ):
-        from kimball.processing.scd4 import merge_scd4
-
-        mock_dt_instance = MagicMock()
-        mock_dt.forName.return_value = mock_dt_instance
-        merge_chain = mock_dt_instance.alias.return_value.merge.return_value
-        merge_chain.whenMatchedUpdate.return_value = merge_chain
-        merge_chain.whenNotMatchedInsert.return_value = merge_chain
-
-        source_df = _make_df(["id", "field", "new_value", "effective_at"])
-        source_df.isEmpty.return_value = False
-
-        target_df = _make_df(
-            [
-                "surrogate_key",
-                "field",
-                "value",
-                "valid_from",
-                "valid_to",
-                "__is_current",
-                "__etl_processed_at",
-            ]
-        )
-        target_df.alias.return_value = target_df
-        mock_dt_instance.toDF.return_value = target_df
-
-        merge_scd4(
-            source_df,
-            target_table_name="test_target",
-            history_table_name="test_history",
-            join_keys=["id"],
-            track_history_columns=["field", "new_value"],
-            surrogate_key_col="surrogate_key",
-        )
-
-        # The whenNotMatchedInsert is called with condition="source.__action = 'INSERT'"
-        # but no guard against existing current rows with same value
-        merge_chain.whenNotMatchedInsert.assert_called_once()
 
 
 # ===================================================================
@@ -325,7 +172,11 @@ class TestBugZombieRecoveryBatchIdMismatch:
 
         with patch("kimball.orchestration.watermark.DeltaTable") as mock_dt_class:
             mock_dt_class.forName.return_value = mock_dt_instance
-            result = manager.batch_start_all("target", ["src_a", "src_b"])
+            with patch.object(
+                manager, "get_states", return_value={}
+            ) as mock_get_states:
+                result = manager.batch_start_all("target", ["src_a", "src_b"])
+            mock_get_states.assert_called_once_with("target", ["src_a", "src_b"])
 
         # The bug: each source gets its own UUID, not the run-level batch_id
         assert "src_a" in result

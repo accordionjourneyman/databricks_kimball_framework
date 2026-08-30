@@ -44,7 +44,7 @@ Compare a later run with that baseline:
 ```powershell
 docker compose run --rm kimball-tests python tools/benchmark_runner.py `
   --suite spark --scale tiny `
-  --compare benchmark-results/baselines/tiago-windows-docker/spark-tiny-main
+  --compare benchmark-results/baselines/<testbed-name>/spark-tiny-main
 ```
 
 Defaults are two warm-up rounds and five measured rounds. `tiny` is the normal
@@ -99,7 +99,7 @@ range from the canonical `pytest-benchmark` JSON.
 
 Use distinct Bencher testbeds:
 
-- `tiago-windows-docker` for authoritative local Spark/Delta measurements;
+- `local-dev` for authoritative local Spark/Delta measurements;
 - `github-ubuntu-python` for hosted microbenchmarks;
 - `github-ubuntu-spark` for hosted Spark correctness smoke runs.
 

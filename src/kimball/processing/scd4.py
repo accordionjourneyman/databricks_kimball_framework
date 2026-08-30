@@ -86,7 +86,7 @@ def _merge_history(
         unpivoted.alias("src")
         .join(
             history.alias("tgt"),
-            (col("src." + surrogate_key_col) == col("tgt.surrogate_key"))
+            (col(f"src.{surrogate_key_col}") == col("tgt.surrogate_key"))
             & (col("src.field") == col("tgt.field")),
             "left",
         )

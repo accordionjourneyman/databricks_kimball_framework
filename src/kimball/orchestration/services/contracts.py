@@ -148,8 +148,7 @@ class ContractValidator:
                         f"Column '{name}' matches contract",
                     )
                 )
-        undeclared = sorted(set(fields) - set(contract.schema_))
-        if undeclared:
+        if undeclared := sorted(set(fields) - set(contract.schema_)):
             severity = (
                 TestSeverity.WARN
                 if contract.compatibility == "nullable_additions"
@@ -235,7 +234,7 @@ class ContractValidator:
             for rule in plan.unique_rules
         )
         scalar_sample_actions = sum(
-            1 for finding in findings[: len(plan.scalar_rules)] if finding.samples
+            bool(finding.samples) for finding in findings[: len(plan.scalar_rules)]
         )
         self.last_metrics = {
             "stage": "data_contract",
@@ -413,9 +412,7 @@ class ContractValidator:
             temporal.allowed_lateness,
             re.I,
         )
-        amount, unit = (
-            (int(match.group(1)), match.group(2).lower()) if match else (0, "h")
-        )
+        amount, unit = (int(match[1]), match[2].lower()) if match else (0, "h")
         seconds = amount * ({"s": 1, "m": 60, "h": 3600, "d": 86400}.get(unit[0], 3600))
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=seconds)
         keys = (
@@ -555,7 +552,7 @@ class ContractValidator:
                 samples=cross_samples,
             )
         )
-        sample_actions = sum(1 for finding in findings if finding.samples)
+        sample_actions = sum(bool(finding.samples) for finding in findings)
         self.last_metrics = {
             "stage": "temporal_contract",
             "contract_id": contract.id,
@@ -568,10 +565,9 @@ class ContractValidator:
 
     @staticmethod
     def raise_for_errors(findings: list[ContractFinding]) -> None:
-        failures = [
+        if failures := [
             f for f in findings if not f.passed and f.severity == TestSeverity.ERROR
-        ]
-        if failures:
+        ]:
             raise ContractValidationError(
                 "; ".join(f"{f.check_name}: {f.details}" for f in failures)
             )

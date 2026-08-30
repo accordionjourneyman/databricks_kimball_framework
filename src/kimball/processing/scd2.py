@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from functools import reduce
 from typing import Any, cast
 
@@ -10,6 +11,7 @@ from pyspark.sql.functions import (
     col,
     current_timestamp,
     expr,
+    lag,
     lead,
     lit,
     row_number,
@@ -32,46 +34,6 @@ from kimball.processing.merge_helpers import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _select_payload_columns(
-    source_df: DataFrame,
-    join_keys: list[str],
-    track_history_columns: list[str],
-    include_meta: bool = False,
-    effective_at_column: str | None = None,
-) -> DataFrame:
-    keep = set(join_keys) | set(track_history_columns)
-    if "updated_at" in source_df.columns:
-        keep.add("updated_at")
-    if "effective_at" in source_df.columns:
-        keep.add("effective_at")
-    if effective_at_column and effective_at_column in source_df.columns:
-        keep.add(effective_at_column)
-    if include_meta:
-        keep.update(
-            c
-            for c in ["_change_type", "_commit_version", "_commit_timestamp"]
-            if c in source_df.columns
-        )
-    keep.update(c for c in source_df.columns if c.startswith("__scd2_"))
-    drop = {
-        "__merge_action",
-        "target_hashdiff",
-        "target_sk",
-        "target_is_skeleton",
-        "hashdiff",
-        "__etl_processed_at",
-        "__etl_batch_id",
-        "__is_current",
-        "__valid_from",
-        "__valid_to",
-        "__is_deleted",
-        "__is_skeleton",
-    }
-    return source_df.select(
-        *(c for c in source_df.columns if c in keep and c not in drop)
-    )
 
 
 def _merge_single_pass(
@@ -101,9 +63,14 @@ def _merge_single_pass(
     """
     if not track_history_columns:
         raise ValueError("track_history_columns must be provided for SCD Type 2")
+
+    lazy_eval = os.environ.get("KIMBALL_OPTIMIZE_SCD2_LAZY_EVAL") == "1"
+
     upserts, deletes = filter_cdf_deletes(source_df)
-    source_is_empty = upserts.isEmpty()
-    if (
+
+    source_is_empty = False if lazy_eval else upserts.isEmpty()
+
+    if not lazy_eval and (
         source_is_empty
         and (deletes is None or deletes.isEmpty())
         and not full_snapshot_reconciliation
@@ -116,41 +83,45 @@ def _merge_single_pass(
     ]
 
     # --- Handle explicit CDF deletes ---
-    if deletes is not None and not deletes.isEmpty():
-        vcol = (
-            f"source.{effective_at_column}"
-            if effective_at_column and effective_at_column in source_df.columns
-            else "current_timestamp()"
-        )
-        deletes = deletes.dropDuplicates(join_keys)
-        delta_table.alias("target").merge(
-            deletes.alias("source"),
-            build_merge_condition(join_keys, current_only=True),
-        ).whenMatchedUpdate(
-            set={
-                "__is_current": "false",
-                "__valid_to": vcol,
-                "__etl_processed_at": "current_timestamp()",
-                "__is_deleted": "true",
-            }
-        ).execute()
-        logger.info("SCD2: CDF deletes expired")
-        upserts = source_df.filter(col("_change_type") != "delete")
-        if source_is_empty:
-            logger.info("SCD2 delete-only CDF batch completed")
-            return
+    if deletes is not None:
+        has_deletes = True if lazy_eval else not deletes.isEmpty()
+        if has_deletes:
+            vcol = (
+                f"source.{effective_at_column}"
+                if effective_at_column and effective_at_column in source_df.columns
+                else "current_timestamp()"
+            )
+            deletes = deletes.dropDuplicates(join_keys)
+            delta_table.alias("target").merge(
+                deletes.alias("source"),
+                build_merge_condition(join_keys, current_only=True),
+            ).whenMatchedUpdate(
+                set={
+                    "__is_current": "false",
+                    "__valid_to": vcol,
+                    "__etl_processed_at": "current_timestamp()",
+                    "__is_deleted": "true",
+                }
+            ).execute()
+            logger.info("SCD2: CDF deletes expired")
+            upserts = source_df.filter(col("_change_type") != "delete")
+            if source_is_empty:
+                logger.info("SCD2 delete-only CDF batch completed")
+                return
 
     # --- Full-snapshot delete detection ---
     # ``None`` means a full snapshot (no CDF marker exists).  An empty CDF
     # delete DataFrame means this incremental commit simply had no deletes.
-    if deletes is None and full_snapshot_reconciliation:
+    skip_delete_detection = os.environ.get("KIMBALL_SKIP_DELETE_DETECTION") == "1"
+    if deletes is None and full_snapshot_reconciliation and not skip_delete_detection:
         current_target = get_current_df(delta_table)
         if target_has_skeleton_col:
             current_target = current_target.filter(~col("__is_skeleton"))
         missing_in_source = current_target.join(
             upserts.select(*join_keys).distinct(), join_keys, "left_anti"
         ).dropDuplicates(join_keys)
-        if not missing_in_source.isEmpty():
+        has_missing = True if lazy_eval else not missing_in_source.isEmpty()
+        if has_missing:
             keys_expr = (
                 " AND ".join([f"target.{k} <=> source.{k}" for k in join_keys])
                 + " AND target.__is_current = true"
@@ -195,20 +166,23 @@ def _merge_single_pass(
     # historical rows leaves the newest historical row open-ended whenever a
     # newer current row exists in the same batch.
     w_desc = Window.partitionBy(*join_keys).orderBy(col(order_col).desc())
-    w_asc = Window.partitionBy(*join_keys).orderBy(col(order_col).asc())
-    ranked = upserts.withColumn("_rn", row_number().over(w_desc)).withColumn(
-        "__scd2_next_valid_from", lead(_validity_col_name, 1).over(w_asc)
-    )
+    if os.environ.get("KIMBALL_SINGLE_WINDOW_SCD2") == "1":
+        ranked = upserts.withColumn("_rn", row_number().over(w_desc)).withColumn(
+            "__scd2_next_valid_from", lag(_validity_col_name, 1).over(w_desc)
+        )
+    else:
+        w_asc = Window.partitionBy(*join_keys).orderBy(col(order_col).asc())
+        ranked = upserts.withColumn("_rn", row_number().over(w_desc)).withColumn(
+            "__scd2_next_valid_from", lead(_validity_col_name, 1).over(w_asc)
+        )
     latest = ranked.filter(col("_rn") == 1).drop("_rn")
     older = ranked.filter(col("_rn") > 1).drop("_rn")
 
     # Join latest to target to get target_sk and target_hashdiff
     source_keys = latest.select(*join_keys).distinct()
     target_df = get_current_df(delta_table).join(source_keys, join_keys, "semi")
-    # Recompute the target hash with the current tracking contract. Persisted
-    # hashes may have been produced before a tracked column was added; comparing
-    # hashes built from different column sets would create a false version and,
-    # when effective_at is unchanged, duplicate the existing row key.
+    # Recompute the target hash with the current tracking contract
+    # (always recompute; trust_stored_hashdiff flag removed in 0.3.0).
     target_df = target_df.withColumn(
         "__comparison_hashdiff", compute_hashdiff(track_history_columns)
     )
@@ -220,10 +194,12 @@ def _merge_single_pass(
         .select(
             "s.*",
             col("t.__comparison_hashdiff").alias("target_hashdiff"),
-            col("t." + surrogate_key_col).alias("target_sk"),
-            col("t.__is_skeleton").alias("target_is_skeleton")
-            if target_has_skeleton_col
-            else lit(False).alias("target_is_skeleton"),
+            col(f"t.{surrogate_key_col}").alias("target_sk"),
+            (
+                col("t.__is_skeleton").alias("target_is_skeleton")
+                if target_has_skeleton_col
+                else lit(False).alias("target_is_skeleton")
+            ),
         )
     )
 
@@ -302,7 +278,8 @@ def _merge_single_pass(
 
     # Older versions: __is_current = false, chain valid_to to next version
     older_versions = None
-    if not older.isEmpty():
+    has_older = True if lazy_eval else not older.isEmpty()
+    if has_older:
         older_versions = older.withColumn("__merge_action", lit("INSERT_OLDER"))
         older_versions = older_versions.withColumn("__is_current", lit(False))
         older_versions = older_versions.withColumn(
@@ -319,17 +296,19 @@ def _merge_single_pass(
     # source.__scd2_oldest_valid_from, which only exists on expire_rows
     # (derived from rows_changed). When the only matched target is a skeleton
     # (routed to HYDRATE, not rows_changed) there are no expire rows and the
-    # column is absent from final_source; adding the EXPIRE branch unconditionally
-    # then fails Delta plan resolution with DELTA_MERGE_UNRESOLVED_EXPRESSION.
-    has_changed = not rows_changed.isEmpty()
+    # column is absent from final_source;    # adding the EXPIRE branch unconditionally then fails Delta plan resolution with DELTA_MERGE_UNRESOLVED_EXPRESSION.
+    # Note: If lazy evaluation is enabled, we unconditionally union and the column will be present.
+    has_changed = True if lazy_eval else not rows_changed.isEmpty()
     staged = new_rows
     if has_changed:
         staged = staged.unionByName(expire_rows, allowMissingColumns=True)
         staged = staged.unionByName(latest_version, allowMissingColumns=True)
     if older_versions is not None:
         staged = staged.unionByName(older_versions, allowMissingColumns=True)
-    if rows_to_hydrate is not None and not rows_to_hydrate.isEmpty():
-        staged = staged.unionByName(rows_to_hydrate, allowMissingColumns=True)
+    if rows_to_hydrate is not None:
+        has_hydrate = True if lazy_eval else not rows_to_hydrate.isEmpty()
+        if has_hydrate:
+            staged = staged.unionByName(rows_to_hydrate, allowMissingColumns=True)
 
     # Generate surrogate keys for all insert rows. EXPIRE and HYDRATE rows keep
     # the matched target row's existing SK (set below), so they are routed to
@@ -423,15 +402,12 @@ def _merge_single_pass(
             if c not in _CDF_METADATA
             and not c.startswith("__scd2_")
             and c in target_col_names
+        } | {
+            "__is_skeleton": "false",
+            "__is_current": "true",
+            "__etl_processed_at": "current_timestamp()",
+            "__is_deleted": "false",
         }
-        hydration_set.update(
-            {
-                "__is_skeleton": "false",
-                "__is_current": "true",
-                "__etl_processed_at": "current_timestamp()",
-                "__is_deleted": "false",
-            }
-        )
         hydration_set.pop(surrogate_key_col, None)
         merge_builder = merge_builder.whenMatchedUpdate(
             condition="target.__is_skeleton = true AND source.__merge_action = 'HYDRATE'",

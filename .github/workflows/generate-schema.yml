@@ -1,0 +1,39 @@
+name: Generate Schema
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/kimball/common/config.py"
+      - "tools/generate_schema.py"
+  pull_request:
+    paths:
+      - "src/kimball/common/config.py"
+      - "tools/generate_schema.py"
+      - "schemas/pipeline-config.schema.json"
+  workflow_dispatch:
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package
+        run: |
+          pip install -e .
+
+      - name: Generate schema
+        run: |
+          python tools/generate_schema.py
+
+      - name: Verify schema is up to date
+        run: |
+          if [[ -n "${{ github.event.pull_request.head.sha }}" ]]; then
+            git diff --exit-code schemas/pipeline-config.schema.json
+          fi

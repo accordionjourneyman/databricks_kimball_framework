@@ -70,10 +70,7 @@ def merge_scd1(
         for column in source_df.columns
         if column not in (surrogate_key_col, "_change_type")
         and column not in _CDF_METADATA
-    }
-    update_map.update(
-        {"__is_deleted": "false", "__etl_processed_at": "current_timestamp()"}
-    )
+    } | {"__is_deleted": "false", "__etl_processed_at": "current_timestamp()"}
     changed_columns = [
         column
         for column in update_map
@@ -97,10 +94,7 @@ def merge_scd1(
         column: f"source.{column}"
         for column in source_df.columns
         if column not in _CDF_METADATA
-    }
-    insert_map.update(
-        {"__is_deleted": "false", "__etl_processed_at": "current_timestamp()"}
-    )
+    } | {"__is_deleted": "false", "__etl_processed_at": "current_timestamp()"}
     merge_builder.whenMatchedUpdate(
         condition=cast(Any, update_condition), set=cast(Any, update_map)
     ).whenNotMatchedInsert(

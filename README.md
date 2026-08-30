@@ -8,7 +8,7 @@ Performance changes are measured with the reproducible local Docker workflow
 described in [Benchmarking](docs/BENCHMARKING.md). GitHub-hosted timings are
 advisory and are never compared with the local Spark baseline.
 [![codecov](https://codecov.io/gh/accordionjourneyman/databricks_kimball_framework/branch/main/graph/badge.svg)](https://codecov.io/gh/accordionjourneyman/databricks_kimball_framework)
-[![License](https://img.shields.io/github/license/accordionjourneyman/databricks_kimball_framework.svg)](https://github.com/accordionjourneyman/databricks_kimball_framework/blob/master/LICENSE)
+[![License](https://img.shields.io/github/license/accordionjourneyman/databricks_kimball_framework.svg)](https://github.com/accordionjourneyman/databricks_kimball_framework/blob/main/LICENSE)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-261230.svg)](https://github.com/astral-sh/ruff)
 
 A declarative Kimball Gold-layer loading framework for Databricks and Delta

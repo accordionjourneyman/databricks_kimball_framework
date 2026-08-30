@@ -52,48 +52,18 @@ def orchestrator(
     merger_mock,
     config_mock,
 ):
-    with (
-        patch("kimball.orchestration.orchestrator.ConfigLoader") as mock_loader_cls,
-        patch("kimball.orchestration.orchestrator.RuntimeOptions") as mock_runtime,
-        patch(
-            "kimball.orchestration.orchestrator.ETLControlManager",
-            return_value=etl_control_mock,
-        ),
-        patch(
-            "kimball.orchestration.orchestrator.DataLoader", return_value=loader_mock
-        ),
-        patch("kimball.orchestration.orchestrator._merger"),
-        patch("kimball.orchestration.orchestrator.TableCreator"),
-        patch(
-            "kimball.orchestration.orchestrator.TransactionManager",
-            return_value=transaction_manager_mock,
-        ),
-        patch("kimball.orchestration.orchestrator.QueryMetricsCollector"),
-        patch("kimball.orchestration.orchestrator.PipelineCheckpoint"),
-        patch("kimball.orchestration.orchestrator.StagingCleanupManager"),
-        patch(
-            "kimball.orchestration.orchestrator._feature_enabled", return_value=False
-        ),
-    ):
-        mock_loader_cls.return_value.load_config.return_value = config_mock
-        mock_runtime.from_environment.return_value = MagicMock(
-            shuffle_partitions="auto",
-            skew_threshold_mb=512,
-            skew_factor=2.0,
-        )
-        from kimball.orchestration.orchestrator import Orchestrator
+    from kimball.orchestration.orchestrator import Orchestrator
 
-        orch = Orchestrator.__new__(Orchestrator)
-        orch.config = config_mock
-        orch.spark = spark_mock
-        orch.etl_control = etl_control_mock
-        orch.loader = loader_mock
-        orch.table_creator = MagicMock()
-        orch.transaction_manager = transaction_manager_mock
-        orch.metrics_collector = None
-        orch.checkpoint_manager = None
-        orch.cleanup_manager = None
-        return orch
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.config = config_mock
+    orch.spark = spark_mock
+    orch.etl_control = etl_control_mock
+    orch.loader = loader_mock
+    orch.table_creator = MagicMock()
+    orch.transaction_manager = transaction_manager_mock
+    orch.metrics_collector = None
+    orch.checkpoint_manager = None
+    return orch
 
 
 class TestRecoverZombies:
@@ -126,6 +96,9 @@ class TestRecoverZombies:
             "test_table", "b1"
         )
         orchestrator.etl_control.batch_fail.assert_called_once()
+        orchestrator.etl_control.get_running_batches.assert_called_once_with(
+            "test_table", ttl_minutes=None
+        )
 
 
 def test_run_scopes_and_restores_spark_configuration(orchestrator):
@@ -294,7 +267,7 @@ class TestFullReload:
         drop_calls = [
             c for c in orchestrator.spark.sql.call_args_list if "DROP TABLE" in str(c)
         ]
-        assert len(drop_calls) == 0
+        assert not drop_calls
 
     def test_run_dispatches_to_full_reload(self, orchestrator):
         with patch.object(

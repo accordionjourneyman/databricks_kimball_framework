@@ -1,0 +1,11 @@
+# False positives: `generic-api-key` matches on Python keyword arguments
+# (`existing_max_key=max_key`, `allowMissingColumns=True`) in the Delta MERGE
+# helper. These are not secrets; they are kwargs to DeltaTable.merge().
+c2b6c9f56d1cf3d5b887a3403baccd387e47c8ee:src/kimball/processing/merger.py:generic-api-key:320
+c2b6c9f56d1cf3d5b887a3403baccd387e47c8ee:src/kimball/processing/merger.py:generic-api-key:607
+ebde79e33e8668c1918a5d0f128a6e14a8ae0ede:implementations/pyspark/src/kimball/processing/merger.py:generic-api-key:176
+2f37d7f38385ed87436973141065e8e1b46ce1a1:implementations/pyspark/src/kimball/processing/merger.py:generic-api-key:278
+2f37d7f38385ed87436973141065e8e1b46ce1a1:implementations/pyspark/src/kimball/processing/merger.py:generic-api-key:526
+329513b3ea09939735e659c6a476273aac9cce38:src/kimball/merger.py:generic-api-key:193
+329513b3ea09939735e659c6a476273aac9cce38:src/kimball/merger.py:generic-api-key:419
+4c6f412abc7c35fd892ee4f4b66cf2be0d427be1:src/kimball/merger.py:generic-api-key:233

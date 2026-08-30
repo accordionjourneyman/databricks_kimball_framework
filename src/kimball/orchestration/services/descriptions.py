@@ -37,8 +37,7 @@ class DescriptionManager:
         column_descriptions: dict[str, str],
     ) -> bool:
         available = {field.name for field in spark.table(table_name).schema.fields}
-        unknown = sorted(set(column_descriptions).difference(available))
-        if unknown:
+        if unknown := sorted(set(column_descriptions).difference(available)):
             raise ValueError(
                 f"Description columns do not exist on {table_name}: {unknown}"
             )

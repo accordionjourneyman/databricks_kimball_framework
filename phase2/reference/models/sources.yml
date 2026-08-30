@@ -1,0 +1,11 @@
+version: 2
+
+sources:
+  - name: retail
+    description: Immutable UCI-derived fixture plus the declared mutation ledger.
+    schema: "{{ target.schema }}_source"
+    tables:
+      - name: retail_events
+        columns:
+          - name: event_seq
+            data_tests: [not_null, unique]

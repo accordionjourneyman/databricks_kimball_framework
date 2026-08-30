@@ -63,7 +63,9 @@ transformation_sql: |
   SELECT customer_id, name, city FROM c
 """)
 
-        orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result = orchestrator.run()
         assert result["status"] == "SUCCESS"
 
@@ -84,7 +86,9 @@ transformation_sql: |
         """)
 
         # Second run - should update existing row
-        orchestrator2 = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator2 = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result2 = orchestrator2.run()
         assert result2["status"] == "SUCCESS"
 
@@ -149,7 +153,9 @@ transformation_sql: |
   SELECT product_id, name, price, updated_at FROM p
 """)
 
-        orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result = orchestrator.run()
         assert result["status"] == "SUCCESS"
 
@@ -167,7 +173,9 @@ transformation_sql: |
         """)
 
         # Second run - should create a new version
-        orchestrator2 = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator2 = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result2 = orchestrator2.run()
         assert result2["status"] == "SUCCESS"
 
@@ -224,7 +232,9 @@ transformation_sql: |
 """)
 
         # Initial load
-        orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result = orchestrator.run()
         assert result["status"] == "SUCCESS"
 
@@ -240,7 +250,9 @@ transformation_sql: |
         spark.sql(f"DELETE FROM {test_db}.customers_del_src WHERE customer_id = 3")
 
         # Second run - should detect delete via anti-join and expire Charlie
-        orchestrator2 = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator2 = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result2 = orchestrator2.run()
         assert result2["status"] == "SUCCESS"
 
@@ -306,7 +318,9 @@ transformation_sql: |
 """)
 
         # Initial load
-        orchestrator = Orchestrator(config_v1, spark=spark, etl_schema=test_db)
+        orchestrator = Orchestrator.from_config(
+            config_v1, spark=spark, etl_schema=test_db
+        )
         result = orchestrator.run()
         assert result["status"] == "SUCCESS"
 
@@ -335,7 +349,9 @@ transformation_sql: |
   SELECT entity_id, val_a, val_b, updated_at FROM e
 """)
 
-        orchestrator2 = Orchestrator(config_v2, spark=spark, etl_schema=test_db)
+        orchestrator2 = Orchestrator.from_config(
+            config_v2, spark=spark, etl_schema=test_db
+        )
         result2 = orchestrator2.run()
         assert result2["status"] == "SUCCESS"
 

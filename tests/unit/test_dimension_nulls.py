@@ -81,15 +81,3 @@ def test_dimension_null_policy_builds_substitutions_once() -> None:
 
     assert result is frame
     assert frame.withColumn.call_count == 2
-
-
-def test_legacy_null_policy_is_an_explicit_noop() -> None:
-    frame = MagicMock()
-    assert (
-        apply_dimension_null_policy(
-            frame,
-            NullPolicyConfig(mode="legacy"),
-            identity_columns=["customer_id"],
-        )
-        is frame
-    )

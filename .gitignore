@@ -53,7 +53,7 @@ opencode*
 quality_reports/
 benchmark-results/
 
-# Local debug/scratch artifacts — never for VCS
+# Local debug/scratch artifacts â€” never for VCS
 /_test_golden.py
 /_test_mask.py
 /findings.json
@@ -62,3 +62,16 @@ benchmark-results/
 /build-debug.log
 /tests/golden/_debug_*.yml
 /tests/golden/_*.yml
+
+# Internal planning documents â€” not for public consumption
+/docs/internal/
+
+# Root scratch / analysis outputs (Phase 0.11)
+/radon_*.json
+/radon_compare.py
+/calc_cognitive.py
+/run_golden.py
+/test_spark.py
+/pytest_output.txt
+/docker_output.txt
+*.whl

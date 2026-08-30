@@ -1,0 +1,52 @@
+# Phase 2.0 feasibility harness: Spark 4.0.1 Thrift server with Delta Lake 4.2.0
+# and a PostgreSQL-backed Hive metastore (shared catalog state across clients).
+#
+# Delta jars are resolved at runtime via Spark `--packages`
+# (io.delta:delta-spark_4.0_2.13:4.2.0 for Spark 4.0.1)
+# so the resolved transitive Maven artifacts can be recorded in the evidence dossier.
+# Only the PostgreSQL JDBC driver (single jar) is baked in for metastore connectivity.
+FROM apache/spark:4.0.1@sha256:acfe7e06e95dd13aa32ee03c464766900d52fba15f58e421f8e1213ec041bb94
+
+# apache/spark runs as uid 185 (spark); switch to root only to add jars + config.
+USER root
+
+# PostgreSQL JDBC driver for the JDO-backed Hive metastore.
+ARG PG_JDBC_VERSION=42.7.5
+RUN curl -fsSL -o /opt/spark/jars/postgresql-${PG_JDBC_VERSION}.jar \
+      https://jdbc.postgresql.org/download/postgresql-${PG_JDBC_VERSION}.jar && \
+    test -s /opt/spark/jars/postgresql-${PG_JDBC_VERSION}.jar
+
+# Spark bundles Hive 2.3.10 classes but omits schematool's SQL resources.
+# Retrieve only the matching Apache release source, verify it, and extract the
+# metastore scripts needed for deterministic PostgreSQL initialization.
+ARG HIVE_SOURCE_SHA256=90a6cbc2b193e14654f982d1d391035474987f9e07bb178c562c1fd56cded459
+RUN curl -fsSL -o /tmp/apache-hive-2.3.10-src.tar.gz \
+      https://archive.apache.org/dist/hive/hive-2.3.10/apache-hive-2.3.10-src.tar.gz && \
+    echo "${HIVE_SOURCE_SHA256}  /tmp/apache-hive-2.3.10-src.tar.gz" | sha256sum -c - && \
+    mkdir -p /opt/hive/scripts/metastore && \
+    tar -xzf /tmp/apache-hive-2.3.10-src.tar.gz \
+      --strip-components=3 -C /opt/hive/scripts/metastore \
+      apache-hive-2.3.10-src/metastore/scripts && \
+    rm /tmp/apache-hive-2.3.10-src.tar.gz
+
+# Hive metastore config: embedded Hive metastore backed by PostgreSQL (JDO),
+# durable cross-session catalog state shared with the framework PySpark client.
+COPY hive-site.xml /opt/spark/conf/hive-site.xml
+
+# Startup script.
+COPY start-thrift.sh /opt/spark/start-thrift.sh
+COPY bootstrap-metastore.sh /opt/spark/bootstrap-metastore.sh
+RUN chmod +x /opt/spark/start-thrift.sh /opt/spark/bootstrap-metastore.sh
+
+# Delta ivy cache + warehouse live under the spark user's home on a shared volume.
+RUN mkdir -p /opt/spark/ivy /opt/warehouse && chown -R 185:0 /opt/spark/ivy /opt/warehouse /opt/spark/conf/hive-site.xml
+
+ENV SPARK_HOME=/opt/spark
+ENV PATH=$SPARK_HOME/bin:$SPARK_HOME/sbin:$PATH
+
+USER spark
+WORKDIR /opt/spark
+
+EXPOSE 10000 10002
+
+ENTRYPOINT ["/opt/spark/start-thrift.sh"]

@@ -7,7 +7,7 @@ from typing import Any
 from pyspark.errors import PySparkException
 from pyspark.sql import DataFrame
 
-from kimball.common.constants import DEFAULT_VALID_TO, SPARK_CONF_AUTO_MERGE
+from kimball.common.constants import DEFAULT_VALID_TO
 from kimball.common.runtime_policy import get_runtime_policy
 from kimball.common.spark_session import get_spark
 from kimball.common.utils import quote_table_name
@@ -37,6 +37,11 @@ def _is_safe_sql_expression(expr: str) -> bool:
     return bool(re.match(r"^[a-zA-Z0-9_().=<>\s\-,!+*/]+$", expr))
 
 
+def _is_safe_sql_data_type(data_type: str) -> bool:
+    """Validate a Delta SQL data type without permitting DDL injection."""
+    return bool(re.match(r"^[A-Za-z][A-Za-z0-9_(),<>\s]*$", data_type))
+
+
 class TableCreator:
     """
     Handles creation of Delta tables with Liquid Clustering support.
@@ -64,7 +69,7 @@ class TableCreator:
         result_df = result_df.withColumn("__etl_batch_id", lit("").cast(StringType()))
         result_df = result_df.withColumn("__is_deleted", lit(False))
 
-        if scd_type in (2, 6, 7):
+        if scd_type in {2, 6, 7}:
             # SCD2/SCD6 specific columns
             result_df = result_df.withColumn("__is_current", lit(True))
             result_df = result_df.withColumn("__valid_from", current_timestamp())
@@ -149,8 +154,6 @@ class TableCreator:
         table_name: str,
         schema_df: DataFrame,
         config: dict[str, Any] | None = None,
-        cluster_by: list[str] | None = None,
-        partition_by: list[str] | None = None,
         surrogate_key_col: str | None = None,
     ) -> None:
         """
@@ -159,22 +162,19 @@ class TableCreator:
         Args:
             table_name: Full table name (catalog.schema.table)
             schema_df: DataFrame with the desired schema
-            config: Table configuration from YAML
-            cluster_by: Columns for Liquid Clustering (deprecated, use config)
-            partition_by: Columns for partitioning (optional, usually not needed with clustering)
+            config: Validated table configuration from YAML
             surrogate_key_col: Name of the surrogate key column (if any)
         """
         if get_spark().catalog.tableExists(table_name):
             logger.info(f"Table {table_name} already exists. Skipping creation.")
+            if config:
+                self._apply_governance(table_name, config)
             return
 
-        # Check config for liquid clustering
-        if config and "cluster_by" in config:
-            cluster_by = config["cluster_by"]
-            partition_by = None  # Don't use partitioning with liquid clustering
+        config = config or {}
+        cluster_by = config.get("cluster_by") or []
+        if cluster_by:
             logger.info(f"Using Liquid Clustering from config: {cluster_by}")
-        elif cluster_by:
-            logger.info(f"Using provided cluster_by: {cluster_by}")
 
         # Validate clustering columns to prevent SQL injection
         if cluster_by:
@@ -253,6 +253,34 @@ class TableCreator:
 
         columns_sql = ",\n  ".join(columns)
 
+        # Generated columns: add GENERATED ALWAYS AS clauses
+        generated_cols = (config or {}).get("generated_columns") or {}
+        schema_columns = {field.name for field in schema_df.schema.fields}
+        for gen_col, definition in generated_cols.items():
+            if not _is_valid_identifier(gen_col):
+                raise ValueError(f"Invalid generated column name: {gen_col}")
+            if gen_col in schema_columns:
+                raise ValueError(
+                    f"Generated column {gen_col} must not also be present in the input schema"
+                )
+            if isinstance(definition, dict):
+                gen_expr = definition.get("expression")
+                data_type = definition.get("data_type")
+            else:
+                gen_expr = getattr(definition, "expression", None)
+                data_type = getattr(definition, "data_type", None)
+            if not isinstance(gen_expr, str) or not isinstance(data_type, str):
+                raise ValueError(
+                    f"Generated column {gen_col} must define expression and data_type"
+                )
+            if not _is_safe_sql_expression(gen_expr):
+                raise ValueError(f"Invalid generated column expression: {gen_expr}")
+            if not _is_safe_sql_data_type(data_type):
+                raise ValueError(f"Invalid generated column data type: {data_type}")
+            columns_sql += (
+                f",\n  {gen_col} {data_type} GENERATED ALWAYS AS ({gen_expr})"
+            )
+
         # Properly quote multi-part table names for Unity Catalog compatibility
         quoted_table_name = quote_table_name(table_name)
 
@@ -263,7 +291,7 @@ class TableCreator:
         USING DELTA
         """
 
-        create_sql += policy.cluster_clause(cluster_by, partition_by)
+        create_sql += policy.cluster_clause(cluster_by)
 
         # Enable Change Data Feed by default
         create_sql += "\nTBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"
@@ -280,8 +308,8 @@ class TableCreator:
         except PySparkException as e:
             error_str = str(e).lower()
             # Serverless/edition limitations - suppress verbose output
-            if any(
-                x in error_str
+            if all(
+                x not in error_str
                 for x in [
                     "not supported",
                     "premium",
@@ -291,8 +319,6 @@ class TableCreator:
                     "delta_unknown_configuration",
                 ]
             ):
-                pass  # Silently skip - known serverless limitation
-            else:
                 # Unknown error - print first line only, not full JVM trace
                 first_line = str(e).split("\n")[0][:200]
                 logger.info(f"Warning: Delta features failed: {first_line}")
@@ -300,9 +326,10 @@ class TableCreator:
         # Apply basic Delta constraints after table creation
         self.apply_basic_constraints(table_name, surrogate_key_col, schema_df)
 
-        # Apply additional constraints from config
+        # Apply additional constraints and governance from config
         if config:
             self.apply_delta_constraints(table_name, config)
+            self._apply_governance(table_name, config)
 
     def apply_basic_constraints(
         self,
@@ -337,130 +364,94 @@ class TableCreator:
             except PySparkException as e:
                 logger.info(f"Warning: Could not apply is_current constraint: {e}")
 
-    def apply_delta_constraints(self, table_name: str, config: dict[str, Any]) -> None:
-        """
-        Apply Delta constraints based on YAML configuration.
+    @staticmethod
+    def _field_value(item: Any, field: str) -> Any:
+        return item.get(field) if isinstance(item, dict) else getattr(item, field, None)
 
-        Args:
-            table_name: Full table name
-            config: Table configuration from YAML
-        """
-        # Apply NOT NULL constraints for surrogate key first so that the
-        # PRIMARY KEY declaration (which requires the column to be NOT NULL
-        # on Unity Catalog) succeeds downstream.
-        quoted_table_name = quote_table_name(table_name)
-        surrogate_key = config.get("surrogate_key")
-        if surrogate_key and _is_valid_identifier(surrogate_key):
-            try:
-                get_spark().sql(
-                    f"ALTER TABLE {quoted_table_name} ALTER COLUMN `{surrogate_key}` SET NOT NULL"
-                )
-                logger.info(f"Applied NOT NULL constraint to {surrogate_key}")
-            except PySparkException as e:
-                logger.warning(
-                    f"Could not apply NOT NULL constraint to {surrogate_key}: {e}"
-                )
-        durable_key = config.get("durable_key")
-        if durable_key and _is_valid_identifier(durable_key):
-            try:
-                get_spark().sql(
-                    f"ALTER TABLE {quoted_table_name} ALTER COLUMN `{durable_key}` SET NOT NULL"
-                )
-                logger.info(f"Applied NOT NULL constraint to {durable_key}")
-            except PySparkException as e:
-                logger.warning(
-                    f"Could not apply NOT NULL constraint to {durable_key}: {e}"
-                )
+    def _execute_ddl(
+        self,
+        sql: str,
+        *,
+        success: str,
+        failure: str,
+        failure_level: str = "warning",
+    ) -> bool:
+        try:
+            get_spark().sql(sql)
+        except PySparkException as exc:
+            getattr(logger, failure_level)("%s: %s", failure, exc)
+            return False
+        logger.info(success)
+        return True
 
-        # Apply NOT NULL constraints for natural keys
-        # Handle both flat and nested config structures for natural keys
-        # Use safe navigation to avoid AttributeError if 'keys' is None
-        keys_config = config.get("keys") or {}
-        natural_keys = config.get("natural_keys") or keys_config.get("natural_keys", [])
-        for key in natural_keys:
-            alter_sql = (
-                f"ALTER TABLE {quoted_table_name} ALTER COLUMN `{key}` SET NOT NULL"
+    def _not_null_columns(self, config: dict[str, Any]) -> list[str]:
+        candidates = [
+            config.get("surrogate_key"),
+            config.get("durable_key"),
+            *(config.get("natural_keys") or []),
+        ]
+        return list(dict.fromkeys(column for column in candidates if column))
+
+    def _foreign_key_columns(self, config: dict[str, Any]) -> list[str]:
+        columns: list[str] = []
+        for foreign_key in config.get("foreign_keys") or []:
+            columns.extend(
+                column
+                for field in ("column", "durable_column")
+                if (column := self._field_value(foreign_key, field))
             )
-            try:
-                get_spark().sql(alter_sql)
-                logger.info(f"Applied NOT NULL constraint to {key}")
-            except PySparkException as e:
-                logger.warning(f"Could not apply NOT NULL constraint to {key}: {e}")
+        return list(dict.fromkeys(columns))
 
-        # Apply NOT NULL constraints for foreign keys (fact tables only)
+    def apply_delta_constraints(self, table_name: str, config: dict[str, Any]) -> None:
+        """Apply validated Delta constraints and governance configuration."""
+        quoted_table_name = quote_table_name(table_name)
+
+        for column in self._not_null_columns(config):
+            if not _is_valid_identifier(column):
+                logger.info("Skipping invalid NOT NULL column name: %s", column)
+                continue
+            self._execute_ddl(
+                f"ALTER TABLE {quoted_table_name} ALTER COLUMN `{column}` SET NOT NULL",
+                success=f"Applied NOT NULL constraint to {column}",
+                failure=f"Could not apply NOT NULL constraint to {column}",
+            )
+
         if config.get("table_type") == "fact":
-            foreign_keys = config.get("foreign_keys") or []
-            for fk in foreign_keys:
-                fk_col = (
-                    fk.get("column")
-                    if isinstance(fk, dict)
-                    else getattr(fk, "column", None)
-                )
-                if fk_col:
-                    if not _is_valid_identifier(fk_col):
-                        logger.info(f"Skipping invalid FK column name: {fk_col}")
-                        continue
-                    constraint_name = f"fk_{fk_col}_not_null"
-                    alter_sql = f"ALTER TABLE {quoted_table_name} ADD CONSTRAINT `{constraint_name}` CHECK (`{fk_col}` IS NOT NULL)"
-                    try:
-                        get_spark().sql(alter_sql)
-                        logger.info(
-                            f"Applied FK NOT NULL constraint: {constraint_name}"
-                        )
-                    except PySparkException as e:
-                        logger.info(
-                            f"Warning: Could not apply FK constraint {constraint_name}: {e}"
-                        )
-                durable_col = (
-                    fk.get("durable_column")
-                    if isinstance(fk, dict)
-                    else getattr(fk, "durable_column", None)
-                )
-                if durable_col and _is_valid_identifier(durable_col):
-                    constraint_name = f"fk_{durable_col}_not_null"
-                    try:
-                        get_spark().sql(
-                            f"ALTER TABLE {quoted_table_name} "
-                            f"ADD CONSTRAINT `{constraint_name}` "
-                            f"CHECK (`{durable_col}` IS NOT NULL)"
-                        )
-                    except PySparkException as e:
-                        logger.info(
-                            f"Warning: Could not apply FK constraint {constraint_name}: {e}"
-                        )
-
-        # Apply business domain constraints
-        constraints = config.get("constraints") or []
-        for constraint in constraints:
-            constraint_name = constraint.get("name")
-            constraint_expr = constraint.get("expression")
-
-            if constraint_name and constraint_expr:
-                if not _is_valid_identifier(constraint_name):
-                    logger.info(f"Skipping invalid constraint name: {constraint_name}")
+            for column in self._foreign_key_columns(config):
+                if not _is_valid_identifier(column):
+                    logger.info("Skipping invalid FK column name: %s", column)
                     continue
+                constraint_name = f"fk_{column}_not_null"
+                self._execute_ddl(
+                    f"ALTER TABLE {quoted_table_name} ADD CONSTRAINT `{constraint_name}` "
+                    f"CHECK (`{column}` IS NOT NULL)",
+                    success=f"Applied FK NOT NULL constraint: {constraint_name}",
+                    failure=f"Could not apply FK constraint {constraint_name}",
+                    failure_level="info",
+                )
 
-                # Strict whitelist validation for constraints
-                if not _is_safe_sql_expression(constraint_expr):
-                    raise ValueError(
-                        f"Invalid characters in constraint expression: {constraint_expr}"
-                    )
+        for constraint in config.get("constraints") or []:
+            name = self._field_value(constraint, "name")
+            expression = self._field_value(constraint, "expression")
+            if not name or not expression:
+                continue
+            if not _is_valid_identifier(name):
+                logger.info("Skipping invalid constraint name: %s", name)
+                continue
+            if not _is_safe_sql_expression(expression):
+                raise ValueError(
+                    f"Invalid characters in constraint expression: {expression}"
+                )
+            self._execute_ddl(
+                f"ALTER TABLE {quoted_table_name} ADD CONSTRAINT `{name}` CHECK ({expression})",
+                success=f"Applied constraint {name}",
+                failure=f"Failed to apply constraint {name}",
+                failure_level="error",
+            )
 
-                alter_sql = f"ALTER TABLE {quoted_table_name} ADD CONSTRAINT `{constraint_name}` CHECK ({constraint_expr})"
-                try:
-                    get_spark().sql(alter_sql)
-                    logger.info(f"Applied constraint {constraint_name}")
-                except PySparkException as e:
-                    logger.error(f"Failed to apply constraint {constraint_name}: {e}")
-
-        # Declare PRIMARY KEY and FOREIGN KEY constraints (Unity Catalog only).
-        # These are informational metadata — they help the CBO eliminate
-        # redundant aggregations but are not enforced at write time.
         if config.get("declare_constraints", True):
             self._declare_pk_fk_constraints(table_name, config)
-
-        pii_config = config.get("pii")
-        if pii_config:
+        if pii_config := config.get("pii"):
             self._apply_pii_masks(table_name, pii_config)
 
     def _declare_pk_fk_constraints(
@@ -468,7 +459,7 @@ class TableCreator:
     ) -> None:
         """Issue PRIMARY KEY / FOREIGN KEY DDL on Databricks (Unity Catalog).
 
-        These constraints are informational only — UC does not enforce
+        These constraints are informational only ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â UC does not enforce
         uniqueness at write time, but the cost-based optimizer can use
         them to skip redundant deduplication aggregations.
 
@@ -504,21 +495,9 @@ class TableCreator:
         # --- Foreign keys (fact tables) ---
         foreign_keys = config.get("foreign_keys") or []
         for fk in foreign_keys:
-            fk_col = (
-                fk.get("column")
-                if isinstance(fk, dict)
-                else getattr(fk, "column", None)
-            )
-            fk_ref = (
-                fk.get("references")
-                if isinstance(fk, dict)
-                else getattr(fk, "references", None)
-            )
-            fk_dim_key = (
-                fk.get("dimension_key")
-                if isinstance(fk, dict)
-                else getattr(fk, "dimension_key", None)
-            )
+            fk_col = fk.get("column")
+            fk_ref = fk.get("references")
+            fk_dim_key = fk.get("dimension_key")
             if not fk_col or not fk_ref or not _is_valid_identifier(fk_col):
                 continue
             ref_col = fk_dim_key or fk_col
@@ -561,21 +540,19 @@ class TableCreator:
                 continue
             if strategy == "null":
                 mask_expr = "NULL"
-            elif strategy in {"hash", "fast_hash"}:
+            elif strategy == "fast_hash":
                 mask_expr = f"xxhash64(cast(`{col_name}` as string), '{col_name}')"
-            elif strategy == "tokenize":
+            elif strategy == "tokenize" or strategy != "mask":
                 # Stored values are already keyed HMAC tokens. Re-tokenizing on
                 # read would break equality and require exposing a key in DDL.
                 continue
-            elif strategy == "mask":
+            else:
                 mask_char = (
                     col_cfg.get("mask_char", "*")
                     if isinstance(col_cfg, dict)
                     else getattr(col_cfg, "mask_char", "*")
                 )
                 mask_expr = f"'{mask_char * 10}'"
-            else:
-                continue
             try:
                 get_spark().sql(
                     f"ALTER TABLE {quoted} ALTER COLUMN `{col_name}` SET MASK {mask_expr}"
@@ -584,15 +561,70 @@ class TableCreator:
             except PySparkException as e:
                 logger.warning(f"Could not apply MASK to {col_name}: {e}")
 
-    def enable_schema_auto_merge(self) -> None:
-        get_spark().conf.set(SPARK_CONF_AUTO_MERGE, "true")
-        logger.info("Enabled schema auto-merge for current session")
+    def _apply_row_filter(self, table_name: str, rf_config: dict[str, Any]) -> None:
+        """Apply Unity Catalog ROW FILTER via ``ALTER TABLE SET ROW FILTER``."""
+        policy = get_runtime_policy()
+        if not policy.is_databricks:
+            raise RuntimeError(
+                "row_filter is configured but Unity Catalog row filters require Databricks"
+            )
+        quoted = quote_table_name(table_name)
+        func_name = rf_config["function_name"]
+        func_body = rf_config["function_body"]
+        column = rf_config["column"]
+        if not _is_valid_identifier(func_name) or not _is_valid_identifier(column):
+            raise ValueError("Invalid row filter function or column name")
+        try:
+            get_spark().sql(
+                f"CREATE OR REPLACE FUNCTION {func_name}(region_param STRING) "
+                f"RETURN {func_body}"
+            )
+            logger.info(f"Created row filter function {func_name}")
+            get_spark().sql(
+                f"ALTER TABLE {quoted} SET ROW FILTER {func_name} ON ({column})"
+            )
+            logger.info(f"Applied ROW FILTER {func_name} on {table_name}({column})")
+            for group in rf_config.get("grant_to") or []:
+                if _is_valid_identifier(group):
+                    get_spark().sql(
+                        f"GRANT ALL PRIVILEGES ON FUNCTION {func_name} TO `{group}`"
+                    )
+                    logger.info(f"Granted ROW FILTER function to {group}")
+        except PySparkException as e:
+            raise RuntimeError(f"Could not apply configured ROW FILTER: {e}") from e
+
+    def _apply_governance(self, table_name: str, config: dict[str, Any]) -> None:
+        """Apply configured security controls or fail the deployment closed."""
+        if row_filter := config.get("row_filter"):
+            self._apply_row_filter(table_name, row_filter)
+
+        abac_policies = config.get("abac_policies") or []
+        if not abac_policies:
+            return
+        if not get_runtime_policy().is_databricks:
+            raise RuntimeError(
+                "abac_policies are configured but Unity Catalog ABAC requires Databricks"
+            )
+        parts = table_name.split(".")
+        if len(parts) != 3:
+            raise ValueError(
+                "abac_policies require table_name to be catalog.schema.table"
+            )
+        from kimball.common.config import ABACPolicyConfig
+        from kimball.governance.abac import ABACManager
+
+        catalog, schema, _ = parts
+        manager = ABACManager(get_spark(), catalog, schema, table_name=table_name)
+        for policy in abac_policies:
+            manager.create_policy(ABACPolicyConfig.model_validate(policy))
 
     def enable_delta_features(self, table_name: str) -> None:
         quoted_table_name = quote_table_name(table_name)
         features = [
             "'delta.enableDeletionVectors' = 'true'",
             "'delta.enablePredictiveOptimization' = 'true'",
+            "'delta.autoOptimize.optimizeWrite' = 'true'",
+            "'delta.autoOptimize.autoCompact' = 'true'",
         ]
         alter_sql = (
             f"ALTER TABLE {quoted_table_name} SET TBLPROPERTIES ({', '.join(features)})"

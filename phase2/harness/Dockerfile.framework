@@ -1,0 +1,14 @@
+# Framework-side PySpark cross-client reader for the Phase 2.0 smoke loop.
+# Uses the SAME Spark/Delta binaries (4.0.1 / 4.2.0) as the framework itself and
+# connects to the SAME PostgreSQL metastore + warehouse volume to read a Delta
+# table written by dbt through the shared catalog.
+FROM apache/spark:4.0.1@sha256:acfe7e06e95dd13aa32ee03c464766900d52fba15f58e421f8e1213ec041bb94
+
+USER root
+ARG PG_JDBC_VERSION=42.7.5
+RUN curl -fsSL -o /opt/spark/jars/postgresql-${PG_JDBC_VERSION}.jar \
+      https://jdbc.postgresql.org/download/postgresql-${PG_JDBC_VERSION}.jar && \
+    test -s /opt/spark/jars/postgresql-${PG_JDBC_VERSION}.jar
+COPY hive-site.xml /opt/spark/conf/hive-site.xml
+USER spark
+WORKDIR /work

@@ -1,0 +1,12 @@
+select
+  earlier.source_system,
+  earlier.customer_id,
+  earlier.valid_from,
+  earlier.valid_to,
+  later.valid_from as overlapping_valid_from
+from {{ ref('dim_customer') }} earlier
+join {{ ref('dim_customer') }} later
+  on earlier.source_system = later.source_system
+ and earlier.customer_id = later.customer_id
+ and earlier.valid_from < later.valid_from
+ and earlier.valid_to > later.valid_from

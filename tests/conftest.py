@@ -83,11 +83,7 @@ def _create_remote_spark_session() -> SparkSession:
 
     cluster_id = os.environ.get("DATABRICKS_CLUSTER_ID")
     builder = DatabricksSession.builder
-    if cluster_id:
-        builder = builder.clusterId(cluster_id)
-    else:
-        builder = builder.serverless()
-
+    builder = builder.clusterId(cluster_id) if cluster_id else builder.serverless()
     return builder.getOrCreate()
 
 
@@ -230,6 +226,22 @@ def test_db(spark: SparkSession, request: pytest.FixtureRequest):
     os.environ["KIMBALL_ETL_SCHEMA"] = db_name
     yield db_name
     spark.sql(f"DROP DATABASE IF EXISTS {db_name} CASCADE")
+
+
+@pytest.fixture(scope="session")
+def customers_df(spark: SparkSession):
+    """Load shared customer fixture from CSV."""
+    from tests.data import customers
+
+    return customers(spark)
+
+
+@pytest.fixture(scope="session")
+def orders_df(spark: SparkSession):
+    """Load shared order fixture from CSV."""
+    from tests.data import orders
+
+    return orders(spark)
 
 
 @pytest.fixture

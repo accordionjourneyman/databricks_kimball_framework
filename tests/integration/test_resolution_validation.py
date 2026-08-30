@@ -24,40 +24,10 @@ class TestResolutionValidation:
         self, spark: SparkSession, test_db: str, tmp_config
     ):
         """All fact NKs exist in dimension -> pipeline succeeds."""
-        spark.sql(f"""
-            CREATE TABLE {test_db}.dim_customer (
-                customer_sk BIGINT,
-                customer_id INT,
-                name STRING,
-                __is_current BOOLEAN,
-                __valid_from TIMESTAMP,
-                __valid_to TIMESTAMP,
-                __etl_processed_at TIMESTAMP,
-                __etl_batch_id STRING,
-                __is_skeleton BOOLEAN,
-                __skeleton_created_at TIMESTAMP,
-                __is_deleted BOOLEAN
-            ) USING DELTA
-        """)
-        spark.sql(f"""
-            INSERT INTO {test_db}.dim_customer VALUES
-            (1, 10, 'Alice', true, current_timestamp(), NULL,
-             current_timestamp(), 'INIT', false, NULL, false),
-            (2, 20, 'Bob', true, current_timestamp(), NULL,
-             current_timestamp(), 'INIT', false, NULL, false)
-        """)
-        spark.sql(f"""
-            CREATE TABLE {test_db}.orders_src (
-                order_id INT,
-                customer_id INT,
-                amount DOUBLE
-            ) USING DELTA
-        """)
-        spark.sql(f"""
-            INSERT INTO {test_db}.orders_src VALUES
-            (1, 10, 100.0),
-            (2, 20, 200.0)
-        """)
+        from tests.data import create_dim_customer_table, create_orders_src_table
+
+        create_dim_customer_table(spark, test_db)
+        create_orders_src_table(spark, test_db)
 
         config_path = tmp_config(f"""
 table_name: {test_db}.fact_orders
@@ -80,7 +50,9 @@ transformation_sql: |
   SELECT order_id, customer_id, amount FROM o
 """)
 
-        result = Orchestrator(config_path, spark=spark, etl_schema=test_db).run()
+        result = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        ).run()
         assert result["status"] == "SUCCESS"
 
     def test_resolve_passes_when_skeletons_created(
@@ -136,7 +108,9 @@ transformation_sql: |
   SELECT DISTINCT product_id, CAST(NULL AS STRING) AS name FROM s
 """)
 
-        result = Orchestrator(config_path, spark=spark, etl_schema=test_db).run()
+        result = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        ).run()
         assert result["status"] == "SUCCESS"
 
     def test_fanout_raises_on_duplicate_dim_keys(
@@ -198,7 +172,7 @@ transformation_sql: |
 """)
 
         with pytest.raises(DataQualityError, match="Fanout detected"):
-            Orchestrator(config_path, spark=spark, etl_schema=test_db).run()
+            Orchestrator.from_config(config_path, spark=spark, etl_schema=test_db).run()
 
     def test_count_mismatch_raises_when_validate_enabled(
         self, spark: SparkSession, test_db: str, tmp_config
@@ -259,7 +233,7 @@ transformation_sql: |
 """)
 
         with pytest.raises((DataQualityError, ValueError)):
-            Orchestrator(config_path, spark=spark, etl_schema=test_db).run()
+            Orchestrator.from_config(config_path, spark=spark, etl_schema=test_db).run()
 
     def test_fanout_check_disabled_skips_validation(
         self, spark: SparkSession, test_db: str, tmp_config
@@ -317,7 +291,10 @@ sources:
     cdc_strategy: full
 transformation_sql: |
   SELECT order_id, customer_id, amount FROM o
+grain_validation: skip
 """)
 
-        result = Orchestrator(config_path, spark=spark, etl_schema=test_db).run()
+        result = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        ).run()
         assert result["status"] == "SUCCESS"

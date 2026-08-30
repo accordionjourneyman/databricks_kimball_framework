@@ -1,7 +1,7 @@
 """Regression tests for Round-3 Bug Report findings.
 
 Each test confirms a specific bug exists in the current code. When the bug
-is fixed, the test will fail Ã¢â‚¬â€ prompting an update to assert the fixed behaviour.
+is fixed, the test will fail ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â prompting an update to assert the fixed behaviour.
 """
 
 from __future__ import annotations
@@ -127,7 +127,7 @@ class TestBugDoubleFKValidation:
         transformed_df = _make_df(["id", "dim_id"])
         orch._transform_and_validate({"src": transformed_df})
 
-        # Both still run when tests is not defined Ã¢â‚¬â€ double FK scan
+        # Both still run when tests is not defined ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â double FK scan
         orch._validator.run_config_tests.assert_not_called()
         orch._validator.validate_fact_fk_integrity.assert_called_once()
 
@@ -193,7 +193,7 @@ class TestBugSCD4DuplicateEAV:
 
 
 class TestBugDedupCdfNonDeterministic:
-    """dedup_cdf keeps row_number()==1 after orderBy desc Ã¢â‚¬â€ ties arbitrary."""
+    """dedup_cdf keeps row_number()==1 after orderBy desc ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â ties arbitrary."""
 
     def test_dedup_has_tiebreaker(self):
         """After fix: dedup_cdf uses a secondary sort column to break ties,
@@ -229,7 +229,7 @@ class TestBugSchemaEvolutionOneAlterPerColumn:
 
 
 class TestBugRedundantTargetScans:
-    """_merge_classic reads target 3Ãƒâ€” (toDF, get_current_df Ãƒâ€”2)."""
+    """_merge_classic reads target 3ÃƒÆ’Ã¢â‚¬â€ (toDF, get_current_df ÃƒÆ’Ã¢â‚¬â€2)."""
 
     def test_multiple_target_reads(self):
         from kimball.processing.scd2 import merge_scd2
@@ -248,7 +248,7 @@ class TestBugApproxCountDistinctLatent:
     """approx_count_distinct(*columns) binds 2nd column as rsd if >1 col."""
 
     def test_approx_count_distinct_spreads_columns(self):
-        from kimball.validation import DataQualityValidator
+        from kimball.orchestration.validation import DataQualityValidator
 
         src = inspect.getsource(DataQualityValidator)
         # The guard: len(nat_cols) <= 1

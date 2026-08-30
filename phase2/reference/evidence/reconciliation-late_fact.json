@@ -1,0 +1,221 @@
+{
+  "invariants": {
+    "dim_customer": {
+      "dbt": {
+        "current_member_violations": 0,
+        "temporal_overlaps": 0
+      },
+      "framework": {
+        "current_member_violations": 0,
+        "temporal_overlaps": 0
+      }
+    },
+    "fact_sales": {
+      "dbt": {
+        "customer_resolution_counts": {
+          "MATCHED": 5
+        },
+        "line_amount_total": "102.47",
+        "missing_product_references": 0
+      },
+      "framework": {
+        "customer_resolution_counts": {
+          "MATCHED": 5
+        },
+        "line_amount_total": "102.47",
+        "missing_product_references": 0
+      }
+    }
+  },
+  "state": "late_fact",
+  "tables": {
+    "dim_customer": {
+      "classification": "equivalent",
+      "dbt_nullable": {
+        "country": true,
+        "customer_id": true,
+        "customer_segment": true,
+        "is_current": false,
+        "source_system": true,
+        "valid_from": true,
+        "valid_to": true
+      },
+      "dbt_only": 0,
+      "dbt_rows": 7,
+      "dbt_schema": "struct<source_system:string,customer_id:bigint,country:string,customer_segment:string,valid_from:timestamp,valid_to:timestamp,is_current:boolean>",
+      "deterministic_sample": [
+        {
+          "country": "United Kingdom",
+          "customer_id": 13047,
+          "customer_segment": "wholesale",
+          "is_current": true,
+          "source_system": "uci",
+          "valid_from": "2010-12-01 08:34:00",
+          "valid_to": "9999-12-31 23:59:59"
+        },
+        {
+          "country": "United Kingdom",
+          "customer_id": 17850,
+          "customer_segment": "retail",
+          "is_current": false,
+          "source_system": "uci",
+          "valid_from": "2010-12-01 08:26:00",
+          "valid_to": "2010-12-02 09:00:00"
+        },
+        {
+          "country": "France",
+          "customer_id": 17850,
+          "customer_segment": "retail",
+          "is_current": false,
+          "source_system": "uci",
+          "valid_from": "2010-12-02 09:00:00",
+          "valid_to": "2010-12-02 09:05:00"
+        }
+      ],
+      "duplicate_keys": 0,
+      "framework_nullable": {
+        "country": true,
+        "customer_id": true,
+        "customer_segment": true,
+        "is_current": true,
+        "source_system": true,
+        "valid_from": true,
+        "valid_to": true
+      },
+      "framework_only": 0,
+      "framework_rows": 7,
+      "framework_schema": "struct<source_system:string,customer_id:bigint,country:string,customer_segment:string,valid_from:timestamp,valid_to:timestamp,is_current:boolean>",
+      "schema_match": true
+    },
+    "dim_product": {
+      "classification": "equivalent",
+      "dbt_delta_version": 5,
+      "dbt_nullable": {
+        "description": true,
+        "last_event_seq": true,
+        "source_system": true,
+        "stock_code": true,
+        "unit_price": true
+      },
+      "dbt_only": 0,
+      "dbt_rows": 4,
+      "dbt_schema": "struct<source_system:string,stock_code:string,description:string,unit_price:decimal(18,2),last_event_seq:bigint>",
+      "deterministic_sample": [
+        {
+          "description": "SET 7 BABUSHKA NESTING BOXES",
+          "last_event_seq": 9,
+          "source_system": "uci",
+          "stock_code": "22752",
+          "unit_price": "7.65"
+        },
+        {
+          "description": "WHITE METAL LANTERN CORRECTED",
+          "last_event_seq": 5,
+          "source_system": "uci",
+          "stock_code": "71053",
+          "unit_price": "3.39"
+        },
+        {
+          "description": "ASSORTED COLOUR BIRD ORNAMENT",
+          "last_event_seq": 3,
+          "source_system": "uci",
+          "stock_code": "84879",
+          "unit_price": "1.69"
+        }
+      ],
+      "duplicate_keys": 0,
+      "framework_delta_version": 5,
+      "framework_nullable": {
+        "description": true,
+        "last_event_seq": true,
+        "source_system": true,
+        "stock_code": true,
+        "unit_price": true
+      },
+      "framework_only": 0,
+      "framework_rows": 4,
+      "framework_schema": "struct<source_system:string,stock_code:string,description:string,unit_price:decimal(18,2),last_event_seq:bigint>",
+      "schema_match": true
+    },
+    "fact_sales": {
+      "classification": "equivalent",
+      "dbt_delta_version": 5,
+      "dbt_nullable": {
+        "customer_id": true,
+        "customer_resolution": true,
+        "invoice_no": true,
+        "invoice_ts": true,
+        "is_cancellation": true,
+        "line_amount": true,
+        "line_id": true,
+        "quantity": true,
+        "source_system": true,
+        "stock_code": true,
+        "unit_price": true
+      },
+      "dbt_only": 0,
+      "dbt_rows": 5,
+      "dbt_schema": "struct<source_system:string,line_id:string,invoice_no:string,stock_code:string,customer_id:bigint,invoice_ts:timestamp,quantity:bigint,unit_price:decimal(18,2),line_amount:decimal(18,2),is_cancellation:boolean,customer_resolution:string>",
+      "deterministic_sample": [
+        {
+          "customer_id": 99999,
+          "customer_resolution": "MATCHED",
+          "invoice_no": "536360",
+          "invoice_ts": "2010-12-01 07:30:00",
+          "is_cancellation": false,
+          "line_amount": "7.65",
+          "line_id": "uci-536360-1",
+          "quantity": 1,
+          "source_system": "uci",
+          "stock_code": "22752",
+          "unit_price": "7.65"
+        },
+        {
+          "customer_id": 17850,
+          "customer_resolution": "MATCHED",
+          "invoice_no": "536365",
+          "invoice_ts": "2010-12-01 08:26:00",
+          "is_cancellation": false,
+          "line_amount": "15.30",
+          "line_id": "uci-536365-1",
+          "quantity": 6,
+          "source_system": "uci",
+          "stock_code": "85123A",
+          "unit_price": "2.55"
+        },
+        {
+          "customer_id": 17850,
+          "customer_resolution": "MATCHED",
+          "invoice_no": "536365",
+          "invoice_ts": "2010-12-01 08:26:00",
+          "is_cancellation": false,
+          "line_amount": "20.34",
+          "line_id": "uci-536365-2",
+          "quantity": 6,
+          "source_system": "uci",
+          "stock_code": "71053",
+          "unit_price": "3.39"
+        }
+      ],
+      "duplicate_keys": 0,
+      "framework_delta_version": 5,
+      "framework_nullable": {
+        "customer_id": true,
+        "customer_resolution": true,
+        "invoice_no": true,
+        "invoice_ts": true,
+        "is_cancellation": true,
+        "line_amount": true,
+        "line_id": true,
+        "quantity": true,
+        "source_system": true,
+        "stock_code": true,
+        "unit_price": true
+      },
+      "framework_only": 0,
+      "framework_rows": 5,
+      "framework_schema": "struct<source_system:string,line_id:string,invoice_no:string,stock_code:string,customer_id:bigint,invoice_ts:timestamp,quantity:bigint,unit_price:decimal(18,2),line_amount:decimal(18,2),is_cancellation:boolean,customer_resolution:string>",
+      "schema_match": true
+    }
+  }
+}

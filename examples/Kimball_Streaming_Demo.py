@@ -21,6 +21,7 @@
 import os
 
 from delta.tables import DeltaTable
+from pyspark.sql import DataFrame
 
 from kimball import ContractMonitor, Orchestrator, StreamingOrchestrator
 
@@ -31,7 +32,7 @@ _nb_path = (
     .notebookPath()
     .get()
 )
-_pyspark_root = "/Workspace" + os.path.dirname(os.path.dirname(_nb_path)) + "/"
+_pyspark_root = f"/Workspace{os.path.dirname(os.path.dirname(_nb_path))}/"
 _repo_root = os.path.dirname(os.path.dirname(_pyspark_root))
 
 os.environ["KIMBALL_ETL_SCHEMA"] = "demo_streaming_gold"
@@ -170,9 +171,9 @@ print("✓ Configs written")
 # Helper to ingest data into a CDF-enabled Silver table.
 
 
-def ingest_silver(table_name, data, schema, merge_keys):
+def ingest_silver(table_name, data, schema=None, merge_keys=None):
     full_table_name = f"demo_streaming_silver.{table_name}"
-    df = spark.createDataFrame(data, schema=schema)
+    df = data if isinstance(data, DataFrame) else spark.createDataFrame(data, schema=schema)
 
     if not spark.catalog.tableExists(full_table_name):
         print(f"Creating table {full_table_name}...")
@@ -228,36 +229,15 @@ def ingest_silver(table_name, data, schema, merge_keys):
 # COMMAND ----------
 
 # Day 1 customers
-customers_day1 = [
-    (
-        1,
-        "Alice",
-        "Smith",
-        "alice@example.com",
-        "123 Apple St, NY",
-        "2025-01-01T10:00:00",
-    ),
-    (
-        2,
-        "Bob",
-        "Jones",
-        "bob@example.com",
-        "456 Banana Blvd, SF",
-        "2025-01-01T10:00:00",
-    ),
-]
-customers_schema = "customer_id INT, first_name STRING, last_name STRING, email STRING, address STRING, updated_at STRING"
+from examples.data import customers_day1, products_day1
 
-products_day1 = [
-    (101, "Laptop", "Electronics", 1000.00, "2025-01-01T10:00:00"),
-    (102, "Mouse", "Electronics", 20.00, "2025-01-01T10:00:00"),
-]
+customers_schema = "customer_id INT, first_name STRING, last_name STRING, email STRING, address STRING, updated_at STRING"
 products_schema = (
     "product_id INT, name STRING, category STRING, unit_cost DOUBLE, updated_at STRING"
 )
 
-ingest_silver("customers", customers_day1, customers_schema, ["customer_id"])
-ingest_silver("products", products_day1, products_schema, ["product_id"])
+ingest_silver("customers", customers_day1(spark), merge_keys=["customer_id"])
+ingest_silver("products", products_day1(spark), merge_keys=["product_id"])
 
 print("✓ Day 1 data ingested")
 
@@ -294,34 +274,9 @@ else:
 
 # COMMAND ----------
 
-customers_day2 = [
-    (
-        1,
-        "Alice",
-        "Smith",
-        "alice@example.com",
-        "789 Cherry Ln, LA",
-        "2025-01-02T09:00:00",
-    ),
-    (
-        2,
-        "Bob",
-        "Jones",
-        "bob@example.com",
-        "456 Banana Blvd, SF",
-        "2025-01-01T10:00:00",
-    ),
-    (
-        3,
-        "Charlie",
-        "Brown",
-        "charlie@example.com",
-        "321 Date Dr, TX",
-        "2025-01-02T10:00:00",
-    ),
-]
+from examples.data import customers_day2
 
-ingest_silver("customers", customers_day2, customers_schema, ["customer_id"])
+ingest_silver("customers", customers_day2(spark), merge_keys=["customer_id"])
 print("✓ Day 2 changes ingested")
 
 # COMMAND ----------

@@ -40,7 +40,7 @@ def test_scd7_dimension_contract_is_accepted() -> None:
     )
 
     assert config.durable_key == "customer_dk"
-    assert config.null_policy.mode == "kimball"
+    assert config.null_policy.attribute_substitutes == {}
 
 
 def test_type7_fact_lookup_requires_dual_keys_and_event_time() -> None:

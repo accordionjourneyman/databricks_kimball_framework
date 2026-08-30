@@ -13,6 +13,16 @@ from kimball.common.utils import quote_table_name
 
 logger = logging.getLogger(__name__)
 
+
+def _commit_matches_batch_id(user_metadata: object, batch_id: str) -> bool:
+    """Match the supported exact and ``batch_id=`` commit metadata forms."""
+    metadata = str(user_metadata or "").strip()
+    return metadata == batch_id or (
+        "batch_id=" in metadata
+        and metadata.rsplit("batch_id=", 1)[-1].strip() == batch_id
+    )
+
+
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
 
@@ -98,13 +108,15 @@ class TransactionManager:
             # Check history for commits tagged with this batch_id
             history = DeltaTable.forName(self.spark, table_name).history(10).collect()
 
+            if history:
+                self._version_cache[table_name] = int(history[0]["version"])
+
             # Find commits made by this batch
             # Row objects don't support .get(), so we use dictionary access
             zombie_commits = [
                 h
                 for h in history
-                if (h["userMetadata"] or "") == batch_id
-                or (h["userMetadata"] or "").endswith(f"batch_id={batch_id}")
+                if _commit_matches_batch_id(h["userMetadata"], batch_id)
             ]
 
             if not zombie_commits:
@@ -152,7 +164,7 @@ class TransactionManager:
         # Set commit tagging - lenient on errors (e.g. Serverless limitations)
         try:
             self.spark.conf.set(
-                "spark.databricks.delta.commitInfo.userMetadata", str(batch_id)
+                "spark.databricks.delta.commitInfo.userMetadata", batch_id
             )
         except PySparkException:
             logger.info(

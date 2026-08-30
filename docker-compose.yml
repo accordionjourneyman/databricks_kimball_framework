@@ -23,7 +23,7 @@ services:
       - KIMBALL_ETL_SCHEMA=etl_control
       - PYSPARK_PYTHON=python3
       - PYSPARK_DRIVER_PYTHON=python3
-      - KIMBALL_BENCHMARK_TESTBED=tiago-windows-docker
+      - KIMBALL_BENCHMARK_TESTBED=local-dev
       - KIMBALL_BENCHMARK_IMAGE=kimball-tests:spark-4.0.1-delta-4.2.0
       - BENCHER_API_KEY
       - BENCHER_PROJECT

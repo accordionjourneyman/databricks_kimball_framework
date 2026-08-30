@@ -1,0 +1,76 @@
+{
+  "logs": "PHASE2_DATABRICKS_CONFORMANCE={\"catalog\": \"workspace\", \"dbt_schema\": \"phase2_dbt_conformance\", \"framework_schema\": \"phase2_framework_conformance\", \"tables\": {\"dim_customer\": {\"classification\": \"equivalent\", \"dbt_only\": 0, \"dbt_rows\": 10, \"framework_only\": 0, \"framework_rows\": 10, \"types_match\": true}, \"dim_product\": {\"classification\": \"equivalent\", \"dbt_only\": 0, \"dbt_rows\": 5, \"framework_only\": 0, \"framework_rows\": 5, \"types_match\": true}, \"fact_sales\": {\"classification\": \"equivalent\", \"dbt_only\": 0, \"dbt_rows\": 9, \"framework_only\": 0, \"framework_rows\": 9, \"types_match\": true}}}\n",
+  "logs_truncated": false,
+  "metadata": {
+    "cleanup_duration": 0,
+    "creator_user_name": "t.diogo.marques@gmail.com",
+    "effective_performance_target": "PERFORMANCE_OPTIMIZED",
+    "end_time": 1784854440320,
+    "execution_duration": 115000,
+    "format": "MULTI_TASK",
+    "job_id": 506550333697497,
+    "job_run_id": 54427316072543,
+    "number_in_job": 922289598320951,
+    "original_attempt_run_id": 922289598320951,
+    "parent_run_id": 54427316072543,
+    "run_id": 922289598320951,
+    "run_name": "framework_reconciliation",
+    "run_page_url": "https://dbc-7bded16a-1785.cloud.databricks.com/?o=1505289208203470#job/506550333697497/run/922289598320951",
+    "run_type": "JOB_RUN",
+    "setup_duration": 2000,
+    "start_time": 1784854322945,
+    "state": {
+      "life_cycle_state": "TERMINATED",
+      "result_state": "SUCCESS",
+      "state_message": "",
+      "user_cancelled_or_timedout": false
+    },
+    "status": {
+      "state": "TERMINATED",
+      "termination_details": {
+        "code": "SUCCESS",
+        "message": "",
+        "type": "SUCCESS"
+      }
+    },
+    "task_key": "framework_reconciliation",
+    "tasks": [
+      {
+        "attempt_number": 0,
+        "cleanup_duration": 0,
+        "effective_performance_target": "PERFORMANCE_OPTIMIZED",
+        "end_time": 1784854440320,
+        "environment_key": "phase2_env",
+        "execution_duration": 115000,
+        "run_id": 922289598320951,
+        "run_page_url": "https://dbc-7bded16a-1785.cloud.databricks.com/?o=1505289208203470#job/506550333697497/run/922289598320951",
+        "setup_duration": 2000,
+        "spark_python_task": {
+          "parameters": [
+            "workspace",
+            "phase2_dbt_conformance",
+            "phase2_framework_conformance"
+          ],
+          "python_file": "/Users/t.diogo.marques@gmail.com/phase2-conformance/framework_conformance.py"
+        },
+        "start_time": 1784854322945,
+        "state": {
+          "life_cycle_state": "TERMINATED",
+          "result_state": "SUCCESS",
+          "state_message": "",
+          "user_cancelled_or_timedout": false
+        },
+        "status": {
+          "state": "TERMINATED",
+          "termination_details": {
+            "code": "SUCCESS",
+            "message": "",
+            "type": "SUCCESS"
+          }
+        },
+        "task_key": "framework_reconciliation"
+      }
+    ],
+    "trigger": "ONE_TIME"
+  }
+}

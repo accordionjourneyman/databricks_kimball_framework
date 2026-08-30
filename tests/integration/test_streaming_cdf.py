@@ -65,7 +65,9 @@ sources:
 transformation_sql: |
   SELECT customer_id, name, city FROM c
 """)
-        batch_orch = Orchestrator(batch_cfg, spark=spark, etl_schema=test_db)
+        batch_orch = Orchestrator.from_config(
+            batch_cfg, spark=spark, etl_schema=test_db
+        )
         result = batch_orch.run()
         assert result["status"] == "SUCCESS"
 
@@ -104,7 +106,9 @@ sources:
 transformation_sql: |
   SELECT customer_id, name, city FROM c
 """)
-        stream_orch = StreamingOrchestrator(stream_cfg, spark=spark, etl_schema=test_db)
+        stream_orch = StreamingOrchestrator.from_config(
+            stream_cfg, spark=spark, etl_schema=test_db
+        )
         stream_result = stream_orch.run()
         assert stream_result["status"] == "SUCCESS", (
             f"Streaming pipeline failed: {stream_result.get('errors', 'no errors')}"
@@ -128,7 +132,7 @@ transformation_sql: |
 
         # SKs are deterministic hash surrogate keys (xxhash64), so they have no
         # ordering relationship to customer_id. Verify they are present and unique
-        # instead — the real invariant for a surrogate key column.
+        # instead â€” the real invariant for a surrogate key column.
         sk_values = [r["customer_sk"] for r in final_rows]
         assert all(sk is not None for sk in sk_values), (
             f"Expected non-null surrogate keys, got: {sk_values}"
@@ -181,7 +185,9 @@ sources:
 transformation_sql: |
   SELECT product_id, product_name, price FROM p
 """)
-        batch_orch = Orchestrator(batch_cfg, spark=spark, etl_schema=test_db)
+        batch_orch = Orchestrator.from_config(
+            batch_cfg, spark=spark, etl_schema=test_db
+        )
         result = batch_orch.run()
         assert result["status"] == "SUCCESS"
 
@@ -219,7 +225,9 @@ sources:
 transformation_sql: |
   SELECT product_id, product_name, price FROM p
 """)
-        stream_orch = StreamingOrchestrator(stream_cfg, spark=spark, etl_schema=test_db)
+        stream_orch = StreamingOrchestrator.from_config(
+            stream_cfg, spark=spark, etl_schema=test_db
+        )
         stream_result = stream_orch.run()
         assert stream_result["status"] == "SUCCESS"
 
@@ -272,7 +280,7 @@ transformation_sql: |
 """)
 
         # Use StreamingOrchestrator without streaming.enabled
-        orch = StreamingOrchestrator(cfg, spark=spark, etl_schema=test_db)
+        orch = StreamingOrchestrator.from_config(cfg, spark=spark, etl_schema=test_db)
         result = orch.run()
         assert result["status"] == "SUCCESS"
 
@@ -330,7 +338,9 @@ sources:
 transformation_sql: |
   SELECT customer_id, address, updated_at, _change_type FROM c
 """)
-        batch_orch = Orchestrator(batch_cfg, spark=spark, etl_schema=test_db)
+        batch_orch = Orchestrator.from_config(
+            batch_cfg, spark=spark, etl_schema=test_db
+        )
         assert batch_orch.run()["status"] == "SUCCESS"
 
         # Two separate Delta transactions updating Alice -> two CDF versions.
@@ -366,7 +376,9 @@ sources:
 transformation_sql: |
   SELECT customer_id, address, updated_at, _change_type FROM c
 """)
-        stream_orch = StreamingOrchestrator(stream_cfg, spark=spark, etl_schema=test_db)
+        stream_orch = StreamingOrchestrator.from_config(
+            stream_cfg, spark=spark, etl_schema=test_db
+        )
         stream_result = stream_orch.run()
         assert stream_result["status"] == "SUCCESS", stream_result.get("errors")
 

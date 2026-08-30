@@ -1,0 +1,25 @@
+version: 2
+
+models:
+  - name: dim_product
+    description: SCD1 product at source-system and stock-code grain.
+    columns:
+      - name: stock_code
+        data_tests: [not_null]
+  - name: dim_customer
+    description: SCD2 customer at source-system, customer-id, valid-from grain.
+    columns:
+      - name: customer_id
+        data_tests: [not_null]
+  - name: fact_sales
+    description: Transaction fact at source-system and source line-id grain.
+    columns:
+      - name: line_id
+        data_tests: [not_null]
+      - name: customer_resolution
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['MATCHED', 'UNKNOWN', 'SKELETON']
+  - name: identity_crosswalk
+    description: Explicit source identity to enterprise party mapping.

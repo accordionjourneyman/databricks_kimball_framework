@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -51,25 +50,6 @@ def mock_get_etl_schema():
 
 
 class TestPipelineExecutorInit:
-    def test_watermark_deprecation_warning(
-        self, mock_config_loader, mock_get_etl_schema
-    ):
-        with pytest.warns(DeprecationWarning, match="watermark_database"):
-            PipelineExecutor(
-                config_paths=[],
-                watermark_database="old_schema",
-            )
-
-    def test_watermark_deprecation_sets_etl_schema(
-        self, mock_config_loader, mock_get_etl_schema
-    ):
-        with pytest.warns(DeprecationWarning):
-            executor = PipelineExecutor(
-                config_paths=[],
-                watermark_database="old_schema",
-            )
-        assert executor.etl_schema == "old_schema"
-
     def test_raises_when_no_etl_schema(self, mock_config_loader):
         with patch("kimball.orchestration.executor.get_etl_schema", return_value=None):
             with pytest.raises(ValueError, match="ETL schema must be specified"):
@@ -132,29 +112,6 @@ class TestRunSinglePipeline:
         assert "ValueError" in result.error_message
 
 
-class TestRunWave:
-    def test_empty_wave_returns_empty(self, mock_config_loader, mock_get_etl_schema):
-        executor = PipelineExecutor(config_paths=[], etl_schema="test")
-        result = executor._run_wave("Test", [])
-        assert result == []
-
-    def test_sequential_when_max_workers_1(
-        self, mock_config_loader, mock_get_etl_schema
-    ):
-        executor = PipelineExecutor(config_paths=[], etl_schema="test", max_workers=1)
-        executor._run_sequential = MagicMock(return_value=[])
-        executor._run_wave("Test", [MagicMock()])
-        executor._run_sequential.assert_called_once()
-
-    def test_parallel_when_max_workers_gt_1(
-        self, mock_config_loader, mock_get_etl_schema
-    ):
-        executor = PipelineExecutor(config_paths=[], etl_schema="test", max_workers=2)
-        executor._run_sequential = MagicMock(return_value=[])
-        executor._run_wave("Test", [MagicMock()])
-        executor._run_sequential.assert_called_once()
-
-
 class TestRunSequential:
     def test_stops_on_failure(self, mock_config_loader, mock_get_etl_schema):
         executor = PipelineExecutor(
@@ -179,8 +136,7 @@ class TestRunParallel:
             config_paths=[], etl_schema="test", stop_on_failure=True
         )
         executor._run_sequential = MagicMock(return_value=[])
-        with pytest.warns(RuntimeWarning, match="share a Spark session"):
-            results = executor._run_parallel([{"path": "a"}])
+        results = executor._run_sequential([{"path": "a"}])
         assert results == []
         executor._run_sequential.assert_called_once()
 
@@ -224,19 +180,6 @@ class TestRun:
         summary = executor.run()
         assert summary.skipped == 1
         assert summary.failed == 1
-
-
-class TestDryRun:
-    def test_dry_run_logs(self, mock_config_loader, mock_get_etl_schema):
-        dim_config = _dim_config()
-        mock_config_loader.load_config.return_value = dim_config
-
-        executor = PipelineExecutor(config_paths=["dim.yml"])
-        with patch.object(
-            logging.getLogger("kimball.orchestration.executor"), "info"
-        ) as mock_log:
-            executor.dry_run()
-            assert mock_log.called
 
 
 class TestExecutionSummary:

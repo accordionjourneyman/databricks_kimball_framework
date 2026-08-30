@@ -13,7 +13,7 @@ This guide will walk you through setting up and running your first Kimball pipel
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/your-username/databricks_kimball_framework.git
+git clone https://github.com/accordionjourneyman/databricks_kimball_framework.git
 cd databricks_kimball_framework
 ```
 
@@ -166,11 +166,17 @@ You should see:
 
 **"ETL schema must be specified" error:**
 
+This means the framework cannot determine where to write the ETL
+control tables. Resolve it via one of:
+
 - Set `KIMBALL_ETL_SCHEMA` environment variable before running:
   ```python
   import os
   os.environ["KIMBALL_ETL_SCHEMA"] = "dev_gold"
   ```
+- Pass `etl_schema=` to the `Orchestrator` constructor
+- Use a fully-qualified table name (`db.table`) in your config so
+  the schema can be inferred
 
 **"Table not found" error:**
 

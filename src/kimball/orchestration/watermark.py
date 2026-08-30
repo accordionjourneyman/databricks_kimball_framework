@@ -52,6 +52,7 @@ class ETLControlRecord(TypedDict, total=False):
     target_table: str
     source_table: str
     last_processed_version: int | None
+    previous_success_watermark: int | None
     batch_id: str | None
     batch_started_at: datetime | None
     batch_completed_at: datetime | None
@@ -86,8 +87,8 @@ class ETLControlManager:
                 )
             self.schema = etl_schema
             self.fq_table = f"{self.schema}.{table_name}"
-        self.database = self.schema
         self._delta_table: DeltaTable | None = None
+        self.spark.sql(f"CREATE DATABASE IF NOT EXISTS {self.schema}")
         self._ensure_table_exists()
 
     @property
@@ -99,15 +100,13 @@ class ETLControlManager:
         return self._spark
 
     def _ensure_table_exists(self) -> None:
-        self.spark.sql(f"CREATE DATABASE IF NOT EXISTS {self.schema}")
-        if self.spark.catalog.tableExists(self.fq_table):
-            return
         try:
             self.spark.sql(f"""
                 CREATE TABLE IF NOT EXISTS {self.fq_table} (
                     target_table STRING NOT NULL,
                     source_table STRING NOT NULL,
                     last_processed_version LONG,
+                    previous_success_watermark LONG,
                     batch_id STRING,
                     batch_started_at TIMESTAMP,
                     batch_completed_at TIMESTAMP,
@@ -123,6 +122,22 @@ class ETLControlManager:
         except PySparkException:
             if not self.spark.catalog.tableExists(self.fq_table):
                 raise
+        self._ensure_recovery_columns()
+
+    def _ensure_recovery_columns(self) -> None:
+        """Add recovery metadata when upgrading an existing control table."""
+        try:
+            fields = self.spark.table(self.fq_table).schema.fields
+            existing_columns = {field.name for field in fields}
+        except Exception:  # noqa: BLE001
+            # Do not prevent normal processing if catalog metadata cannot be
+            # inspected; the following upsert will surface a real schema issue.
+            return
+        if "previous_success_watermark" not in existing_columns:
+            self.spark.sql(
+                f"ALTER TABLE {self.fq_table} "
+                "ADD COLUMNS (previous_success_watermark LONG)"
+            )
 
     def get_watermark(self, target_table: str, source_table: str) -> int | None:
         row = (
@@ -155,36 +170,6 @@ class ETLControlManager:
         )
         return {row["source_table"]: row.asDict(recursive=True) for row in rows}
 
-    def update_watermark(
-        self, target_table: str, source_table: str, version: int
-    ) -> None:
-        self._upsert_control_record(
-            target_table,
-            source_table,
-            {
-                "last_processed_version": version,
-                "batch_status": "SUCCESS",
-                "batch_completed_at": datetime.now(),
-            },
-        )
-
-    def batch_start(self, target_table: str, source_table: str) -> str:
-        batch_id = str(uuid.uuid4())
-        self._upsert_control_record(
-            target_table,
-            source_table,
-            {
-                "batch_id": batch_id,
-                "batch_started_at": datetime.now(),
-                "batch_completed_at": None,
-                "batch_status": "RUNNING",
-                "rows_read": None,
-                "rows_written": None,
-                "error_message": None,
-            },
-        )
-        return batch_id
-
     def batch_start_all(
         self,
         target_table: str,
@@ -192,6 +177,7 @@ class ETLControlManager:
         run_batch_id: str | None = None,
     ) -> dict[str, str]:
         timestamp = datetime.now()
+        prior_states = self.get_states(target_table, source_tables)
         records = []
         batch_ids = {}
         for source in source_tables:
@@ -203,6 +189,12 @@ class ETLControlManager:
                     "source_table": source,
                     "batch_id": batch_id,
                     "batch_started_at": timestamp,
+                    # etl_control is a current-state table, so starting a run
+                    # replaces the SUCCESS row needed by crash recovery. Keep
+                    # the durable watermark that existed before this run.
+                    "previous_success_watermark": prior_states.get(source, {}).get(
+                        "last_processed_version"
+                    ),
                     "batch_completed_at": None,
                     "batch_status": "RUNNING",
                     "rows_read": None,
@@ -238,31 +230,30 @@ class ETLControlManager:
         self, target_table: str, completions: list[dict[str, Any]]
     ) -> None:
         completed_at = datetime.now()
-        records: list[ETLControlRecord] = []
-        for completion in completions:
-            records.append(
-                {
-                    "target_table": target_table,
-                    "source_table": completion["source_table"],
-                    "last_processed_version": completion.get("new_version"),
-                    "batch_completed_at": completed_at,
-                    "batch_status": "SUCCESS",
-                    "rows_read": completion.get("rows_read"),
-                    "rows_written": completion.get("rows_written"),
-                    "error_message": None,
-                    "config_fingerprint": completion.get("config_fingerprint"),
-                    "source_schema_fingerprint": completion.get(
-                        "source_schema_fingerprint"
-                    ),
-                }
-            )
+        records: list[ETLControlRecord] = [
+            {
+                "target_table": target_table,
+                "source_table": completion["source_table"],
+                "last_processed_version": completion.get("new_version"),
+                "batch_completed_at": completed_at,
+                "batch_status": "SUCCESS",
+                "rows_read": completion.get("rows_read"),
+                "rows_written": completion.get("rows_written"),
+                "error_message": None,
+                "config_fingerprint": completion.get("config_fingerprint"),
+                "source_schema_fingerprint": completion.get(
+                    "source_schema_fingerprint"
+                ),
+            }
+            for completion in completions
+        ]
         self._upsert_control_records(records)
 
     def batch_fail(
         self, target_table: str, source_table: str, error_message: str
     ) -> None:
         if error_message and len(error_message) > 4000:
-            error_message = error_message[:4000] + "... (truncated)"
+            error_message = f"{error_message[:4000]}... (truncated)"
         self._upsert_control_record(
             target_table,
             source_table,
@@ -277,7 +268,7 @@ class ETLControlManager:
         self, target_table: str, source_tables: list[str], error_message: str
     ) -> None:
         if error_message and len(error_message) > 4000:
-            error_message = error_message[:4000] + "... (truncated)"
+            error_message = f"{error_message[:4000]}... (truncated)"
         completed_at = datetime.now()
         self._upsert_control_records(
             [
@@ -292,47 +283,29 @@ class ETLControlManager:
             ]
         )
 
-    def get_batch_status(
-        self, target_table: str, source_table: str
-    ) -> dict[str, Any] | None:
-        row = (
-            self.spark.table(self.fq_table)
-            .filter(
-                (col("target_table") == target_table)
-                & (col("source_table") == source_table)
-            )
-            .first()
-        )
-        if not row:
-            return None
-        return {
-            "batch_id": row["batch_id"],
-            "batch_status": row["batch_status"],
-            "batch_started_at": row["batch_started_at"],
-            "batch_completed_at": row["batch_completed_at"],
-            "last_processed_version": row["last_processed_version"],
-            "rows_read": row["rows_read"],
-            "rows_written": row["rows_written"],
-            "error_message": row["error_message"],
-        }
-
     def get_running_batches(
-        self, target_table: str, ttl_minutes: int = 60
+        self, target_table: str, ttl_minutes: int | None = 60
     ) -> list[dict[str, str]]:
+        """Return RUNNING batches, optionally restricted to stale records.
+
+        ``ttl_minutes=None`` deliberately includes fresh batches. Startup
+        recovery uses that mode: a crash must be recoverable immediately, not
+        only after an arbitrary timeout has elapsed.
+        """
+        if ttl_minutes is not None and ttl_minutes < 0:
+            raise ValueError("ttl_minutes must be non-negative or None")
         try:
+            predicate = (col("target_table") == target_table) & (
+                col("batch_status") == "RUNNING"
+            )
+            if ttl_minutes is not None:
+                predicate = predicate & (
+                    col("batch_started_at")
+                    < (current_timestamp() - F.expr(f"INTERVAL {ttl_minutes} MINUTES"))
+                )
             rows = (
                 self.spark.table(self.fq_table)
-                .filter(
-                    (col("target_table") == target_table)
-                    & (col("batch_status") == "RUNNING")
-                    & (
-                        col("batch_started_at")
-                        < (
-                            current_timestamp()
-                            - F.expr(f"INTERVAL {ttl_minutes} MINUTES")
-                        )
-                    )
-                )
+                .filter(predicate)
                 .select("batch_id", "source_table")
                 .collect()
             )
@@ -351,6 +324,7 @@ class ETLControlManager:
             StructField("last_processed_version", LongType(), True),
             StructField("batch_id", StringType(), True),
             StructField("batch_started_at", TimestampType(), True),
+            StructField("previous_success_watermark", LongType(), True),
             StructField("batch_completed_at", TimestampType(), True),
             StructField("batch_status", StringType(), True),
             StructField("rows_read", LongType(), True),
@@ -361,34 +335,6 @@ class ETLControlManager:
             StructField("source_schema_fingerprint", StringType(), True),
         ]
     )
-
-    def get_config_fingerprint(
-        self, target_table: str, source_table: str
-    ) -> str | None:
-        row = (
-            self.spark.table(self.fq_table)
-            .filter(
-                (col("target_table") == target_table)
-                & (col("source_table") == source_table)
-            )
-            .select("config_fingerprint")
-            .first()
-        )
-        return row["config_fingerprint"] if row else None
-
-    def get_source_schema_fingerprint(
-        self, target_table: str, source_table: str
-    ) -> str | None:
-        row = (
-            self.spark.table(self.fq_table)
-            .filter(
-                (col("target_table") == target_table)
-                & (col("source_table") == source_table)
-            )
-            .select("source_schema_fingerprint")
-            .first()
-        )
-        return row["source_schema_fingerprint"] if row else None
 
     def update_fingerprints(
         self,
@@ -421,6 +367,26 @@ class ETLControlManager:
             condition += f" AND source_table = '{safe_source}'"
         self.spark.sql(
             f"DELETE FROM {quote_table_name(self.fq_table)} WHERE {condition}"
+        )
+
+    def rewind_to_version(
+        self, target_table: str, source_table: str, version: int
+    ) -> None:
+        """Set watermark to a specific version and mark as RECOVERED.
+
+        Used by the recovery CLI to rewind a source's watermark after
+        a RESTORE, without requiring the batch that originally advanced
+        the watermark to be present in etl_control.
+        """
+        self._upsert_control_record(
+            target_table,
+            source_table,
+            {
+                "last_processed_version": version,
+                "batch_status": "RECOVERED",
+                "batch_id": None,
+                "error_message": "rewound by kimball recover",
+            },
         )
 
     def _upsert_control_record(
@@ -503,5 +469,6 @@ class ETLControlManager:
                     time.sleep(0.5 * (attempt + 1))
                     self._delta_table = DeltaTable.forName(self.spark, self.fq_table)
                     delta_table = self._delta_table
+                    assert delta_table is not None
                     continue
                 raise

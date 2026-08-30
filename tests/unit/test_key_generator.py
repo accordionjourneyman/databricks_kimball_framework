@@ -1,43 +1,46 @@
-from unittest.mock import MagicMock, patch
+"""Tests for HashKeyGenerator using real Spark DataFrames.
+
+These tests verify actual key generation behavior rather than mock call patterns.
+"""
+
+from __future__ import annotations
+
+from pyspark.sql import SparkSession
 
 from kimball.processing.key_generator import HashKeyGenerator, type7_key_columns
 
 
-def test_hash_key_generator_mock():
-    with (
-        patch("kimball.processing.key_generator.xxhash64") as mock_hash,
-        patch("kimball.processing.key_generator.col"),
-        patch("kimball.processing.key_generator.lit"),
-        patch("kimball.processing.key_generator.coalesce"),
-        patch("kimball.processing.key_generator.concat_ws"),
-    ):
-        gen = HashKeyGenerator(["val"])
-        df = MagicMock()
+def test_generate_keys_produces_deterministic_keys(spark: SparkSession):
+    """Same input should produce the same surrogate key across calls."""
+    df = spark.createDataFrame([("a", 1), ("b", 2)], ["key", "val"])
+    gen = HashKeyGenerator(["key"])
+    result = gen.generate_keys(df, "sk")
+    keys = [r["sk"] for r in result.select("sk").collect()]
+    assert len(keys) == 2
+    assert keys[0] != keys[1], "different natural keys should get different SKs"
 
-        gen.generate_keys(df, "sk")
-
-        df.withColumn.assert_called()
-        args = df.withColumn.call_args
-        assert args[0][0] == "sk"
-        mock_hash.assert_called()
+    # Deterministic: same input produces same keys
+    df2 = spark.createDataFrame([("a", 1)], ["key", "val"])
+    result2 = gen.generate_keys(df2, "sk")
+    key_a = result2.select("sk").collect()[0][0]
+    assert key_a == keys[0], "same natural key should produce the same SK"
 
 
-def test_type7_key_columns_use_durable_fingerprint_and_effective_time():
-    with (
-        patch("kimball.processing.key_generator.xxhash64") as mock_hash,
-        patch("kimball.processing.key_generator.sha2") as mock_sha,
-        patch("kimball.processing.key_generator.concat_ws"),
-        patch("kimball.processing.key_generator.coalesce"),
-        patch("kimball.processing.key_generator.lit"),
-        patch("kimball.processing.key_generator.col"),
-    ):
-        mock_sha.return_value = MagicMock()
-        columns = type7_key_columns(["source_system", "customer_id"], "updated_at")
+def test_generate_keys_preserves_input_columns(spark: SparkSession):
+    """generate_keys should add the SK column without dropping existing columns."""
+    df = spark.createDataFrame([(1, "hello")], ["id", "val"])
+    gen = HashKeyGenerator(["id"])
+    result = gen.generate_keys(df, "sk")
+    assert "sk" in result.columns
+    assert "val" in result.columns
+    assert result.select("val").collect()[0][0] == "hello"
 
-    assert set(columns) == {
-        "durable_key",
-        "row_key",
-        "durable_fingerprint",
-        "row_fingerprint",
-    }
-    assert mock_hash.call_count == 2
+
+def test_type7_key_columns_returns_correct_columns(spark: SparkSession):
+    """type7_key_columns should return the expected set of column expressions."""
+    columns = type7_key_columns(["source_system", "customer_id"], "updated_at")
+    names = {str(c) for c in columns}
+    assert "durable_key" in names, f"expected durable_key in {names}"
+    assert "row_key" in names, f"expected row_key in {names}"
+    assert "durable_fingerprint" in names, f"expected durable_fingerprint in {names}"
+    assert "row_fingerprint" in names, f"expected row_fingerprint in {names}"

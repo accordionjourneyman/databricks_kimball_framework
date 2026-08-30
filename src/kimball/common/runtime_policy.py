@@ -8,13 +8,9 @@ from dataclasses import dataclass
 class RuntimePolicy:
     is_databricks: bool
 
-    def cluster_clause(
-        self, cluster_by: list[str] | None, partition_by: list[str] | None
-    ) -> str:
+    def cluster_clause(self, cluster_by: list[str] | None) -> str:
         if self.is_databricks and cluster_by:
             return f"\nCLUSTER BY ({', '.join(cluster_by)})"
-        if partition_by:
-            return f"\nPARTITIONED BY ({', '.join(partition_by)})"
         return ""
 
 

@@ -15,8 +15,7 @@ def materialize_junk_dimensions(
     """Upsert distinct low-cardinality combinations and add their keys to a fact."""
     result = fact_df
     for definition in definitions:
-        missing = set(definition.source_columns).difference(result.columns)
-        if missing:
+        if missing := set(definition.source_columns).difference(result.columns):
             raise ValueError(
                 f"Junk dimension '{definition.dimension_table}' is missing source columns: {sorted(missing)}"
             )
@@ -33,8 +32,7 @@ def materialize_junk_dimensions(
         if spark.catalog.tableExists(definition.dimension_table):
             existing_table = spark.table(definition.dimension_table)
             required = {definition.surrogate_key, *definition.source_columns}
-            missing_target = required.difference(existing_table.columns)
-            if missing_target:
+            if missing_target := required.difference(existing_table.columns):
                 raise ValueError(
                     f"Junk dimension '{definition.dimension_table}' has an incompatible "
                     f"schema; missing columns: {sorted(missing_target)}"

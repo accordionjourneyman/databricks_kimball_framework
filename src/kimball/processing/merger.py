@@ -13,7 +13,11 @@ Historical note: this was a 1493-line god object. It has been split into:
 
 from kimball.processing.defaults import ensure_scd1_defaults, ensure_scd2_defaults
 from kimball.processing.dispatcher import merge
-from kimball.processing.table_ops import get_last_merge_metrics, optimize_table
+from kimball.processing.table_ops import (
+    get_last_merge_metrics,
+    optimize_table,
+    vacuum_table,
+)
 
 __all__ = [
     "ensure_scd1_defaults",
@@ -21,4 +25,5 @@ __all__ = [
     "get_last_merge_metrics",
     "merge",
     "optimize_table",
+    "vacuum_table",
 ]

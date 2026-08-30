@@ -1,0 +1,14 @@
+table_name: framework_result.dim_product
+table_type: dimension
+scd_type: 1
+keys:
+  surrogate_key: product_sk
+  natural_keys: [source_system, stock_code]
+sources:
+  - name: phase2_source.retail_events
+    alias: events
+    cdc_strategy: full
+transformation_sql: |
+  SELECT source_system, stock_code, description, unit_price
+  FROM events
+  WHERE stock_code IS NOT NULL AND stock_code <> 'MISSING'

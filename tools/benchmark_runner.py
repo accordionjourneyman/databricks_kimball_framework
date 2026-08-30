@@ -240,7 +240,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--output-dir", default="benchmark-results")
     parser.add_argument(
         "--testbed",
-        default=os.environ.get("KIMBALL_BENCHMARK_TESTBED", "tiago-windows-docker"),
+        default=os.environ.get("KIMBALL_BENCHMARK_TESTBED", "local-dev"),
     )
     parser.add_argument("--compare", type=Path)
     parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD)

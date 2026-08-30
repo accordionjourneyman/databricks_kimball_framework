@@ -38,9 +38,25 @@ def spark():
     if _is_remote_only():
         pytest.skip("Databricks Connect is remote-only; local Spark is unavailable")
     builder = SparkSession.builder.appName("KimballUnit").master("local[2]")
+    builder = builder.config(
+        "spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension"
+    ).config(
+        "spark.sql.catalog.spark_catalog",
+        "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+    )
     try:
-        return builder.getOrCreate()
+        from delta import configure_spark_with_delta_pip
+
+        builder = configure_spark_with_delta_pip(builder)
+    except ImportError:
+        pass  # delta-spark not installed — tests that need it will fail
+    try:
+        spark = builder.getOrCreate()
     except RuntimeError as exc:
         if "Only remote Spark sessions" in str(exc):
             pytest.skip("Databricks Connect cannot create a local Spark session")
         raise
+    from kimball.common.spark_session import set_active_spark
+
+    set_active_spark(spark)
+    return spark

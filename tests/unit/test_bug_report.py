@@ -66,96 +66,13 @@ def _setup_running_batches_mock(spark_mock, stale_rows):
 
 
 # ===================================================================
-# #1  SCD6 missing generate_keys — NULL surrogate keys
+# #1  SCD6 missing generate_keys â€” NULL surrogate keys
 # ===================================================================
 
 
-class TestBugSCD6MissingGenerateKeys:
-    """merge_scd6 now calls generate_keys() so new INSERTs have valid SK."""
-
-    @patch("kimball.processing.scd6.DeltaTable")
-    @patch("kimball.processing.scd6.filter_cdf_deletes")
-    @patch("kimball.processing.scd6.compute_hashdiff")
-    @patch("kimball.processing.scd6.HashKeyGenerator")
-    @patch("kimball.processing.scd6.col", return_value=MagicMock())
-    @patch("kimball.processing.scd6.lit", return_value=MagicMock())
-    @patch("kimball.processing.scd6.when", return_value=MagicMock())
-    def test_scd6_calls_generate_keys_for_inserts(
-        self,
-        mock_when,
-        mock_lit,
-        mock_col,
-        mock_hkg,
-        mock_hashdiff,
-        mock_filter,
-        mock_dt,
-    ):
-        from kimball.processing.scd6 import merge_scd6
-
-        mock_hashdiff.return_value = MagicMock()
-        mock_gen_instance = MagicMock()
-        mock_hkg.return_value = mock_gen_instance
-        mock_gen_instance.generate_keys.return_value = MagicMock()
-        mock_gen_instance.generate_keys.return_value.columns = [
-            "surrogate_key",
-            "id",
-            "name",
-            "hashdiff",
-            "__is_current",
-            "__valid_from",
-            "__valid_to",
-            "__etl_processed_at",
-            "__etl_batch_id",
-            "__is_deleted",
-            "__is_skeleton",
-        ]
-
-        upserts = _make_df(["id", "name", "__etl_processed_at", "__etl_batch_id"])
-        upserts.isEmpty.return_value = False
-        deletes = MagicMock()
-        deletes.isEmpty.return_value = True
-        mock_filter.return_value = (upserts, deletes)
-
-        target_df = _make_df(
-            [
-                "surrogate_key",
-                "id",
-                "name",
-                "hashdiff",
-                "__is_current",
-                "__valid_from",
-                "__valid_to",
-                "__etl_processed_at",
-                "__etl_batch_id",
-                "__is_deleted",
-                "__is_skeleton",
-            ]
-        )
-        target_df.filter.return_value = target_df
-        target_df.join.return_value = target_df
-        target_df.alias.return_value = target_df
-
-        mock_dt_instance = MagicMock()
-        mock_dt.forName.return_value = mock_dt_instance
-        merge_chain = mock_dt_instance.alias.return_value.merge.return_value
-        merge_chain.whenMatchedUpdate.return_value = merge_chain
-        merge_chain.whenNotMatchedInsert.return_value = merge_chain
-
-        merge_scd6(
-            upserts,
-            target_table_name="test_target",
-            join_keys=["id"],
-            track_history_columns=["name"],
-            current_value_columns=["name"],
-        )
-
-        mock_hkg.assert_called_once_with(["id"], version_column=None)
-        mock_gen_instance.generate_keys.assert_called_once()
-
-
-# ===================================================================
+# =====================================================================
 # SCD2 validity uses the configured business-time column
-# ===================================================================
+# =====================================================================
 
 
 class TestBugSCD2TimeMixing:
@@ -412,8 +329,7 @@ class TestBugStopOnFailureCosmetic:
         futures = [running_future, not_started_future]
         actually_cancelled = []
         for f in futures:
-            result = f.cancel()
-            if result:
+            if f.cancel():
                 actually_cancelled.append(f)
 
         assert len(actually_cancelled) == 1
@@ -703,7 +619,7 @@ class TestBugValidateRelationshipsFilterMismatch:
     """validate_relationships now applies __is_current filter on the dimension."""
 
     def test_validate_relationships_filters_current(self):
-        from kimball.validation import DataQualityValidator
+        from kimball.orchestration.validation import DataQualityValidator
 
         validator = DataQualityValidator.__new__(DataQualityValidator)
         mock_spark = MagicMock(spec=SparkSession)
@@ -733,7 +649,7 @@ class TestBugValidateRelationshipsFilterMismatch:
 
 
 # ===================================================================
-# #26  _generate_skeletons column→df map collision
+# #26  _generate_skeletons columnâ†’df map collision
 # ===================================================================
 
 

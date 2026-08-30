@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import time
-import warnings
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,6 +12,7 @@ from pyspark.sql import SparkSession
 from kimball.common.config import ConfigLoader
 from kimball.common.errors import NonRetriableError
 from kimball.orchestration.orchestrator import Orchestrator
+from kimball.orchestration.runtime import PipelineRuntime
 from kimball.orchestration.watermark import get_etl_schema
 from kimball.planning.compiler import Profile, ProjectCompiler, ProjectValidationError
 
@@ -75,18 +75,8 @@ class PipelineExecutor:
         etl_schema: str | None = None,
         max_workers: int = 4,
         stop_on_failure: bool = True,
-        watermark_database: str | None = None,
         profile: Profile = "dev",
     ):
-        if watermark_database is not None:
-            warnings.warn(
-                "The 'watermark_database' parameter is deprecated. Use 'etl_schema' "
-                "instead, or set KIMBALL_ETL_SCHEMA.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            if etl_schema is None:
-                etl_schema = watermark_database
 
         if etl_schema is None:
             etl_schema = get_etl_schema()
@@ -107,7 +97,11 @@ class PipelineExecutor:
         self._categorize_pipelines()
 
     def _create_orchestrator(self, config_path: str) -> Orchestrator:
-        return Orchestrator(config_path, spark=self.spark, etl_schema=self.etl_schema)
+        config = self.config_loader.load_config(config_path)
+        runtime = PipelineRuntime.for_config(
+            config, spark=self.spark, etl_schema=self.etl_schema
+        )
+        return Orchestrator(config, runtime)
 
     def _categorize_pipelines(self) -> None:
         entries = []
@@ -193,25 +187,6 @@ class PipelineExecutor:
                 break
         return results
 
-    def _run_parallel(self, pipelines: list[dict[str, Any]]) -> list[PipelineResult]:
-        warnings.warn(
-            "In-process parallel pipelines would share a Spark session; executing "
-            "serially. Use generated Databricks job tasks for safe parallelism.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-        return self._run_sequential(pipelines)
-
-    def _run_wave(
-        self, wave_name: str, pipelines: list[dict[str, Any]]
-    ) -> list[PipelineResult]:
-        """Backward-compatible serial wave helper; DAG execution uses ``run``."""
-
-        if not pipelines:
-            return []
-        logger.info("Legacy wave %s (%s pipelines)", wave_name, len(pipelines))
-        return self._run_sequential(pipelines)
-
     def run(self) -> ExecutionSummary:
         overall_start = time.time()
         all_results: list[PipelineResult] = []
@@ -227,12 +202,11 @@ class PipelineExecutor:
             for table_name in level:
                 node = self.project.nodes[table_name]
                 pipeline = self.pipeline_by_table[table_name]
-                failed_dependencies = [
+                if failed_dependencies := [
                     dependency
                     for dependency in node.dependencies
                     if results_by_table[dependency].status != "SUCCESS"
-                ]
-                if failed_dependencies:
+                ]:
                     result = PipelineResult(
                         config_path=pipeline["path"],
                         table_name=table_name,
@@ -260,17 +234,3 @@ class PipelineExecutor:
         )
         logger.info(summary)
         return summary
-
-    def dry_run(self) -> None:
-        logger.info("Kimball Pipeline Executor - DRY RUN")
-        for number, level in enumerate(self.project.levels, 1):
-            logger.info("Level %s: %s", number, ", ".join(level))
-            for table_name in level:
-                node = self.project.nodes[table_name]
-                logger.info(
-                    "  %s (%s) depends_on=%s",
-                    table_name,
-                    node.config_path,
-                    list(node.dependencies),
-                )
-        logger.info("In-process execution is serialized for Spark session safety.")

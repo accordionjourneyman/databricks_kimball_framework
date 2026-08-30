@@ -41,9 +41,7 @@ def _to_iso(value: Any) -> Any:
     """
     if isinstance(value, datetime):
         return value.strftime("%Y-%m-%d %H:%M:%S")
-    if isinstance(value, date):
-        return value.strftime("%Y-%m-%d")
-    return value
+    return value.strftime("%Y-%m-%d") if isinstance(value, date) else value
 
 
 def sql_literal(value: Any) -> str:
@@ -63,9 +61,7 @@ def sql_literal(value: Any) -> str:
     if isinstance(value, decimal.Decimal):
         return str(value)
     iso = _to_iso(value)
-    if isinstance(iso, str):
-        return "'" + iso.replace("'", "''") + "'"
-    return str(iso)
+    return "'" + iso.replace("'", "''") + "'" if isinstance(iso, str) else str(iso)
 
 
 def seed_default_rows(
@@ -124,29 +120,28 @@ def seed_default_rows(
                     raise ValueError(
                         f"Default member requires an explicit value for {cn} ({dt})"
                     )
+            elif default_values and cn in default_values:
+                row[cn] = default_values[cn]
             else:
-                if default_values and cn in default_values:
-                    row[cn] = default_values[cn]
+                ds = field.dataType.simpleString()
+                if "string" in ds:
+                    row[cn] = label
+                elif "int" in ds or "long" in ds or "short" in ds:
+                    row[cn] = key
+                elif "decimal" in ds:
+                    row[cn] = decimal.Decimal(str(key))
+                elif "double" in ds or "float" in ds:
+                    row[cn] = float(key)
+                elif "timestamp" in ds:
+                    row[cn] = DEFAULT_VALID_FROM + timedelta(days=abs(key) - 1)
+                elif "date" in ds:
+                    row[cn] = DEFAULT_START_DATE + timedelta(days=abs(key) - 1)
+                elif isinstance(field.dataType, BooleanType):
+                    row[cn] = False
                 else:
-                    ds = field.dataType.simpleString()
-                    if "string" in ds:
-                        row[cn] = label
-                    elif "int" in ds or "long" in ds or "short" in ds:
-                        row[cn] = key
-                    elif "decimal" in ds:
-                        row[cn] = decimal.Decimal(str(key))
-                    elif "double" in ds or "float" in ds:
-                        row[cn] = float(key)
-                    elif "timestamp" in ds:
-                        row[cn] = DEFAULT_VALID_FROM + timedelta(days=abs(key) - 1)
-                    elif "date" in ds:
-                        row[cn] = DEFAULT_START_DATE + timedelta(days=abs(key) - 1)
-                    elif isinstance(field.dataType, BooleanType):
-                        row[cn] = False
-                    else:
-                        raise ValueError(
-                            f"Default member requires an explicit value for {cn} ({field.dataType})"
-                        )
+                    raise ValueError(
+                        f"Default member requires an explicit value for {cn} ({field.dataType})"
+                    )
         rows_to_insert.append(row)
     if rows_to_insert:
         logger.info(

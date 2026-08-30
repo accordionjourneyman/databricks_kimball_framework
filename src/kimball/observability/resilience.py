@@ -111,7 +111,7 @@ class QueryMetricsCollector:
                 metric["has_logical_plan"] = True
 
             # Add any additional metrics passed
-            metric.update(kwargs)
+            metric |= kwargs
             self.metrics.append(metric)
 
         except Exception as e:
@@ -212,88 +212,6 @@ class StagingCleanupManager:
         registry_table = DeltaTable.forName(get_spark(), self.registry_table)
         registry_table.delete(col("staging_table") == staging_table)
         logger.info(f"Unregistered staging table from cleanup: {staging_table}")
-
-    def cleanup_staging_tables(
-        self,
-        spark_session: SparkSession | None = None,
-        pipeline_id: str | None = None,
-        max_age_hours: int = 24,
-    ) -> tuple[int, int]:
-        """Clean up orphaned staging tables using DataFrame API.
-
-        Uses DataFrame API for filtering (avoiding SQL injection) and
-        driver-side cleanup (avoiding DeltaTable serialization issues).
-
-        Args:
-            spark_session: Spark session to use. Defaults to global get_spark().
-            pipeline_id: Optional filter for specific pipeline's tables.
-            max_age_hours: Remove tables older than this. Default 24h. Use 0 to disable.
-
-        Returns:
-            Tuple of (cleaned_count, failed_count).
-        """
-        active_spark = spark_session or get_spark()
-
-        from pyspark.sql.functions import expr
-
-        # Use DataFrame API instead of SQL string building (fixes SQL injection)
-        registry_df = active_spark.table(self.registry_table)
-        # Apply age filter using DataFrame API
-        if max_age_hours > 0:
-            threshold = current_timestamp() - expr(f"INTERVAL {max_age_hours} HOURS")
-            registry_df = registry_df.filter(col("created_at") < threshold)
-
-        # Apply pipeline filter using DataFrame API (safe from injection)
-        if pipeline_id:
-            registry_df = registry_df.filter(col("pipeline_id") == pipeline_id)
-
-        # FIX: Loop until no candidates remain (with max iterations to prevent infinite loop)
-        # Previously only ran once, causing starvation if >1000 orphans existed
-        MAX_CLEANUP_BATCH = 1000
-        max_iterations = 10  # Safety limit: 10,000 tables max per cleanup run
-        cleaned, failed = 0, 0
-        iteration = 0
-
-        while iteration < max_iterations:
-            iteration += 1
-            logger.info(
-                f"Cleanup iteration {iteration}: fetching up to {MAX_CLEANUP_BATCH} stale staging tables..."
-            )
-
-            rows = registry_df.limit(MAX_CLEANUP_BATCH).collect()
-            if not rows:
-                logger.info("No more orphaned staging tables to clean up.")
-                break
-
-            tables_to_cleanup = [row.staging_table for row in rows]
-
-            for staging_table_name in tables_to_cleanup:
-                try:
-                    if not _safe_drop_table(active_spark, staging_table_name):
-                        failed += 1
-                        continue
-                    self.unregister_staging_table(staging_table_name)
-                    cleaned += 1
-                    logger.info(
-                        f"Cleaned up orphaned staging table: {staging_table_name}"
-                    )
-                except Exception as e:
-                    logger.info(f"Failed to cleanup {staging_table_name}: {e}")
-                    failed += 1
-
-            if len(rows) < MAX_CLEANUP_BATCH:
-                # Less than batch size means we've processed all candidates
-                break
-
-        logger.info(
-            f"Staging cleanup completed: {cleaned} cleaned, {failed} failed in {iteration} iteration(s)."
-        )
-        if iteration >= max_iterations:
-            logger.info(
-                "Warning: Cleanup hit max iteration limit (10,000 tables). "
-                "Run cleanup again if more orphans exist."
-            )
-        return cleaned, failed
 
 
 class StagingTableManager:

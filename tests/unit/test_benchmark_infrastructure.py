@@ -21,7 +21,7 @@ def test_manifest_contains_reproducibility_metadata(tmp_path: Path) -> None:
     manifest = build_manifest(
         suite="spark",
         scale="tiny",
-        testbed_id="tiago-windows-docker",
+        testbed_id="local-dev",
         repo_root=tmp_path,
         environ={
             "KIMBALL_BENCHMARK_IMAGE": "kimball-tests:spark-4.0.1-delta-4.2.0",
@@ -31,7 +31,7 @@ def test_manifest_contains_reproducibility_metadata(tmp_path: Path) -> None:
     assert manifest["schema_version"] == 1
     assert manifest["suite"] == "spark"
     assert manifest["scale"] == "tiny"
-    assert manifest["testbed_id"] == "tiago-windows-docker"
+    assert manifest["testbed_id"] == "local-dev"
     assert manifest["runtime"]["docker_image"] == (
         "kimball-tests:spark-4.0.1-delta-4.2.0"
     )
@@ -161,7 +161,7 @@ def test_bencher_command_uses_pytest_adapter_without_embedding_token(
         result,
         project="kimball-framework",
         branch="feature/perf",
-        testbed="tiago-windows-docker",
+        testbed="local-dev",
     )
 
     assert command == [
@@ -172,7 +172,7 @@ def test_bencher_command_uses_pytest_adapter_without_embedding_token(
         "--branch",
         "feature/perf",
         "--testbed",
-        "tiago-windows-docker",
+        "local-dev",
         "--adapter",
         "python_pytest",
         "--average",

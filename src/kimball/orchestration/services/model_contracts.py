@@ -23,12 +23,11 @@ def validate_fact_output_columns(config: TableConfig, columns: list[str]) -> Non
         "degenerate dimension": set(config.degenerate_dimensions),
         "junk dimension key": {junk.surrogate_key for junk in config.junk_dimensions},
     }
-    errors = [
+    if errors := [
         f"{kind}: {sorted(required - available)}"
         for kind, required in declarations.items()
         if required - available
-    ]
-    if errors:
+    ]:
         raise ValueError(
             f"Fact model declarations for {config.table_name} are missing from the "
             f"transformation output ({'; '.join(errors)})"

@@ -1,0 +1,20 @@
+# dbt Core + dbt-spark client for the Phase 2.0 smoke loop. Connects to the
+# Spark Thrift HTTP endpoint. Resolved versions are recorded in the evidence
+# dossier (pip freeze) per the roadmap's pin-after-proof rule.
+FROM python:3.11-slim@sha256:db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627accd3d51053a93
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates git && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /usr/app
+
+# Keep the client lock explicit: adapter upgrades can change both connection
+# semantics and generated SQL.
+RUN pip install --no-cache-dir \
+      "dbt-core==1.11.7" \
+      "dbt-spark[PyHive]==1.11.0" \
+      "PyHive==0.7.0" \
+      "thrift==0.22.0"
+
+CMD ["sleep", "infinity"]

@@ -160,7 +160,7 @@ class DataQualityEventWriter:
             "details": finding.details,
         }
         event_id = self.event_id(values)
-        row = {
+        return {
             "event_id": event_id,
             "observed_at": datetime.now(timezone.utc),
             "run_id": run_id,
@@ -192,7 +192,6 @@ class DataQualityEventWriter:
             "alert_delivery_status": None,
             "alert_error": None,
         }
-        return row
 
 
 class DataQualityEventSink:

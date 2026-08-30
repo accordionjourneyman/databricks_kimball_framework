@@ -62,21 +62,6 @@ def test_env_var_schema(spark_mock):
     os.environ["KIMBALL_ETL_SCHEMA"] = "test_schema"
 
 
-def test_batch_start_records_running_state_and_returns_uuid(manager):
-    manager._upsert_control_record = MagicMock()
-
-    batch_id = manager.batch_start("target", "source")
-
-    assert len(batch_id) > 0
-    manager._upsert_control_record.assert_called_once()
-    args, kwargs = manager._upsert_control_record.call_args
-    updates = kwargs["updates"] if "updates" in kwargs else args[2]
-    assert updates["batch_status"] == "RUNNING"
-    assert updates["batch_id"] == batch_id
-    assert updates["rows_read"] is None
-    assert updates["rows_written"] is None
-
-
 def test_batch_complete_updates_watermark_and_metrics(manager):
     manager._upsert_control_record = MagicMock()
 
@@ -151,29 +136,6 @@ def test_batch_start_all_records_every_source(manager):
     assert all(record["batch_status"] == "RUNNING" for record in records)
 
 
-@patch("kimball.orchestration.watermark.col")
-def test_get_batch_status_returns_current_state(mock_col, manager, spark_mock):
-    spark_mock.table.return_value.filter.return_value.first.return_value = Row(
-        batch_id="batch-1",
-        batch_status="RUNNING",
-        batch_started_at="2024-01-01 00:00:00",
-        batch_completed_at=None,
-        last_processed_version=7,
-        rows_read=100,
-        rows_written=50,
-        error_message=None,
-    )
-
-    status = manager.get_batch_status("target", "source")
-
-    assert status is not None
-    assert status["batch_id"] == "batch-1"
-    assert status["batch_status"] == "RUNNING"
-    assert status["last_processed_version"] == 7
-    assert status["rows_read"] == 100
-    assert status["rows_written"] == 50
-
-
 @patch("kimball.orchestration.watermark.F")
 @patch("kimball.orchestration.watermark.current_timestamp")
 @patch("kimball.orchestration.watermark.col")
@@ -208,102 +170,6 @@ def test_get_running_batches_filters_only_running_records(
     spark_mock.table.return_value.select.assert_called_once_with(
         "batch_id", "source_table"
     )
-
-
-@patch("kimball.orchestration.watermark.DeltaTable.forName")
-def test_control_table_supports_independent_concurrent_updates(
-    mock_for_name, manager, spark_mock
-):
-    store = {}
-
-    class FakeDataFrame:
-        def __init__(self, rows, schema):
-            self._rows = rows
-            self.columns = [field.name for field in schema.fields]
-
-        def alias(self, *_args, **_kwargs):
-            return self
-
-    class FakeMergeBuilder:
-        def __init__(self, rows, store):
-            self._rows = rows
-            self._store = store
-
-        def whenMatchedUpdate(self, set=None):
-            self._set = set
-            return self
-
-        def whenNotMatchedInsert(self, values=None):
-            self._values = values
-            return self
-
-        def execute(self):
-            for row in self._rows:
-                key = (row["target_table"], row["source_table"])
-                if key in self._store:
-                    self._store[key].update(
-                        {k: v for k, v in row.items() if v is not None}
-                    )
-                else:
-                    self._store[key] = dict(row)
-
-    class FakeDeltaTable:
-        def __init__(self, store):
-            self._store = store
-
-        def alias(self, *_args, **_kwargs):
-            return self
-
-        def merge(self, update_df, _join_condition):
-            return FakeMergeBuilder(update_df._rows, self._store)
-
-    mock_for_name.return_value = FakeDeltaTable(store)
-    spark_mock.createDataFrame.side_effect = lambda rows, schema=None: FakeDataFrame(
-        rows, schema
-    )
-
-    manager.update_watermark("dim_customer", "orders", 10)
-    manager.update_watermark("dim_product", "orders", 20)
-
-    assert len(store) == 2
-    assert store[("dim_customer", "orders")]["last_processed_version"] == 10
-    assert store[("dim_product", "orders")]["last_processed_version"] == 20
-
-
-@patch("kimball.orchestration.watermark.col")
-def test_control_table_keeps_separate_status_for_each_concurrent_job(
-    mock_col, manager, spark_mock
-):
-    spark_mock.table.return_value.filter.return_value.first.side_effect = [
-        Row(
-            batch_id="batch-1",
-            batch_status="RUNNING",
-            batch_started_at=None,
-            batch_completed_at=None,
-            last_processed_version=None,
-            rows_read=None,
-            rows_written=None,
-            error_message=None,
-        ),
-        Row(
-            batch_id="batch-2",
-            batch_status="RUNNING",
-            batch_started_at=None,
-            batch_completed_at=None,
-            last_processed_version=None,
-            rows_read=None,
-            rows_written=None,
-            error_message=None,
-        ),
-    ]
-
-    status_a = manager.get_batch_status("dim_customer", "orders")
-    status_b = manager.get_batch_status("dim_product", "orders")
-
-    assert status_a["batch_id"] == "batch-1"
-    assert status_b["batch_id"] == "batch-2"
-    assert status_a["batch_status"] == "RUNNING"
-    assert status_b["batch_status"] == "RUNNING"
 
 
 @patch("kimball.orchestration.watermark.DeltaTable.forName")
@@ -351,3 +217,40 @@ def test_upsert_control_records_uses_union_of_update_keys(
     assert update_kwargs["set"]["batch_id"] == "u.batch_id"
     assert update_kwargs["set"]["rows_read"] == "u.rows_read"
     assert update_kwargs["set"]["rows_written"] == "u.rows_written"
+
+
+def test_batch_start_all_preserves_previous_success_watermark(manager):
+    manager._upsert_control_records = MagicMock()
+    manager.get_states = MagicMock(
+        return_value={"source_a": {"last_processed_version": 11}}
+    )
+
+    manager.batch_start_all("target", ["source_a", "source_b"])
+
+    records = manager._upsert_control_records.call_args.args[0]
+    by_source = {record["source_table"]: record for record in records}
+    assert by_source["source_a"]["previous_success_watermark"] == 11
+    assert by_source["source_b"]["previous_success_watermark"] is None
+
+
+@patch("kimball.orchestration.watermark.F")
+@patch("kimball.orchestration.watermark.current_timestamp")
+@patch("kimball.orchestration.watermark.col")
+def test_get_running_batches_without_ttl_includes_fresh_batches(
+    mock_col, mock_current_timestamp, mock_F, manager, spark_mock
+):
+    predicate = MagicMock()
+    predicate.__and__ = MagicMock(return_value=predicate)
+    mock_col.return_value.__eq__.return_value = predicate
+
+    table = MagicMock()
+    table.filter.return_value.select.return_value.collect.return_value = [
+        Row(batch_id="fresh-batch", source_table="source_a")
+    ]
+    spark_mock.table.return_value = table
+
+    assert manager.get_running_batches("target", ttl_minutes=None) == [
+        {"batch_id": "fresh-batch", "source_table": "source_a"}
+    ]
+    mock_current_timestamp.assert_not_called()
+    mock_F.expr.assert_not_called()

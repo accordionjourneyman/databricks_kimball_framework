@@ -1,0 +1,120 @@
+# Phase 2.0 feasibility smoke loop. All execution is local Docker; the Spark and
+# Delta binaries are identical to the framework's (Spark 4.0.1 / delta-spark 4.2.0).
+# Outputs are written to isolated schemas on a shared warehouse volume; inputs are
+# immutable seed CSVs mounted read-only.
+#
+# This stack may change ONLY Phase 2 harness files; it must not change framework
+# execution code (roadmap 2.0 constraint).
+name: kimball-phase2
+
+services:
+  metastore:
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    container_name: p2-metastore
+    environment:
+      POSTGRES_USER: hive
+      POSTGRES_PASSWORD: hivepass
+      POSTGRES_DB: hive_metastore
+    volumes:
+      - metastore-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hive -d hive_metastore"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [p2net]
+
+  metastore-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.spark-thrift
+    image: p2-spark-thrift:4.0.1-delta-4.2.0
+    depends_on:
+      metastore:
+        condition: service_healthy
+    entrypoint: ["/opt/spark/bootstrap-metastore.sh"]
+    volumes:
+      - warehouse:/opt/warehouse
+      - ivy-cache:/opt/spark/ivy
+    networks: [p2net]
+    restart: "no"
+
+  spark-thrift:
+    build:
+      context: .
+      dockerfile: Dockerfile.spark-thrift
+    image: p2-spark-thrift:4.0.1-delta-4.2.0
+    container_name: p2-spark-thrift
+    depends_on:
+      metastore-init:
+        condition: service_completed_successfully
+    environment:
+      - SPARK_NO_DAEMONIZE=true
+    ports:
+      - "10000:10000"   # HiveServer2 binary Thrift endpoint (dbt-spark method: thrift)
+      - "10002:10002"   # Spark UI
+    volumes:
+      - warehouse:/opt/warehouse
+      - ivy-cache:/opt/spark/ivy
+      - ../smoke_dbt/seeds:/data/seeds:ro
+    networks: [p2net]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          /opt/spark/bin/beeline -u jdbc:hive2://localhost:10000/default
+          -n health -e 'SELECT 1' 2>&1 | grep -q '1 row selected'
+      interval: 5s
+      timeout: 15s
+      retries: 30
+      start_period: 30s
+
+  dbt:
+    build:
+      context: .
+      dockerfile: Dockerfile.dbt
+    image: p2-dbt:latest
+    container_name: p2-dbt
+    depends_on:
+      spark-thrift:
+        condition: service_healthy
+    environment:
+      - DBT_HOST=spark-thrift
+      - DBT_PORT=10000
+    volumes:
+      - ../smoke_dbt:/usr/app
+      - ../reference:/reference
+      - warehouse:/opt/warehouse
+    working_dir: /usr/app
+    networks: [p2net]
+    # dbt runs via the smoke driver; keep container alive for manual exec.
+    command: ["sleep", "infinity"]
+
+  framework:
+    # Framework PySpark cross-client reader. Reuses the same warehouse + metastore
+    # to prove a Delta table written by dbt is readable through the shared catalog.
+    build:
+      context: .
+      dockerfile: Dockerfile.framework
+    image: p2-framework:latest
+    container_name: p2-framework
+    depends_on:
+      metastore:
+        condition: service_healthy
+    volumes:
+      - warehouse:/opt/warehouse
+      - ivy-cache:/opt/spark/ivy
+      - ../framework_smoke:/work
+      - ../reference:/reference
+    working_dir: /work
+    networks: [p2net]
+    command: ["sleep", "infinity"]
+
+volumes:
+  metastore-data:
+  warehouse:
+  ivy-cache:
+
+networks:
+  p2net:
+    driver: bridge

@@ -117,8 +117,8 @@ def generate_keys(
     effective_at_column: str | None = None,
     durable_key_col: str | None = None,
 ) -> DataFrame:
-    version_col = effective_at_column if scd_type in (2, 7) else None
-    if scd_type in (2, 7) and not version_col:
+    version_col = effective_at_column if scd_type in {2, 7} else None
+    if scd_type in {2, 7} and not version_col:
         if "__etl_processed_at" not in source_df.columns:
             source_df = source_df.withColumn("__etl_processed_at", current_timestamp())
         version_col = "__etl_processed_at"
@@ -133,24 +133,17 @@ def generate_keys(
 def get_validity_col(
     effective_at_column: str | None, source_df: DataFrame, target_table_name: str
 ) -> tuple[str, str]:
-    if effective_at_column and effective_at_column in source_df.columns:
-        return f"source.{effective_at_column}", f"business time ({effective_at_column})"
-    # This should never trigger — config validation enforces effective_at for SCD2.
-    # But get_validity_col may be called with None from older code paths.
-    if effective_at_column and effective_at_column not in source_df.columns:
+    if effective_at_column:
+        if effective_at_column in source_df.columns:
+            return (
+                f"source.{effective_at_column}",
+                f"business time ({effective_at_column})",
+            )
         raise ValueError(
             f"effective_at column '{effective_at_column}' not found in source columns: {source_df.columns}"
         )
     # Last-resort fallback: use __etl_processed_at (processing time, not idempotent)
     return "source.__etl_processed_at", "processing time (__etl_processed_at)"
-
-
-def build_expire_set(validity_col: str) -> dict[str, str]:
-    return {
-        "__is_current": "false",
-        "__valid_to": validity_col,
-        "__etl_processed_at": "current_timestamp()",
-    }
 
 
 def get_current_df(table_or_df) -> DataFrame:
@@ -159,31 +152,3 @@ def get_current_df(table_or_df) -> DataFrame:
         return result
     result = table_or_df.filter("__is_current = true")
     return result
-
-
-def build_insert_values(
-    source_df: DataFrame,
-    join_keys: list[str],
-    surrogate_key_col: str,
-    validity_col: str,
-    include_history: bool = True,
-) -> dict[str, str]:
-    from kimball.common.constants import SQL_DEFAULT_VALID_TO
-
-    values: dict[str, str] = {}
-    for c in source_df.columns:
-        if c in _CDF_METADATA:
-            continue
-        values[c] = f"source.__orig_{c}" if c in join_keys else f"source.{c}"
-    values.update(
-        {
-            "__is_current": "true",
-            "__valid_from": f"COALESCE({validity_col}, current_timestamp())",
-            "__valid_to": SQL_DEFAULT_VALID_TO,
-            "__etl_processed_at": "current_timestamp()",
-            "__is_deleted": "false",
-        }
-    )
-    if include_history:
-        values["__is_skeleton"] = "false"
-    return values

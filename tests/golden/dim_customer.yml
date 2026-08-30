@@ -32,7 +32,7 @@ preserve_all_changes: true
 pii:
   columns:
     - column: email
-      strategy: hash
+      strategy: fast_hash
     - column: address
       strategy: mask
       reveal_prefix: 5

@@ -387,4 +387,3 @@ lineage, a semantic layer, ML lifecycle, or first-class bridge/hierarchy
 engines. SQL examples for periodic and accumulating facts provide business
 transformation patterns; YAML declarations do not infer those business rules.
 See [Framework Features versus SQL Patterns](SQL_PATTERNS.md).
-- [ ] Bridge tables for many-to-many

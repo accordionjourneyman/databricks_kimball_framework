@@ -86,21 +86,3 @@ class StreamCdfLoader:
             .first()
         )
         return int(row["version"]) if row else 0
-
-    def default_checkpoint_location(
-        self,
-        table_name: str,
-        etl_schema: str | None,
-    ) -> str:
-        """Compute a default ``checkpointLocation`` if the user did not set one.
-
-        The default lives inside the etl_schema (or, falling back to the
-        table's own directory, a sibling path) so checkpoints travel with
-        the data they describe.
-        """
-        from kimball.streaming.checkpoint import default_checkpoint_path
-
-        return default_checkpoint_path(
-            source_table=table_name,
-            etl_schema=etl_schema,
-        )

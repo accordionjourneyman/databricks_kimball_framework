@@ -101,23 +101,25 @@ class ValidationReport:
     def error_count(self) -> int:
         """Count of failed ERROR-severity tests."""
         return sum(
-            1 for r in self.results if not r.passed and r.severity == TestSeverity.ERROR
+            bool(not r.passed and r.severity == TestSeverity.ERROR)
+            for r in self.results
         )
 
     @property
     def warning_count(self) -> int:
         """Count of failed WARN-severity tests."""
         return sum(
-            1 for r in self.results if not r.passed and r.severity == TestSeverity.WARN
+            bool(not r.passed and r.severity == TestSeverity.WARN) for r in self.results
         )
 
     def __str__(self) -> str:
         lines = ["Data Quality Validation Report", "=" * 40]
-        for result in self.results:
-            lines.append(str(result))
-        lines.append("=" * 40)
-        lines.append(
-            f"Summary: {self.error_count} errors, {self.warning_count} warnings"
+        lines.extend(str(result) for result in self.results)
+        lines.extend(
+            (
+                "=" * 40,
+                f"Summary: {self.error_count} errors, {self.warning_count} warnings",
+            )
         )
         return "\n".join(lines)
 
@@ -456,8 +458,7 @@ class DataQualityValidator:
                 )
             )
         if config.natural_keys:
-            nat_cols = [k for k in config.natural_keys if k in df.columns]
-            if nat_cols:
+            if nat_cols := [k for k in config.natural_keys if k in df.columns]:
                 if use_approximate_unique and len(nat_cols) <= 1:
                     results.append(
                         self.validate_unique_approximate(
@@ -473,7 +474,7 @@ class DataQualityValidator:
         if config.foreign_keys:
             for fk in config.foreign_keys:
                 if fk.references and fk.column in df.columns:
-                    ref_column = fk.dimension_key if fk.dimension_key else fk.column
+                    ref_column = fk.dimension_key or fk.column
                     results.append(
                         self.validate_relationships(
                             df,
@@ -644,8 +645,7 @@ class DataQualityValidator:
         results: list[TestResult] = []
         try:
             for fk in foreign_keys:
-                result = self._check_single_fk(df, fk, exclude_seeds, severity)
-                if result:
+                if result := self._check_single_fk(df, fk, exclude_seeds, severity):
                     results.append(result)
         finally:
             pass

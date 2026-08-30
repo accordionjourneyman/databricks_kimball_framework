@@ -1,0 +1,16 @@
+name: kimball_phase2_reference
+version: 1.0.0
+config-version: 2
+profile: kimball_phase2_reference
+model-paths: [models]
+seed-paths: [fixtures]
+snapshot-paths: [snapshots]
+target-path: target
+models:
+  kimball_phase2_reference:
+    +file_format: delta
+    staging:
+      +materialized: view
+seeds:
+  kimball_phase2_reference:
+    +schema: source

@@ -31,7 +31,7 @@ def test_temporal_state_updates_are_committed_only_when_explicitly_finalized() -
     commit_temporal_state_updates(ctx)
 
     store.commit.assert_called_once_with(pending.dataframe, "run-7")
-    assert ctx.pending_temporal_state == []
+    assert not ctx.pending_temporal_state
 
 
 def test_temporal_state_commit_is_replay_safe_and_monotonic() -> None:

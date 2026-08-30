@@ -6,7 +6,6 @@ import pytest
 
 from kimball.processing.dispatcher import merge
 from kimball.processing.scd4 import merge_scd4
-from kimball.processing.scd6 import merge_scd6
 
 
 class TestCreateMergeStrategy:
@@ -85,35 +84,3 @@ class TestSCD4Function:
             )
             mock_scd1.assert_called_once()
             mock_hist.assert_called_once()
-
-
-class TestSCD6Function:
-    def test_merge_scd6_with_deletes(self):
-        mock_df = MagicMock()
-        mock_df.columns = ["product_id", "name", "_change_type"]
-        mock_df.filter.return_value.isEmpty.return_value = False
-        mock_spark = MagicMock()
-        mock_df.sparkSession = mock_spark
-
-        with (
-            patch("kimball.processing.scd6.DeltaTable") as mock_dt,
-            patch(
-                "kimball.processing.scd6.filter_cdf_deletes",
-                return_value=(mock_df, None),
-            ),
-            patch("kimball.processing.scd6.compute_hashdiff", return_value="hash"),
-            patch("kimball.processing.scd6.col", return_value=MagicMock()),
-            patch("kimball.processing.scd6.lit", return_value=MagicMock()),
-            patch("kimball.processing.scd6.when", return_value=MagicMock()),
-            patch("kimball.processing.scd6.HashKeyGenerator") as mock_gen,
-        ):
-            mock_gen.return_value.generate_keys.return_value = mock_df
-            mock_dt.forName.return_value = MagicMock()
-            merge_scd6(
-                mock_df,
-                target_table_name="dim_product",
-                join_keys=["product_id"],
-                track_history_columns=["name"],
-                current_value_columns=["name"],
-            )
-            mock_dt.forName.assert_called()

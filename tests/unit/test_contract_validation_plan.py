@@ -36,8 +36,7 @@ def _contract(**overrides):
                 "columns": ["order_id", "line_id"],
             },
         ],
-    }
-    values.update(overrides)
+    } | overrides
     return SourceContractConfig.model_validate(values)
 
 

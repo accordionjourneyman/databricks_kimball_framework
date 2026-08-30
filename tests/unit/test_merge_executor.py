@@ -22,6 +22,7 @@ def ctx():
     mock.config.current_value_columns = []
     mock.config.cluster_by = None
     mock.config.table_type = "dimension"
+    mock.config.null_policy = NullPolicyConfig()
     mock.config.schema_evolution = False
     mock.config.delete_strategy = "hard"
     mock.config.effective_at = None
@@ -32,6 +33,8 @@ def ctx():
     mock.config.enable_lineage_truncation = False
     mock.config.sources = []
     mock.batch_id = "batch-1"
+    mock.runtime_options.approx_grain_check = False
+    mock.runtime_options.use_approximate_unique = False
     return mock
 
 
@@ -83,7 +86,7 @@ class TestCreateTargetTable:
         call_kwargs = (
             executor.table_creator.create_table_with_clustering.call_args.kwargs
         )
-        assert call_kwargs["cluster_by"] == ["nk1", "nk2"]
+        assert call_kwargs["config"]["cluster_by"] == ["nk1", "nk2"]
 
     def test_auto_cluster_no_natural_keys(self, executor, ctx):
         ctx.config.cluster_by = None
@@ -102,7 +105,7 @@ class TestCreateTargetTable:
         call_kwargs = (
             executor.table_creator.create_table_with_clustering.call_args.kwargs
         )
-        assert call_kwargs["cluster_by"] == []
+        assert call_kwargs["config"]["cluster_by"] == []
 
 
 class TestSeedDefaults:
@@ -177,7 +180,7 @@ class TestPrepareSourceDF:
         result = executor.prepare_source_df(ctx, transformed_df)
         assert result is transformed_df
 
-    def test_target_exists_applies_pruning(self, executor, ctx):
+    def test_target_exists_checks_schema_evolution(self, executor, ctx):
         ctx.config.enable_lineage_truncation = False
         transformed_df = MagicMock()
         transformed_df.columns = ["col1", "col2"]
@@ -185,22 +188,21 @@ class TestPrepareSourceDF:
         target_schema = MagicMock()
         target_schema.fields = [MagicMock(name="col1")]
         ctx.get_target_schema.return_value = target_schema
-        executor._apply_adaptive_pruning = MagicMock(return_value=transformed_df)
+        executor._evolve_schema_if_needed = MagicMock(return_value=transformed_df)
         executor.prepare_source_df(ctx, transformed_df)
-        executor._apply_adaptive_pruning.assert_called_once()
+        executor._evolve_schema_if_needed.assert_called_once()
 
 
-class TestApplyAdaptivePruning:
-    def test_drops_unused_columns(self, executor, ctx):
+class TestSchemaEvolution:
+    def test_evolution_returns_df_unchanged(self, executor, ctx):
         df = MagicMock()
         df.columns = ["col1", "col2", "col3"]
         target_columns = {"col1"}
-        executor._apply_adaptive_pruning(ctx, df, target_columns)
-        df.select.assert_called_once()
-        selected = df.select.call_args[0]
-        assert "col1" in selected
+        result = executor._evolve_schema_if_needed(ctx, df, target_columns)
+        assert result is df
+        df.select.assert_not_called()
 
-    def test_keeps_protected_columns(self, executor, ctx):
+    def test_schema_evolution_adds_all_non_system_columns(self, executor, ctx):
         ctx.config.natural_keys = ["nk"]
         ctx.config.merge_keys = ["mk"]
         ctx.config.surrogate_key = "sk"
@@ -212,8 +214,13 @@ class TestApplyAdaptivePruning:
         df = MagicMock()
         df.columns = ["nk", "mk", "sk", "thc", "cvc", "fk_col", "extra"]
         target_columns = set()
-        executor._apply_adaptive_pruning(ctx, df, target_columns)
-        df.select.assert_called_once()
+        ctx.config.schema_evolution = True
+        ctx.config.sources = [MagicMock(name="src_table")]
+        executor._evolve_target_schema = MagicMock()
+        executor._evolve_schema_if_needed(ctx, df, target_columns)
+        executor._evolve_target_schema.assert_called_once()
+        added = executor._evolve_target_schema.call_args[0][1]
+        assert set(added) == {"nk", "mk", "sk", "thc", "cvc", "fk_col", "extra"}
 
     def test_schema_evolution_adds_new_columns(self, executor, ctx):
         ctx.config.schema_evolution = True
@@ -223,14 +230,14 @@ class TestApplyAdaptivePruning:
         df.columns = ["new_col", "existing"]
         target_columns = {"existing"}
         executor._evolve_target_schema = MagicMock()
-        executor._apply_adaptive_pruning(ctx, df, target_columns)
+        executor._evolve_schema_if_needed(ctx, df, target_columns)
         executor._evolve_target_schema.assert_called_once()
 
-    def test_no_drop_returns_same_df(self, executor, ctx):
+    def test_no_evolution_returns_same_df(self, executor, ctx):
         df = MagicMock()
         df.columns = ["col1"]
         target_columns = {"col1"}
-        result = executor._apply_adaptive_pruning(ctx, df, target_columns)
+        result = executor._evolve_schema_if_needed(ctx, df, target_columns)
         assert result is df
 
 
@@ -242,11 +249,13 @@ class TestEvolveTargetSchema:
         ctx.spark.table.return_value = target_df
         src_schema = MagicMock()
         src_field = MagicMock()
-        src_field.dataType.simpleString.return_value = "string"
+        src_field.dataType = StringType()
         src_schema.__getitem__ = MagicMock(return_value=src_field)
         ctx.spark.table.return_value.schema = src_schema
         executor._evolve_target_schema(ctx, ["new_col"])
-        ctx.spark.sql.assert_called_once()
+        # The dimension mode triggers backfill + not-null constraint after ALTER,
+        # so sql is called 3 times (ALTER, UPDATE, ALTER SET NOT NULL).
+        assert ctx.spark.sql.call_count == 3
 
     def test_strict_dimension_backfills_and_constrains_new_column(self, executor, ctx):
         ctx.config.null_policy = NullPolicyConfig()
@@ -351,6 +360,7 @@ class TestExecuteMerge:
 
     def test_optimize_when_enabled(self, executor, ctx):
         ctx.config.optimize_after_merge = True
+        ctx.config.vacuum_retention_hours = 168
         source_df = MagicMock()
         with (
             patch("kimball.orchestration.services.merge_executor._merger.merge"),
@@ -367,6 +377,7 @@ class TestExecuteMerge:
 
     def test_optimize_skipped_when_env_not_set(self, executor, ctx):
         ctx.config.optimize_after_merge = True
+        ctx.config.vacuum_retention_hours = 168
         source_df = MagicMock()
         with (
             patch(

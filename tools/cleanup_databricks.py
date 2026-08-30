@@ -107,15 +107,15 @@ def _list_test_schemas(ws: Any, catalog: str) -> list[dict]:
     """
     schemas: list[dict] = []
     try:
-        for schema in ws.schemas.list(catalog_name=catalog):
-            if _is_test_schema(schema.name):
-                schemas.append(
-                    {
-                        "name": f"{catalog}.{schema.name}",
-                        "created_at": str(getattr(schema, "created_at", "unknown")),
-                        "table_count": getattr(schema, "table_count", 0),
-                    }
-                )
+        schemas.extend(
+            {
+                "name": f"{catalog}.{schema.name}",
+                "created_at": str(getattr(schema, "created_at", "unknown")),
+                "table_count": getattr(schema, "table_count", 0),
+            }
+            for schema in ws.schemas.list(catalog_name=catalog)
+            if _is_test_schema(schema.name)
+        )
     except Exception as e:
         print(f"error: could not list schemas in catalog '{catalog}': {e}")
         sys.exit(1)

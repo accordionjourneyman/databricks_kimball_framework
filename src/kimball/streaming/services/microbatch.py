@@ -32,20 +32,26 @@ class StreamingMicroBatchProcessor:
         self.etl_control = etl_control
         self._table_creator = TableCreator()
 
-    def ensure_target_table(self, sample_df: DataFrame) -> None:
+    def _prepare_source_df(self, batch_df: DataFrame) -> DataFrame:
+        """Apply transformations and PII masking once per micro-batch."""
+        source_df = (
+            self.spark.sql(self.config.transformation_sql)
+            if self.config.transformation_sql
+            else batch_df
+        )
+        if self.config.pii and self.config.pii.columns:
+            logger.info(
+                "Applying PII masking to %s column(s)", len(self.config.pii.columns)
+            )
+            source_df = apply_pii_masking(source_df, self.config.pii)
+        return source_df
+
+    def ensure_target_table(self, source_df: DataFrame) -> None:
         if self.spark.catalog.tableExists(self.config.table_name):
             return
 
-        if self.config.transformation_sql:
-            transformed_sample = self.spark.sql(self.config.transformation_sql)
-        else:
-            transformed_sample = sample_df
-
-        if self.config.pii and self.config.pii.columns:
-            transformed_sample = apply_pii_masking(transformed_sample, self.config.pii)
-
         schema_df = self._table_creator.add_system_columns(
-            transformed_sample.limit(0),
+            source_df.limit(0),
             self.config.scd_type,
             self.config.surrogate_key,
             durable_key=self.config.durable_key,
@@ -59,8 +65,7 @@ class StreamingMicroBatchProcessor:
         self._table_creator.create_table_with_clustering(
             table_name=self.config.table_name,
             schema_df=schema_df,
-            config=self.config.model_dump(),
-            cluster_by=cluster_cols or [],
+            config={**self.config.model_dump(), "cluster_by": cluster_cols or []},
             surrogate_key_col=self.config.surrogate_key,
         )
 
@@ -88,24 +93,13 @@ class StreamingMicroBatchProcessor:
         source_name = source.name
         rows_written = 0
 
-        if not self.spark.catalog.tableExists(self.config.table_name):
-            self.ensure_target_table(batch_df)
+        source_df = self._prepare_source_df(batch_df)
+        self.ensure_target_table(source_df)
 
         if self.config.table_type == "fact":
             join_keys = self.config.merge_keys or []
         else:
             join_keys = self.config.natural_keys or []
-
-        if self.config.transformation_sql:
-            source_df = self.spark.sql(self.config.transformation_sql)
-        else:
-            source_df = batch_df
-
-        if self.config.pii and self.config.pii.columns:
-            logger.info(
-                f"Applying PII masking to {len(self.config.pii.columns)} column(s)"
-            )
-            source_df = apply_pii_masking(source_df, self.config.pii)
 
         pending_temporal_state: tuple[TemporalStateStore, DataFrame] | None = None
         if isinstance(source.contract, SourceContractConfig):
@@ -267,7 +261,7 @@ class StreamingMicroBatchProcessor:
     def _validate_fks(self, source_df: DataFrame) -> None:
         if self.config.table_type != "fact" or not self.config.foreign_keys:
             return
-        fk_defs = [
+        if fk_defs := [
             {
                 "column": fk.column,
                 "dimension_table": fk.references,
@@ -275,8 +269,7 @@ class StreamingMicroBatchProcessor:
             }
             for fk in self.config.foreign_keys
             if hasattr(fk, "references") and fk.references
-        ]
-        if fk_defs:
+        ]:
             validator = DataQualityValidator()
             fk_report = validator.validate_fact_fk_integrity(source_df, fk_defs)
             for result in fk_report.results:
@@ -290,12 +283,12 @@ class StreamingMicroBatchProcessor:
         if grain_mode == "skip":
             return
         # CDF streaming batches legitimately carry multiple versions of the same
-        # natural key (one per Delta commit) — that is the input to multi-version
+        # natural key (one per Delta commit) Ã¢â‚¬â€ that is the input to multi-version
         # SCD2, not a grain violation. Scope the grain to (key, commit_version)
         # when CDF metadata is present so per-version batches are not false-flagged.
         grain_keys = list(join_keys)
         if "_commit_version" in source_df.columns:
-            grain_keys = grain_keys + ["_commit_version"]
+            grain_keys += ["_commit_version"]
         grain_violations = (
             source_df.groupBy(*grain_keys)
             .agg(spark_count("*").alias("__grain_count"))
@@ -333,6 +326,4 @@ class StreamingMicroBatchProcessor:
         if "_commit_version" not in batch_df.columns:
             return None
         max_row = batch_df.agg({"_commit_version": "max"}).first()
-        if max_row and max_row[0] is not None:
-            return int(max_row[0])
-        return None
+        return int(max_row[0]) if max_row and max_row[0] is not None else None

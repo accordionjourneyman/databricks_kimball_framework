@@ -55,7 +55,7 @@ def _digest(value: Any) -> str:
 def _framework_version() -> str:
     try:
         return version("kimball_framework")
-    except PackageNotFoundError:
+    except (PackageNotFoundError, KeyError):
         return "0+unknown"
 
 
@@ -169,7 +169,7 @@ def diff_manifests(previous: dict[str, Any], current: dict[str, Any]) -> Project
             changes.append(PlanChange(table_name, "modified", classification, fields))
 
     affected = {change.table_name for change in changes}
-    combined_nodes = {**previous_nodes, **current_nodes}
+    combined_nodes = previous_nodes | current_nodes
     changed = True
     while changed:
         changed = False

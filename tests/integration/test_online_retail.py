@@ -54,7 +54,9 @@ transformation_sql: |
   SELECT stock_code, description, unit_price FROM p
 """)
 
-        orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result = orchestrator.run()
         assert result["status"] == "SUCCESS"
 
@@ -64,7 +66,9 @@ transformation_sql: |
             WHERE stock_code = 'S001'
         """)
 
-        orchestrator2 = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator2 = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result2 = orchestrator2.run()
         assert result2["status"] == "SUCCESS"
 
@@ -74,7 +78,7 @@ transformation_sql: |
             .collect()
         )
         assert len(rows) == 1, "SCD1 should overwrite, not version"
-        # Exact equality — a substring match would pass even if SCD1 appended
+        # Exact equality â€” a substring match would pass even if SCD1 appended
         # to the old value instead of replacing it.
         assert rows[0]["description"] == "WHITE HANGING HEART T-LIGHT HOLDER", (
             f"Expected exact overwrite, got: {rows[0]['description']!r}"
@@ -118,7 +122,9 @@ transformation_sql: |
   SELECT customer_id, country, segment, updated_at FROM c
 """)
 
-        orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result = orchestrator.run()
         assert result["status"] == "SUCCESS"
 
@@ -128,7 +134,9 @@ transformation_sql: |
             WHERE customer_id = 1
         """)
 
-        orchestrator2 = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator2 = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result2 = orchestrator2.run()
         assert result2["status"] == "SUCCESS"
 
@@ -185,7 +193,9 @@ transformation_sql: |
   SELECT customer_id, country, updated_at FROM c
 """)
 
-        orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result = orchestrator.run()
         assert result["status"] == "SUCCESS"
 
@@ -198,7 +208,9 @@ transformation_sql: |
 
         spark.sql(f"DELETE FROM {test_db}.customers WHERE customer_id = 3")
 
-        orchestrator2 = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator2 = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result2 = orchestrator2.run()
         assert result2["status"] == "SUCCESS"
 
@@ -256,7 +268,9 @@ transformation_sql: |
   FROM l
 """)
 
-        orchestrator = Orchestrator(config_path, spark=spark, etl_schema=test_db)
+        orchestrator = Orchestrator.from_config(
+            config_path, spark=spark, etl_schema=test_db
+        )
         result = orchestrator.run()
         assert result["status"] == "SUCCESS"
 

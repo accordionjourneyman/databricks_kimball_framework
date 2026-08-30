@@ -121,7 +121,7 @@ class FakeWorkspace:
     def upload(
         self, path: str, content: bytes, *, format=None, overwrite: bool = False
     ) -> None:
-        data = content if content else b""
+        data = content or b""
         self.uploads.append((path, data, format, overwrite))
 
 
@@ -268,7 +268,7 @@ def test_sync_tests_uploads_source_files_and_skips_pycache(tmp_path: Path, monke
 
     paths = [up[0] for up in ws.workspace.uploads]
     assert any("test_a.py" in p for p in paths)
-    assert not any(".pyc" in p for p in paths)
+    assert all(".pyc" not in p for p in paths)
 
 
 def test_create_runner_script_uploads_and_returns_path():
@@ -286,7 +286,8 @@ def test_create_runner_script_uploads_and_returns_path():
     script = script_bytes.decode("utf-8")
     assert "import pytest" in script
     assert "sys.dont_write_bytecode = True" in script
-    assert "pytest.main([test_path" in script
+    assert "pytest.main(test_paths" in script
+    assert "if tests is None:" in script
 
 
 def test_run_job_submits_and_polls_successfully():

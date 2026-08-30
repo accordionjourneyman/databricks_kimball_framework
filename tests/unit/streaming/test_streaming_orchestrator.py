@@ -8,8 +8,6 @@ import pytest
 
 from kimball.common.config import (
     ForeignKeyConfig,
-    PIIColumnConfig,
-    PIIPolicy,
     SourceConfig,
     SourceContractConfig,
     StreamingSourceConfig,
@@ -55,19 +53,19 @@ def _make_config(streaming_enabled: bool) -> TableConfig:
 
 def test_is_streaming_detects_enabled_source() -> None:
     spark = MagicMock()
-    orch = StreamingOrchestrator(_make_config(True), spark=spark)
+    orch = StreamingOrchestrator.from_config(_make_config(True), spark=spark)
     assert orch._is_streaming() is True
 
 
 def test_is_streaming_false_when_no_sources_stream() -> None:
     spark = MagicMock()
-    orch = StreamingOrchestrator(_make_config(False), spark=spark)
+    orch = StreamingOrchestrator.from_config(_make_config(False), spark=spark)
     assert orch._is_streaming() is False
 
 
 def test_run_falls_back_to_batch_orchestrator_when_no_streaming() -> None:
     spark = MagicMock()
-    orch = StreamingOrchestrator(_make_config(False), spark=spark)
+    orch = StreamingOrchestrator.from_config(_make_config(False), spark=spark)
 
     fake_result = {"status": "SUCCESS", "rows_written": 10}
     with patch(
@@ -82,7 +80,7 @@ def test_run_falls_back_to_batch_orchestrator_when_no_streaming() -> None:
 
 def test_stop_calls_query_stop(monkeypatch: pytest.MonkeyPatch) -> None:
     spark = MagicMock()
-    orch = StreamingOrchestrator(_make_config(True), spark=spark)
+    orch = StreamingOrchestrator.from_config(_make_config(True), spark=spark)
 
     q1 = MagicMock()
     q2 = MagicMock()
@@ -96,7 +94,7 @@ def test_stop_is_resilient_to_query_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     spark = MagicMock()
-    orch = StreamingOrchestrator(_make_config(True), spark=spark)
+    orch = StreamingOrchestrator.from_config(_make_config(True), spark=spark)
     bad_query = MagicMock()
     bad_query.stop.side_effect = RuntimeError("already stopped")
     orch._active_queries = {"silver.customers": bad_query}
@@ -111,7 +109,7 @@ class TestFullReload:
     def test_full_reload_resets_watermarks_and_clears_checkpoints(self) -> None:
         spark = MagicMock()
         cfg = _make_config(True)
-        orch = StreamingOrchestrator(cfg, spark=spark)
+        orch = StreamingOrchestrator.from_config(cfg, spark=spark)
 
         with (
             patch.object(orch.etl_control, "reset_watermark") as mock_reset,
@@ -131,7 +129,7 @@ class TestFullReload:
     def test_full_reload_skips_checkpoint_clear_when_no_streaming_source(self) -> None:
         spark = MagicMock()
         cfg = _make_config(False)  # streaming not enabled
-        orch = StreamingOrchestrator(cfg, spark=spark)
+        orch = StreamingOrchestrator.from_config(cfg, spark=spark)
 
         with (
             patch.object(orch.etl_control, "reset_watermark") as mock_reset,
@@ -148,7 +146,7 @@ class TestFullReload:
 
     def test_run_dispatches_to_full_reload(self) -> None:
         spark = MagicMock()
-        orch = StreamingOrchestrator(_make_config(True), spark=spark)
+        orch = StreamingOrchestrator.from_config(_make_config(True), spark=spark)
 
         with patch.object(orch, "_run_full_reload") as mock_reload:
             orch.run(full_reload=True)
@@ -162,7 +160,7 @@ class TestWatermarkResume:
     def test_start_queries_uses_watermark_plus_one_when_behind(self) -> None:
         spark = MagicMock()
         cfg = _make_config(True)
-        orch = StreamingOrchestrator(cfg, spark=spark)
+        orch = StreamingOrchestrator.from_config(cfg, spark=spark)
 
         orch.etl_control.get_watermark = MagicMock(return_value=3)
         orch.stream_loader.get_latest_version = MagicMock(return_value=5)
@@ -187,7 +185,7 @@ class TestWatermarkResume:
     ) -> None:
         spark = MagicMock()
         cfg = _make_config(True)
-        orch = StreamingOrchestrator(cfg, spark=spark)
+        orch = StreamingOrchestrator.from_config(cfg, spark=spark)
 
         orch.etl_control.get_watermark = MagicMock(return_value=5)
         orch.stream_loader.get_latest_version = MagicMock(return_value=5)
@@ -214,7 +212,8 @@ class TestPerVersionForeachBatch:
     def test_per_version_processes_each_version_sequentially(self) -> None:
         spark = MagicMock()
         cfg = _make_config(True)
-        orch = StreamingOrchestrator(cfg, spark=spark)
+        orch = StreamingOrchestrator.from_config(cfg, spark=spark)
+        spark.reset_mock()
 
         batch_df = MagicMock()
         batch_df.columns = ["customer_id", "_commit_version"]
@@ -242,7 +241,7 @@ class TestPerVersionForeachBatch:
     def test_per_version_falls_back_when_no_commit_version(self) -> None:
         spark = MagicMock()
         cfg = _make_config(True)
-        orch = StreamingOrchestrator(cfg, spark=spark)
+        orch = StreamingOrchestrator.from_config(cfg, spark=spark)
 
         batch_df = MagicMock()
         batch_df.columns = ["customer_id"]
@@ -256,7 +255,7 @@ class TestPerVersionForeachBatch:
         spark = MagicMock()
         cfg = _make_config(True)
         cfg.sources[0].streaming = StreamingSourceConfig(enabled=True, per_version=True)
-        orch = StreamingOrchestrator(cfg, spark=spark)
+        orch = StreamingOrchestrator.from_config(cfg, spark=spark)
 
         batch_df = MagicMock()
         batch_df.columns = ["customer_id", "_change_type", "_commit_version"]
@@ -288,7 +287,7 @@ class TestPerVersionForeachBatch:
         cfg.sources[0].streaming = StreamingSourceConfig(
             enabled=True, per_version=False
         )
-        orch = StreamingOrchestrator(cfg, spark=spark)
+        orch = StreamingOrchestrator.from_config(cfg, spark=spark)
 
         batch_df = MagicMock()
         batch_df.columns = ["customer_id", "_change_type"]
@@ -314,36 +313,6 @@ class TestPerVersionForeachBatch:
 # ===================================================================
 
 
-class TestStreamingPIIMasking:
-    def test_pii_masking_applied_in_microbatch(self):
-        cfg = _make_config(True)
-        cfg.transformation_sql = "SELECT customer_id, email FROM c"
-        cfg.pii = PIIPolicy(columns=[PIIColumnConfig(column="email", strategy="hash")])
-        spark = MagicMock()
-        spark.catalog.tableExists.return_value = True
-        orch = StreamingOrchestrator(cfg, spark=spark)
-
-        source_df = MagicMock()
-        source_df.columns = ["customer_id", "email"]
-        source_df.withColumn.return_value = source_df
-        source_df.join.return_value = source_df
-        with patch.object(spark, "sql", return_value=source_df):
-            with patch("kimball.processing.merger.merge"):
-                with patch(
-                    "kimball.streaming.services.microbatch.StreamingMicroBatchProcessor.ensure_target_table"
-                ):
-                    with patch(
-                        "kimball.streaming.services.microbatch.apply_pii_masking",
-                        return_value=source_df,
-                    ) as mock_pii:
-                        orch._execute_one_microbatch(
-                            MagicMock(columns=["customer_id", "email"]),
-                            cfg.sources[0],
-                            1,
-                        )
-        mock_pii.assert_called_once()
-
-
 class TestStreamingFKValidation:
     def test_fk_validation_runs_for_fact(self):
         src = SourceConfig(
@@ -363,7 +332,7 @@ class TestStreamingFKValidation:
         )
         spark = MagicMock()
         spark.catalog.tableExists.return_value = True
-        orch = StreamingOrchestrator(cfg, spark=spark)
+        orch = StreamingOrchestrator.from_config(cfg, spark=spark)
 
         source_df = MagicMock()
         source_df.columns = ["order_id", "customer_sk"]
@@ -391,7 +360,7 @@ class TestStreamingGrainValidation:
         cfg.transformation_sql = "SELECT customer_id FROM c"
         spark = MagicMock()
         spark.catalog.tableExists.return_value = True
-        orch = StreamingOrchestrator(cfg, spark=spark)
+        orch = StreamingOrchestrator.from_config(cfg, spark=spark)
 
         source_df = MagicMock()
         source_df.columns = ["customer_id"]
@@ -424,7 +393,7 @@ class TestStreamingTargetCreation:
         cfg.transformation_sql = "SELECT customer_id FROM c"
         spark = MagicMock()
         spark.catalog.tableExists.return_value = False
-        orch = StreamingOrchestrator(cfg, spark=spark)
+        orch = StreamingOrchestrator.from_config(cfg, spark=spark)
 
         source_df = MagicMock()
         source_df.columns = ["customer_id"]
@@ -446,7 +415,7 @@ class TestStreamingBatchMetadata:
         cfg = _make_config(True)
         spark = MagicMock()
         spark.catalog.tableExists.return_value = True
-        orch = StreamingOrchestrator(cfg, spark=spark)
+        orch = StreamingOrchestrator.from_config(cfg, spark=spark)
         source_df = MagicMock(columns=["customer_id"])
 
         with patch("kimball.streaming.services.microbatch._merger.merge") as merge:
@@ -483,7 +452,7 @@ class TestStreamingTemporalContracts:
         cfg = self._contracted_config()
         spark = MagicMock()
         spark.catalog.tableExists.return_value = True
-        orchestrator = StreamingOrchestrator(cfg, spark=spark)
+        orchestrator = StreamingOrchestrator.from_config(cfg, spark=spark)
         orchestrator.etl_control = MagicMock()
         batch_df = MagicMock()
         batch_df.columns = ["customer_id", "updated_at", "_commit_version"]
@@ -523,7 +492,7 @@ class TestStreamingTemporalContracts:
         cfg = self._contracted_config()
         spark = MagicMock()
         spark.catalog.tableExists.return_value = True
-        orchestrator = StreamingOrchestrator(cfg, spark=spark)
+        orchestrator = StreamingOrchestrator.from_config(cfg, spark=spark)
         orchestrator.etl_control = MagicMock()
         batch_df = MagicMock()
         batch_df.columns = ["customer_id", "updated_at", "_commit_version"]

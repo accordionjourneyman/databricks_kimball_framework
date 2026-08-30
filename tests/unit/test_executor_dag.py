@@ -87,17 +87,6 @@ def test_executor_skips_only_failed_downstream_branch():
     }
 
 
-def test_in_process_parallel_method_is_safely_serialized():
-    executor = _executor([])
-    executor._run_sequential = MagicMock(return_value=[])
-
-    with pytest.warns(RuntimeWarning, match="share a Spark session"):
-        result = executor._run_parallel([{"table_name": "gold.dim_date"}])
-
-    assert result == []
-    executor._run_sequential.assert_called_once()
-
-
 def test_executor_rejects_missing_upstream_before_spark_work():
     config = _fact("gold.fact_sales", ["gold.dim_missing"])
 

@@ -1,0 +1,41 @@
+# Pre-commit hooks for the kimball framework.
+# Install: pip install -e ".[dev]" && pre-commit install
+# Hooks use the repo's own [tool.ruff] / [tool.mypy] config (language: system),
+# so versions stay aligned with pyproject optional-dependencies instead of
+# drifting behind pre-commit's pinned revs.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: check-toml
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: ruff check
+        language: system
+        types: [python]
+        pass_filenames: true
+      - id: ruff-format
+        name: ruff format (check)
+        entry: ruff format --check
+        language: system
+        types: [python]
+        pass_filenames: true
+      - id: mypy-control-plane
+        name: mypy (control plane)
+        entry: mypy src/kimball/common/ src/kimball/contracts/ src/kimball/planning/ src/kimball/cli.py
+        language: system
+        files: ^src/kimball/(common|contracts|planning)/.*\.py$|^src/kimball/cli\.py$
+        types: [python]
+        pass_filenames: false

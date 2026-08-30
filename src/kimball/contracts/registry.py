@@ -8,9 +8,7 @@ from kimball.contracts.odcs import ODCSContract
 
 
 def _sql_literal(value: str | None) -> str:
-    if value is None:
-        return "NULL"
-    return "'" + value.replace("'", "''") + "'"
+    return "NULL" if value is None else "'" + value.replace("'", "''") + "'"
 
 
 def _row_value(row: Any, key: str) -> Any:
@@ -81,12 +79,11 @@ class DeltaContractRegistry:
         published_by: str | None = None,
     ) -> bool:
         self.ensure_tables()
-        existing = self.spark.sql(
+        if existing := self.spark.sql(
             f"SELECT spec_digest FROM {quote_table_name(self.versions_table)} "
             f"WHERE contract_id = {_sql_literal(contract.id)} "
             f"AND contract_version = {_sql_literal(contract.version)} LIMIT 1"
-        ).collect()
-        if existing:
+        ).collect():
             digest = _row_value(existing[0], "spec_digest")
             if digest != contract.digest:
                 raise ValueError(

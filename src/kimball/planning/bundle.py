@@ -8,10 +8,10 @@ from kimball.planning.compiler import CompiledProject
 
 def _task_key(table_name: str) -> str:
     key = re.sub(r"[^A-Za-z0-9_]", "_", table_name)
-    key = re.sub(r"_+", "_", key).strip("_")
-    if not key:
+    if key := re.sub(r"_+", "_", key).strip("_"):
+        return key[:100]
+    else:
         raise ValueError(f"Cannot derive a Databricks task key from '{table_name}'")
-    return key[:100]
 
 
 def build_bundle_job(

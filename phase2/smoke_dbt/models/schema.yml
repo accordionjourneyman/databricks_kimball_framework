@@ -1,0 +1,10 @@
+version: 2
+
+models:
+  - name: smoke_incremental
+    description: Phase 2.0 Delta table and incremental-materialization proof.
+    columns:
+      - name: id
+        tests: [not_null, unique]
+      - name: value
+        tests: [not_null]

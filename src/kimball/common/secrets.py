@@ -28,6 +28,11 @@ class SecretResolver:
         self._environ = os.environ if environ is None else environ
         self._dbutils = dbutils
 
+    @property
+    def can_resolve_databricks(self) -> bool:
+        """True when a ``databricks://`` reference can be verified in this session."""
+        return self._dbutils is not None
+
     def resolve(self, reference: str) -> str:
         if reference.startswith("env://"):
             name = reference.removeprefix("env://")

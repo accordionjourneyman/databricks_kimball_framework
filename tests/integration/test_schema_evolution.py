@@ -52,7 +52,7 @@ transformation_sql: |
 
     config_path = tmp_config(initial_config)
 
-    orchestrator = Orchestrator(config_path, spark=spark)
+    orchestrator = Orchestrator.from_config(config_path, spark=spark)
     result = orchestrator.run()
     assert result["status"] == "SUCCESS"
 
@@ -97,7 +97,7 @@ transformation_sql: |
 
     config_path = tmp_config(evolved_config)
 
-    orchestrator = Orchestrator(config_path, spark=spark)
+    orchestrator = Orchestrator.from_config(config_path, spark=spark)
     result = orchestrator.run()
     assert result["status"] == "SUCCESS"
 

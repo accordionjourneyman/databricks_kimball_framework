@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kimball.validation import (
+from kimball.orchestration.validation import (
     DataQualityValidator,
     TestResult,
     TestSeverity,
@@ -942,6 +942,9 @@ class TestSparkProperty:
         assert validator.spark is spark
 
     def test_falls_back_to_databricks_runtime(self):
+        from kimball.common import spark_session
+
+        spark_session._active_spark = None
         validator = DataQualityValidator(spark=None)
         mock_runtime = MagicMock()
         mock_runtime.spark = MagicMock()

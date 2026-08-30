@@ -66,7 +66,7 @@ def _config(
     schema_evolution: bool = False,
     validation: bool = False,
 ) -> str:
-    effective_at = "effective_at: updated_at" if scd_type in (2, 7) else ""
+    effective_at = "effective_at: updated_at" if scd_type in {2, 7} else ""
     durable_key = "durable_key: product_dk" if scd_type == 7 else ""
     tests = (
         """
@@ -160,7 +160,7 @@ def _prepare(
 
 
 def _run(spark: SparkSession, scenario: Scenario) -> dict[str, Any]:
-    return Orchestrator(
+    return Orchestrator.from_config(
         scenario.config_path,
         spark=spark,
         etl_schema=scenario.database,

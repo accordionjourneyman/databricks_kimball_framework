@@ -31,8 +31,7 @@ def _fact(**overrides) -> TableConfig:
             {"name": "ordered", "column": "ordered_at", "order": 1},
             {"name": "shipped", "column": "shipped_at", "order": 2},
         ],
-    }
-    values.update(overrides)
+    } | overrides
     return TableConfig.model_validate(values)
 
 

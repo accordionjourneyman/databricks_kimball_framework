@@ -17,13 +17,17 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import sys as _sys
 import time
+import types as _types
 import uuid
 from typing import TYPE_CHECKING, Any
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.streaming.query import StreamingQuery
 
+from kimball.common.config import ConfigLoader
+from kimball.orchestration.runtime import PipelineRuntime
 from kimball.streaming.checkpoint import default_checkpoint_path
 from kimball.streaming.loader import StreamCdfLoader
 from kimball.streaming.services.microbatch import StreamingMicroBatchProcessor
@@ -38,37 +42,38 @@ class StreamingOrchestrator:
     """Run a Kimball pipeline as a Spark structured-streaming query."""
 
     def __init__(
-        self,
-        config: TableConfig | str,
-        spark: SparkSession | None = None,
-        etl_schema: str | None = None,
-        max_workers: int = 1,
+        self, config: TableConfig, runtime: PipelineRuntime, max_workers: int = 1
     ) -> None:
-        from kimball.common.config import ConfigLoader
-
-        self._config_path: str | None = None
-        if isinstance(config, str):
-            self._config_path = config
-            self.config: TableConfig = ConfigLoader().load_config(config)
-        else:
-            self.config = config
-
-        if spark is None:
-            from databricks.sdk.runtime import spark as _sdk_spark
-
-            self.spark: SparkSession = _sdk_spark
-        else:
-            self.spark = spark
-
-        if etl_schema is None:
-            etl_schema = os.environ.get("KIMBALL_ETL_SCHEMA", "etl_control")
-        self.etl_schema = etl_schema
-
-        from kimball.orchestration.watermark import ETLControlManager
-
-        self.etl_control = ETLControlManager(etl_schema=self.etl_schema)
+        """Create a streaming orchestrator from a validated config and runtime."""
+        self.config = config
+        self.runtime = runtime
+        self.spark = runtime.spark
+        self.etl_schema = runtime.etl_schema
+        self.etl_control = runtime.etl_control
         self.stream_loader = StreamCdfLoader(self.spark)
         self._active_queries: dict[str, StreamingQuery] = {}
+
+    @classmethod
+    def from_config(
+        cls,
+        config: TableConfig | str,
+        *,
+        spark: SparkSession | None = None,
+        etl_schema: str | None = None,
+        checkpoint_root: str | None = None,
+        max_workers: int = 1,
+    ) -> StreamingOrchestrator:
+        """Load a configuration and build its runtime convenience bundle."""
+        table_config = (
+            ConfigLoader().load_config(config) if isinstance(config, str) else config
+        )
+        runtime = PipelineRuntime.for_config(
+            table_config,
+            spark=spark,
+            etl_schema=etl_schema,
+            checkpoint_root=checkpoint_root,
+        )
+        return cls(table_config, runtime, max_workers=max_workers)
 
     def run(self, full_reload: bool = False) -> dict[str, Any]:
         if full_reload:
@@ -78,7 +83,7 @@ class StreamingOrchestrator:
             logger.info("No source has streaming.enabled=True; falling back to batch.")
             from kimball.orchestration.orchestrator import Orchestrator
 
-            return Orchestrator(self.config, spark=self.spark).run()
+            return Orchestrator(self.config, self.runtime).run()
 
         start = time.time()
         summary: dict[str, Any] = {
@@ -116,11 +121,7 @@ class StreamingOrchestrator:
                     shutil.rmtree(cp, ignore_errors=True)
         from kimball.orchestration.orchestrator import Orchestrator
 
-        batch = Orchestrator(
-            self._config_path or self.config,
-            spark=self.spark,
-            etl_schema=self.etl_schema,
-        )
+        batch = Orchestrator(self.config, self.runtime)
         result = batch.run(full_reload=True)
         if result.get("status") == "FAILED":
             raise RuntimeError(f"Full reload failed: {result.get('errors', 'unknown')}")
@@ -193,12 +194,22 @@ class StreamingOrchestrator:
             if batch_df.isEmpty():
                 logger.info("Micro-batch %s for %s is empty", batch_id, source.name)
                 return
+            # Ensure databricks.sdk.runtime is importable in the foreachBatch
+            # worker (serverless workers may not have the dbruntime module).
+            if "databricks.sdk.runtime" not in _sys.modules:
+                try:
+                    from databricks.sdk.runtime import spark  # noqa: F401
+                except Exception:
+                    mock = _types.SimpleNamespace(spark=None, dbutils=None)
+                    _sys.modules["databricks.sdk.runtime"] = mock  # type: ignore[assignment]
             persisted = False
             try:
                 batch_df = batch_df.persist()
                 persisted = True
             except Exception as exc:
-                logger.debug("persist() unavailable (%s); continuing without cache", exc)
+                logger.debug(
+                    "persist() unavailable (%s); continuing without cache", exc
+                )
             batch_spark = batch_df.sparkSession
             batch_df.createOrReplaceTempView(source.alias)
             try:

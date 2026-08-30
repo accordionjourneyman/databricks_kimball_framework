@@ -1,0 +1,123 @@
+name: Bug Report
+description: Report a defect in the framework
+labels: ["bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Clear, concise description of the bug.
+      placeholder: |
+        The pipeline ran successfully but the dimension table has
+        duplicate rows for the same natural key.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: What the framework should have done.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Framework version
+      description: Output of `kimball --version`
+      placeholder: "kimball 0.2.0"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.11.9"
+    validations:
+      required: true
+
+  - type: input
+    id: pyspark
+    attributes:
+      label: PySpark version
+      description: |
+        Any version within the supported range in `docs/COMPATIBILITY.md`
+        is acceptable. Report the full version you actually ran.
+      placeholder: "4.0.1"
+    validations:
+      required: true
+
+  - type: input
+    id: delta
+    attributes:
+      label: Delta Lake version
+      description: |
+        Any version within the supported range in `docs/COMPATIBILITY.md`
+        is acceptable. Report the full version you actually ran.
+      placeholder: "4.2.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime environment
+      options:
+        - "Databricks Runtime 17.0 LTS (Spark 4.0 / Delta 4.x)"
+        - "Databricks Runtime 16.4 LTS (Spark 3.5 / Delta 3.x)"
+        - "Local Spark (pip install pyspark delta-spark)"
+        - "Databricks Connect"
+        - "Other (describe in comments)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: |
+        Paste the smallest config + source data that reproduces the
+        issue. Strip out anything that is not required.
+      placeholder: |
+        config.yml:
+        ```yaml
+        table_name: gold.dim_customer
+        table_type: dimension
+        scd_type: 2
+        ...
+        ```
+
+        source_data.csv:
+        ```csv
+        customer_id,name
+        1,Alice
+        2,Bob
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: traceback
+    attributes:
+      label: Full traceback or error output
+      description: Paste the complete error, not just the last line.
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Include any INFO / WARN lines that look relevant.
+    validations:
+      required: false
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Workaround (if any)
+      description: How did you work around the issue?
+    validations:
+      required: false

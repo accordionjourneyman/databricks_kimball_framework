@@ -1,0 +1,3577 @@
+{
+  "$defs": {
+    "ABACPolicyConfig": {
+      "additionalProperties": false,
+      "description": "Attribute-Based Access Control policy applied at catalog/schema/table scope.\n\nPolicies reference governed tags: apply a tag to a column and the policy\nactivates automatically for matching users.",
+      "properties": {
+        "function_argument": {
+          "default": "matched_value",
+          "title": "Function Argument",
+          "type": "string"
+        },
+        "match_tag": {
+          "title": "Match Tag",
+          "type": "string"
+        },
+        "policy_name": {
+          "title": "Policy Name",
+          "type": "string"
+        },
+        "policy_type": {
+          "enum": [
+            "row_filter",
+            "column_mask"
+          ],
+          "title": "Policy Type",
+          "type": "string"
+        },
+        "scope": {
+          "default": "schema",
+          "enum": [
+            "catalog",
+            "schema",
+            "table"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "tag_value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tag Value"
+        },
+        "target_groups": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Target Groups",
+          "type": "array"
+        },
+        "udf_body": {
+          "title": "Udf Body",
+          "type": "string"
+        },
+        "udf_name": {
+          "title": "Udf Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "policy_name",
+        "policy_type",
+        "udf_name",
+        "udf_body",
+        "target_groups",
+        "match_tag"
+      ],
+      "title": "ABACPolicyConfig",
+      "type": "object"
+    },
+    "ConformedDimensionConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "canonical_name": {
+          "title": "Canonical Name",
+          "type": "string"
+        },
+        "grain": {
+          "title": "Grain",
+          "type": "string"
+        },
+        "owner": {
+          "title": "Owner",
+          "type": "string"
+        },
+        "shared_attributes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Shared Attributes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "canonical_name",
+        "owner",
+        "grain"
+      ],
+      "title": "ConformedDimensionConfig",
+      "type": "object"
+    },
+    "ContractCDCConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "primary_key": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Primary Key",
+          "type": "array"
+        },
+        "required": {
+          "default": false,
+          "title": "Required",
+          "type": "boolean"
+        }
+      },
+      "title": "ContractCDCConfig",
+      "type": "object"
+    },
+    "ContractColumnConfig": {
+      "additionalProperties": false,
+      "description": "A supplier column expectation used by a consumer pipeline.",
+      "properties": {
+        "nullable": {
+          "default": true,
+          "title": "Nullable",
+          "type": "boolean"
+        },
+        "required": {
+          "default": true,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "type": {
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "ContractColumnConfig",
+      "type": "object"
+    },
+    "ContractFreshnessConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "max_age": {
+          "title": "Max Age",
+          "type": "string"
+        }
+      },
+      "required": [
+        "max_age"
+      ],
+      "title": "ContractFreshnessConfig",
+      "type": "object"
+    },
+    "ContractQualityRule": {
+      "additionalProperties": false,
+      "properties": {
+        "column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Column"
+        },
+        "columns": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Columns"
+        },
+        "expression": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expression"
+        },
+        "max_ratio": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Ratio"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "rule": {
+          "enum": [
+            "not_null",
+            "unique",
+            "null_rate",
+            "accepted_values",
+            "expression"
+          ],
+          "title": "Rule",
+          "type": "string"
+        },
+        "severity": {
+          "default": "error",
+          "enum": [
+            "warn",
+            "error"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "values": {
+          "anyOf": [
+            {
+              "items": {},
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Values"
+        }
+      },
+      "required": [
+        "rule"
+      ],
+      "title": "ContractQualityRule",
+      "type": "object"
+    },
+    "ContractTemporalConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_lateness": {
+          "default": "0 hours",
+          "title": "Allowed Lateness",
+          "type": "string"
+        },
+        "event_time_column": {
+          "title": "Event Time Column",
+          "type": "string"
+        },
+        "late_event_severity": {
+          "default": "warn",
+          "enum": [
+            "warn",
+            "error"
+          ],
+          "title": "Late Event Severity",
+          "type": "string"
+        },
+        "out_of_order_severity": {
+          "default": "warn",
+          "enum": [
+            "warn",
+            "error"
+          ],
+          "title": "Out Of Order Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_time_column"
+      ],
+      "title": "ContractTemporalConfig",
+      "type": "object"
+    },
+    "ContractValidationPolicy": {
+      "additionalProperties": false,
+      "description": "Execution budget for runtime consumer-side contract checks.",
+      "properties": {
+        "max_actions": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Actions"
+        },
+        "max_failure_samples": {
+          "default": 5,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Max Failure Samples",
+          "type": "integer"
+        },
+        "max_sample_rows": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Sample Rows"
+        },
+        "mode": {
+          "default": "full",
+          "enum": [
+            "full",
+            "sampled",
+            "approximate"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "sample_fraction": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 1,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sample Fraction"
+        },
+        "sample_seed": {
+          "default": 17,
+          "title": "Sample Seed",
+          "type": "integer"
+        }
+      },
+      "title": "ContractValidationPolicy",
+      "type": "object"
+    },
+    "FactMeasureConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "additivity": {
+          "enum": [
+            "additive",
+            "semi_additive",
+            "non_additive"
+          ],
+          "title": "Additivity",
+          "type": "string"
+        },
+        "aggregation": {
+          "enum": [
+            "sum",
+            "avg",
+            "min",
+            "max",
+            "count",
+            "count_distinct"
+          ],
+          "title": "Aggregation",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "non_additive_dimensions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Non Additive Dimensions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "aggregation",
+        "additivity"
+      ],
+      "title": "FactMeasureConfig",
+      "type": "object"
+    },
+    "FactMilestoneConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "order": {
+          "minimum": 1,
+          "title": "Order",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "column",
+        "order"
+      ],
+      "title": "FactMilestoneConfig",
+      "type": "object"
+    },
+    "ForeignKeyConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "dimension_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dimension Key"
+        },
+        "durable_column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Durable Column"
+        },
+        "durable_dimension_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Durable Dimension Key"
+        },
+        "lookup": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "detect_fanout": {
+                  "default": true,
+                  "title": "Detect Fanout",
+                  "type": "boolean"
+                },
+                "dimension_columns": {
+                  "anyOf": [
+                    {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Dimension Columns"
+                },
+                "early_arriving": {
+                  "default": "skeleton",
+                  "enum": [
+                    "skeleton",
+                    "default",
+                    "error"
+                  ],
+                  "title": "Early Arriving",
+                  "type": "string"
+                },
+                "event_time": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Event Time"
+                },
+                "identity_map": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Identity Map"
+                },
+                "invalid_action": {
+                  "default": "error",
+                  "enum": [
+                    "default",
+                    "error"
+                  ],
+                  "title": "Invalid Action",
+                  "type": "string"
+                },
+                "not_applicable_when": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Not Applicable When"
+                },
+                "source_columns": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1,
+                  "title": "Source Columns",
+                  "type": "array"
+                },
+                "validate_resolution": {
+                  "default": false,
+                  "title": "Validate Resolution",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "source_columns"
+              ],
+              "title": "ForeignKeyLookupConfig",
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "references": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "References"
+        },
+        "relationship": {
+          "default": "standard",
+          "enum": [
+            "standard",
+            "type7"
+          ],
+          "title": "Relationship",
+          "type": "string"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Role"
+        },
+        "role_playing": {
+          "default": false,
+          "title": "Role Playing",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "column"
+      ],
+      "title": "ForeignKeyConfig",
+      "type": "object"
+    },
+    "ForeignKeyLookupConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "detect_fanout": {
+          "default": true,
+          "title": "Detect Fanout",
+          "type": "boolean"
+        },
+        "dimension_columns": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dimension Columns"
+        },
+        "early_arriving": {
+          "default": "skeleton",
+          "enum": [
+            "skeleton",
+            "default",
+            "error"
+          ],
+          "title": "Early Arriving",
+          "type": "string"
+        },
+        "event_time": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Event Time"
+        },
+        "identity_map": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Identity Map"
+        },
+        "invalid_action": {
+          "default": "error",
+          "enum": [
+            "default",
+            "error"
+          ],
+          "title": "Invalid Action",
+          "type": "string"
+        },
+        "not_applicable_when": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Not Applicable When"
+        },
+        "source_columns": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Source Columns",
+          "type": "array"
+        },
+        "validate_resolution": {
+          "default": false,
+          "title": "Validate Resolution",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "source_columns"
+      ],
+      "title": "ForeignKeyLookupConfig",
+      "type": "object"
+    },
+    "GeneratedColumnConfig": {
+      "additionalProperties": false,
+      "description": "Definition of a Delta generated column.\n\nDelta requires the generated column's data type to be declared explicitly;\nderiving it from the expression is not reliable and can produce DDL that\nfails only after a deployment has started.",
+      "properties": {
+        "data_type": {
+          "title": "Data Type",
+          "type": "string"
+        },
+        "expression": {
+          "title": "Expression",
+          "type": "string"
+        }
+      },
+      "required": [
+        "expression",
+        "data_type"
+      ],
+      "title": "GeneratedColumnConfig",
+      "type": "object"
+    },
+    "JunkDimensionConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "dimension_table": {
+          "title": "Dimension Table",
+          "type": "string"
+        },
+        "source_columns": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Source Columns",
+          "type": "array"
+        },
+        "surrogate_key": {
+          "title": "Surrogate Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dimension_table",
+        "surrogate_key",
+        "source_columns"
+      ],
+      "title": "JunkDimensionConfig",
+      "type": "object"
+    },
+    "NullPolicyConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "attribute_substitutes": {
+          "additionalProperties": true,
+          "title": "Attribute Substitutes",
+          "type": "object"
+        }
+      },
+      "title": "NullPolicyConfig",
+      "type": "object"
+    },
+    "ObservabilityConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "alert_on": {
+          "items": {
+            "enum": [
+              "warn",
+              "error"
+            ],
+            "type": "string"
+          },
+          "title": "Alert On",
+          "type": "array"
+        },
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "event_table": {
+          "default": "etl_data_quality_events",
+          "title": "Event Table",
+          "type": "string"
+        },
+        "state_table": {
+          "default": "etl_contract_monitor_state",
+          "title": "State Table",
+          "type": "string"
+        },
+        "temporal_state_table": {
+          "default": "etl_contract_temporal_state",
+          "title": "Temporal State Table",
+          "type": "string"
+        },
+        "unresolved_key_table": {
+          "default": "etl_unresolved_dimension_keys",
+          "title": "Unresolved Key Table",
+          "type": "string"
+        },
+        "webhook_env": {
+          "default": "KIMBALL_ALERT_WEBHOOK_URL",
+          "title": "Webhook Env",
+          "type": "string"
+        },
+        "write_failure": {
+          "default": "warn",
+          "enum": [
+            "warn",
+            "error"
+          ],
+          "title": "Write Failure",
+          "type": "string"
+        }
+      },
+      "title": "ObservabilityConfig",
+      "type": "object"
+    },
+    "PIIColumnConfig": {
+      "additionalProperties": false,
+      "description": "Per-column PII masking declaration.\n\nSee CONFIGURATION.md > PII Masking for full documentation.",
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "mask_char": {
+          "default": "*",
+          "maxLength": 1,
+          "title": "Mask Char",
+          "type": "string"
+        },
+        "reveal_prefix": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Reveal Prefix",
+          "type": "integer"
+        },
+        "secret_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Secret Ref"
+        },
+        "strategy": {
+          "default": "mask",
+          "enum": [
+            "tokenize",
+            "fast_hash",
+            "mask",
+            "null",
+            "drop"
+          ],
+          "title": "Strategy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "column"
+      ],
+      "title": "PIIColumnConfig",
+      "type": "object"
+    },
+    "PIIPolicy": {
+      "additionalProperties": false,
+      "description": "Container for PII column policies declared in the ``pii`` YAML block.\n\nApplied by ``orchestrator._transform_and_validate`` after\n``transformation_sql`` and before validation/merge.  On Databricks,\n``TableCreator._apply_pii_masks`` also emits Delta ``MASK`` clauses\nfor role-based read-time enforcement.",
+      "properties": {
+        "columns": {
+          "items": {
+            "additionalProperties": false,
+            "description": "Per-column PII masking declaration.\n\nSee CONFIGURATION.md > PII Masking for full documentation.",
+            "properties": {
+              "column": {
+                "title": "Column",
+                "type": "string"
+              },
+              "mask_char": {
+                "default": "*",
+                "maxLength": 1,
+                "title": "Mask Char",
+                "type": "string"
+              },
+              "reveal_prefix": {
+                "default": 0,
+                "minimum": 0,
+                "title": "Reveal Prefix",
+                "type": "integer"
+              },
+              "secret_ref": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Secret Ref"
+              },
+              "strategy": {
+                "default": "mask",
+                "enum": [
+                  "tokenize",
+                  "fast_hash",
+                  "mask",
+                  "null",
+                  "drop"
+                ],
+                "title": "Strategy",
+                "type": "string"
+              }
+            },
+            "required": [
+              "column"
+            ],
+            "title": "PIIColumnConfig",
+            "type": "object"
+          },
+          "title": "Columns",
+          "type": "array"
+        }
+      },
+      "title": "PIIPolicy",
+      "type": "object"
+    },
+    "RowFilterConfig": {
+      "additionalProperties": false,
+      "description": "Unity Catalog row-level security via ``ALTER TABLE SET ROW FILTER``.\n\nDeclares a SQL UDF that returns a boolean per row.  Rows for which the\nfunction returns ``False`` are hidden from queries.",
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "function_body": {
+          "title": "Function Body",
+          "type": "string"
+        },
+        "function_name": {
+          "title": "Function Name",
+          "type": "string"
+        },
+        "grant_to": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Grant To"
+        }
+      },
+      "required": [
+        "function_name",
+        "function_body",
+        "column"
+      ],
+      "title": "RowFilterConfig",
+      "type": "object"
+    },
+    "SourceConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "alias": {
+          "title": "Alias",
+          "type": "string"
+        },
+        "cdc_strategy": {
+          "default": "cdf",
+          "enum": [
+            "cdf",
+            "full",
+            "timestamp",
+            "append"
+          ],
+          "title": "Cdc Strategy",
+          "type": "string"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "description": "Executable, consumer-side contract for one upstream source.",
+              "properties": {
+                "cdc": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "primary_key": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "title": "Primary Key",
+                          "type": "array"
+                        },
+                        "required": {
+                          "default": false,
+                          "title": "Required",
+                          "type": "boolean"
+                        }
+                      },
+                      "title": "ContractCDCConfig",
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "compatibility": {
+                  "default": "nullable_additions",
+                  "enum": [
+                    "nullable_additions",
+                    "strict"
+                  ],
+                  "title": "Compatibility",
+                  "type": "string"
+                },
+                "freshness": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "max_age": {
+                          "title": "Max Age",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "max_age"
+                      ],
+                      "title": "ContractFreshnessConfig",
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "id": {
+                  "title": "Id",
+                  "type": "string"
+                },
+                "owner": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Owner"
+                },
+                "quality": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "column": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "title": "Column"
+                      },
+                      "columns": {
+                        "anyOf": [
+                          {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "title": "Columns"
+                      },
+                      "expression": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "title": "Expression"
+                      },
+                      "max_ratio": {
+                        "anyOf": [
+                          {
+                            "maximum": 1,
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "title": "Max Ratio"
+                      },
+                      "name": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "title": "Name"
+                      },
+                      "rule": {
+                        "enum": [
+                          "not_null",
+                          "unique",
+                          "null_rate",
+                          "accepted_values",
+                          "expression"
+                        ],
+                        "title": "Rule",
+                        "type": "string"
+                      },
+                      "severity": {
+                        "default": "error",
+                        "enum": [
+                          "warn",
+                          "error"
+                        ],
+                        "title": "Severity",
+                        "type": "string"
+                      },
+                      "values": {
+                        "anyOf": [
+                          {
+                            "items": {},
+                            "type": "array"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "title": "Values"
+                      }
+                    },
+                    "required": [
+                      "rule"
+                    ],
+                    "title": "ContractQualityRule",
+                    "type": "object"
+                  },
+                  "title": "Quality",
+                  "type": "array"
+                },
+                "schema": {
+                  "additionalProperties": {
+                    "additionalProperties": false,
+                    "description": "A supplier column expectation used by a consumer pipeline.",
+                    "properties": {
+                      "nullable": {
+                        "default": true,
+                        "title": "Nullable",
+                        "type": "boolean"
+                      },
+                      "required": {
+                        "default": true,
+                        "title": "Required",
+                        "type": "boolean"
+                      },
+                      "type": {
+                        "title": "Type",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type"
+                    ],
+                    "title": "ContractColumnConfig",
+                    "type": "object"
+                  },
+                  "title": "Schema",
+                  "type": "object"
+                },
+                "temporal": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "allowed_lateness": {
+                          "default": "0 hours",
+                          "title": "Allowed Lateness",
+                          "type": "string"
+                        },
+                        "event_time_column": {
+                          "title": "Event Time Column",
+                          "type": "string"
+                        },
+                        "late_event_severity": {
+                          "default": "warn",
+                          "enum": [
+                            "warn",
+                            "error"
+                          ],
+                          "title": "Late Event Severity",
+                          "type": "string"
+                        },
+                        "out_of_order_severity": {
+                          "default": "warn",
+                          "enum": [
+                            "warn",
+                            "error"
+                          ],
+                          "title": "Out Of Order Severity",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "event_time_column"
+                      ],
+                      "title": "ContractTemporalConfig",
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "validation": {
+                  "additionalProperties": false,
+                  "description": "Execution budget for runtime consumer-side contract checks.",
+                  "properties": {
+                    "max_actions": {
+                      "anyOf": [
+                        {
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Max Actions"
+                    },
+                    "max_failure_samples": {
+                      "default": 5,
+                      "maximum": 100,
+                      "minimum": 0,
+                      "title": "Max Failure Samples",
+                      "type": "integer"
+                    },
+                    "max_sample_rows": {
+                      "anyOf": [
+                        {
+                          "exclusiveMinimum": 0,
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Max Sample Rows"
+                    },
+                    "mode": {
+                      "default": "full",
+                      "enum": [
+                        "full",
+                        "sampled",
+                        "approximate"
+                      ],
+                      "title": "Mode",
+                      "type": "string"
+                    },
+                    "sample_fraction": {
+                      "anyOf": [
+                        {
+                          "exclusiveMinimum": 0,
+                          "maximum": 1,
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Sample Fraction"
+                    },
+                    "sample_seed": {
+                      "default": 17,
+                      "title": "Sample Seed",
+                      "type": "integer"
+                    }
+                  },
+                  "title": "ContractValidationPolicy",
+                  "type": "object"
+                },
+                "version": {
+                  "title": "Version",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "version",
+                "schema"
+              ],
+              "title": "SourceContractConfig",
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "contract_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Contract Ref"
+        },
+        "format": {
+          "default": "delta",
+          "title": "Format",
+          "type": "string"
+        },
+        "join_on": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Join On"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "options": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Options",
+          "type": "object"
+        },
+        "primary_keys": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Primary Keys"
+        },
+        "starting_version": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Starting Version",
+          "type": "integer"
+        },
+        "streaming": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "description": "Optional streaming configuration for a CDF source.\n\nWhen set on a ``SourceConfig``, the framework consumes CDF through a\nSpark structured-streaming query rather than the default batch\n``readChangeDataFeed`` path. All other source fields (``name``,\n``alias``, ``primary_keys``, ``cdc_strategy: cdf``) keep their\nexisting semantics.\n\nExample YAML::\n\n    sources:\n      - name: silver.customers\n        alias: c\n        cdc_strategy: cdf\n        primary_keys: [customer_id]\n        streaming:\n          enabled: true\n          trigger: available_now       # or processing_time\n          trigger_interval: \"30 seconds\"  # only used by processing_time\n          checkpoint_location: /path/to/_checkpoints",
+              "properties": {
+                "checkpoint_location": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Checkpoint Location"
+                },
+                "enabled": {
+                  "default": false,
+                  "title": "Enabled",
+                  "type": "boolean"
+                },
+                "ignore_changes": {
+                  "default": false,
+                  "title": "Ignore Changes",
+                  "type": "boolean"
+                },
+                "ignore_deletes": {
+                  "default": false,
+                  "title": "Ignore Deletes",
+                  "type": "boolean"
+                },
+                "per_version": {
+                  "default": false,
+                  "title": "Per Version",
+                  "type": "boolean"
+                },
+                "starting_timestamp": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Starting Timestamp"
+                },
+                "starting_version": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Starting Version"
+                },
+                "trigger": {
+                  "default": "available_now",
+                  "enum": [
+                    "available_now",
+                    "processing_time"
+                  ],
+                  "title": "Trigger",
+                  "type": "string"
+                },
+                "trigger_interval": {
+                  "default": "30 seconds",
+                  "title": "Trigger Interval",
+                  "type": "string"
+                }
+              },
+              "title": "StreamingSourceConfig",
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "name",
+        "alias"
+      ],
+      "title": "SourceConfig",
+      "type": "object"
+    },
+    "SourceContractConfig": {
+      "additionalProperties": false,
+      "description": "Executable, consumer-side contract for one upstream source.",
+      "properties": {
+        "cdc": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "primary_key": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Primary Key",
+                  "type": "array"
+                },
+                "required": {
+                  "default": false,
+                  "title": "Required",
+                  "type": "boolean"
+                }
+              },
+              "title": "ContractCDCConfig",
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "compatibility": {
+          "default": "nullable_additions",
+          "enum": [
+            "nullable_additions",
+            "strict"
+          ],
+          "title": "Compatibility",
+          "type": "string"
+        },
+        "freshness": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "max_age": {
+                  "title": "Max Age",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "max_age"
+              ],
+              "title": "ContractFreshnessConfig",
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "owner": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Owner"
+        },
+        "quality": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "column": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Column"
+              },
+              "columns": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Columns"
+              },
+              "expression": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Expression"
+              },
+              "max_ratio": {
+                "anyOf": [
+                  {
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Max Ratio"
+              },
+              "name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Name"
+              },
+              "rule": {
+                "enum": [
+                  "not_null",
+                  "unique",
+                  "null_rate",
+                  "accepted_values",
+                  "expression"
+                ],
+                "title": "Rule",
+                "type": "string"
+              },
+              "severity": {
+                "default": "error",
+                "enum": [
+                  "warn",
+                  "error"
+                ],
+                "title": "Severity",
+                "type": "string"
+              },
+              "values": {
+                "anyOf": [
+                  {
+                    "items": {},
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Values"
+              }
+            },
+            "required": [
+              "rule"
+            ],
+            "title": "ContractQualityRule",
+            "type": "object"
+          },
+          "title": "Quality",
+          "type": "array"
+        },
+        "schema": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "description": "A supplier column expectation used by a consumer pipeline.",
+            "properties": {
+              "nullable": {
+                "default": true,
+                "title": "Nullable",
+                "type": "boolean"
+              },
+              "required": {
+                "default": true,
+                "title": "Required",
+                "type": "boolean"
+              },
+              "type": {
+                "title": "Type",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "ContractColumnConfig",
+            "type": "object"
+          },
+          "title": "Schema",
+          "type": "object"
+        },
+        "temporal": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "allowed_lateness": {
+                  "default": "0 hours",
+                  "title": "Allowed Lateness",
+                  "type": "string"
+                },
+                "event_time_column": {
+                  "title": "Event Time Column",
+                  "type": "string"
+                },
+                "late_event_severity": {
+                  "default": "warn",
+                  "enum": [
+                    "warn",
+                    "error"
+                  ],
+                  "title": "Late Event Severity",
+                  "type": "string"
+                },
+                "out_of_order_severity": {
+                  "default": "warn",
+                  "enum": [
+                    "warn",
+                    "error"
+                  ],
+                  "title": "Out Of Order Severity",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "event_time_column"
+              ],
+              "title": "ContractTemporalConfig",
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "validation": {
+          "additionalProperties": false,
+          "description": "Execution budget for runtime consumer-side contract checks.",
+          "properties": {
+            "max_actions": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Max Actions"
+            },
+            "max_failure_samples": {
+              "default": 5,
+              "maximum": 100,
+              "minimum": 0,
+              "title": "Max Failure Samples",
+              "type": "integer"
+            },
+            "max_sample_rows": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Max Sample Rows"
+            },
+            "mode": {
+              "default": "full",
+              "enum": [
+                "full",
+                "sampled",
+                "approximate"
+              ],
+              "title": "Mode",
+              "type": "string"
+            },
+            "sample_fraction": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "maximum": 1,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Sample Fraction"
+            },
+            "sample_seed": {
+              "default": 17,
+              "title": "Sample Seed",
+              "type": "integer"
+            }
+          },
+          "title": "ContractValidationPolicy",
+          "type": "object"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "schema"
+      ],
+      "title": "SourceContractConfig",
+      "type": "object"
+    },
+    "StreamingSourceConfig": {
+      "additionalProperties": false,
+      "description": "Optional streaming configuration for a CDF source.\n\nWhen set on a ``SourceConfig``, the framework consumes CDF through a\nSpark structured-streaming query rather than the default batch\n``readChangeDataFeed`` path. All other source fields (``name``,\n``alias``, ``primary_keys``, ``cdc_strategy: cdf``) keep their\nexisting semantics.\n\nExample YAML::\n\n    sources:\n      - name: silver.customers\n        alias: c\n        cdc_strategy: cdf\n        primary_keys: [customer_id]\n        streaming:\n          enabled: true\n          trigger: available_now       # or processing_time\n          trigger_interval: \"30 seconds\"  # only used by processing_time\n          checkpoint_location: /path/to/_checkpoints",
+      "properties": {
+        "checkpoint_location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Checkpoint Location"
+        },
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "ignore_changes": {
+          "default": false,
+          "title": "Ignore Changes",
+          "type": "boolean"
+        },
+        "ignore_deletes": {
+          "default": false,
+          "title": "Ignore Deletes",
+          "type": "boolean"
+        },
+        "per_version": {
+          "default": false,
+          "title": "Per Version",
+          "type": "boolean"
+        },
+        "starting_timestamp": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Starting Timestamp"
+        },
+        "starting_version": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Starting Version"
+        },
+        "trigger": {
+          "default": "available_now",
+          "enum": [
+            "available_now",
+            "processing_time"
+          ],
+          "title": "Trigger",
+          "type": "string"
+        },
+        "trigger_interval": {
+          "default": "30 seconds",
+          "title": "Trigger Interval",
+          "type": "string"
+        }
+      },
+      "title": "StreamingSourceConfig",
+      "type": "object"
+    },
+    "TestDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "severity": {
+          "default": "error",
+          "enum": [
+            "error",
+            "warn"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "tests": {
+          "items": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            ]
+          },
+          "title": "Tests",
+          "type": "array"
+        }
+      },
+      "required": [
+        "column"
+      ],
+      "title": "TestDefinition",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Schema for kimball_framework pipeline YAML configs. Validated by Pydantic at load time. See docs/CONFIGURATION.md for field-level documentation.",
+  "properties": {
+    "abac_policies": {
+      "anyOf": [
+        {
+          "items": {
+            "additionalProperties": false,
+            "description": "Attribute-Based Access Control policy applied at catalog/schema/table scope.\n\nPolicies reference governed tags: apply a tag to a column and the policy\nactivates automatically for matching users.",
+            "properties": {
+              "function_argument": {
+                "default": "matched_value",
+                "title": "Function Argument",
+                "type": "string"
+              },
+              "match_tag": {
+                "title": "Match Tag",
+                "type": "string"
+              },
+              "policy_name": {
+                "title": "Policy Name",
+                "type": "string"
+              },
+              "policy_type": {
+                "enum": [
+                  "row_filter",
+                  "column_mask"
+                ],
+                "title": "Policy Type",
+                "type": "string"
+              },
+              "scope": {
+                "default": "schema",
+                "enum": [
+                  "catalog",
+                  "schema",
+                  "table"
+                ],
+                "title": "Scope",
+                "type": "string"
+              },
+              "tag_value": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Tag Value"
+              },
+              "target_groups": {
+                "items": {
+                  "type": "string"
+                },
+                "title": "Target Groups",
+                "type": "array"
+              },
+              "udf_body": {
+                "title": "Udf Body",
+                "type": "string"
+              },
+              "udf_name": {
+                "title": "Udf Name",
+                "type": "string"
+              }
+            },
+            "required": [
+              "policy_name",
+              "policy_type",
+              "udf_name",
+              "udf_body",
+              "target_groups",
+              "match_tag"
+            ],
+            "title": "ABACPolicyConfig",
+            "type": "object"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Abac Policies"
+    },
+    "append_only": {
+      "default": false,
+      "title": "Append Only",
+      "type": "boolean"
+    },
+    "audit_columns": {
+      "default": true,
+      "title": "Audit Columns",
+      "type": "boolean"
+    },
+    "cluster_by": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cluster By"
+    },
+    "column_descriptions": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Column Descriptions",
+      "type": "object"
+    },
+    "conformed_dimension": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "canonical_name": {
+              "title": "Canonical Name",
+              "type": "string"
+            },
+            "grain": {
+              "title": "Grain",
+              "type": "string"
+            },
+            "owner": {
+              "title": "Owner",
+              "type": "string"
+            },
+            "shared_attributes": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Shared Attributes",
+              "type": "array"
+            }
+          },
+          "required": [
+            "canonical_name",
+            "owner",
+            "grain"
+          ],
+          "title": "ConformedDimensionConfig",
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "current_value_columns": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Current Value Columns"
+    },
+    "declare_constraints": {
+      "default": true,
+      "title": "Declare Constraints",
+      "type": "boolean"
+    },
+    "default_rows": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Default Rows"
+    },
+    "degenerate_dimensions": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Degenerate Dimensions",
+      "type": "array"
+    },
+    "delete_strategy": {
+      "default": "soft",
+      "enum": [
+        "hard",
+        "soft"
+      ],
+      "title": "Delete Strategy",
+      "type": "string"
+    },
+    "depends_on": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Depends On",
+      "type": "array"
+    },
+    "durable_key": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Durable Key"
+    },
+    "effective_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Effective At"
+    },
+    "enable_lineage_truncation": {
+      "default": false,
+      "title": "Enable Lineage Truncation",
+      "type": "boolean"
+    },
+    "fact_pattern": {
+      "anyOf": [
+        {
+          "enum": [
+            "transaction",
+            "periodic_snapshot",
+            "accumulating_snapshot"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Fact Pattern"
+    },
+    "foreign_keys": {
+      "anyOf": [
+        {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "column": {
+                "title": "Column",
+                "type": "string"
+              },
+              "dimension_key": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Dimension Key"
+              },
+              "durable_column": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Durable Column"
+              },
+              "durable_dimension_key": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Durable Dimension Key"
+              },
+              "lookup": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "detect_fanout": {
+                        "default": true,
+                        "title": "Detect Fanout",
+                        "type": "boolean"
+                      },
+                      "dimension_columns": {
+                        "anyOf": [
+                          {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "title": "Dimension Columns"
+                      },
+                      "early_arriving": {
+                        "default": "skeleton",
+                        "enum": [
+                          "skeleton",
+                          "default",
+                          "error"
+                        ],
+                        "title": "Early Arriving",
+                        "type": "string"
+                      },
+                      "event_time": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "title": "Event Time"
+                      },
+                      "identity_map": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "title": "Identity Map"
+                      },
+                      "invalid_action": {
+                        "default": "error",
+                        "enum": [
+                          "default",
+                          "error"
+                        ],
+                        "title": "Invalid Action",
+                        "type": "string"
+                      },
+                      "not_applicable_when": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "title": "Not Applicable When"
+                      },
+                      "source_columns": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1,
+                        "title": "Source Columns",
+                        "type": "array"
+                      },
+                      "validate_resolution": {
+                        "default": false,
+                        "title": "Validate Resolution",
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "source_columns"
+                    ],
+                    "title": "ForeignKeyLookupConfig",
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "references": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "References"
+              },
+              "relationship": {
+                "default": "standard",
+                "enum": [
+                  "standard",
+                  "type7"
+                ],
+                "title": "Relationship",
+                "type": "string"
+              },
+              "role": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Role"
+              },
+              "role_playing": {
+                "default": false,
+                "title": "Role Playing",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "column"
+            ],
+            "title": "ForeignKeyConfig",
+            "type": "object"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Foreign Keys"
+    },
+    "generated_columns": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "description": "Definition of a Delta generated column.\n\nDelta requires the generated column's data type to be declared explicitly;\nderiving it from the expression is not reliable and can produce DDL that\nfails only after a deployment has started.",
+            "properties": {
+              "data_type": {
+                "title": "Data Type",
+                "type": "string"
+              },
+              "expression": {
+                "title": "Expression",
+                "type": "string"
+              }
+            },
+            "required": [
+              "expression",
+              "data_type"
+            ],
+            "title": "GeneratedColumnConfig",
+            "type": "object"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Generated Columns"
+    },
+    "grain": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Grain"
+    },
+    "grain_validation": {
+      "default": "error",
+      "enum": [
+        "error",
+        "warn",
+        "skip"
+      ],
+      "title": "Grain Validation",
+      "type": "string"
+    },
+    "history_table": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "History Table"
+    },
+    "junk_dimensions": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "dimension_table": {
+            "title": "Dimension Table",
+            "type": "string"
+          },
+          "source_columns": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Source Columns",
+            "type": "array"
+          },
+          "surrogate_key": {
+            "title": "Surrogate Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "dimension_table",
+          "surrogate_key",
+          "source_columns"
+        ],
+        "title": "JunkDimensionConfig",
+        "type": "object"
+      },
+      "title": "Junk Dimensions",
+      "type": "array"
+    },
+    "measures": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "additivity": {
+            "enum": [
+              "additive",
+              "semi_additive",
+              "non_additive"
+            ],
+            "title": "Additivity",
+            "type": "string"
+          },
+          "aggregation": {
+            "enum": [
+              "sum",
+              "avg",
+              "min",
+              "max",
+              "count",
+              "count_distinct"
+            ],
+            "title": "Aggregation",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "non_additive_dimensions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Non Additive Dimensions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "aggregation",
+          "additivity"
+        ],
+        "title": "FactMeasureConfig",
+        "type": "object"
+      },
+      "title": "Measures",
+      "type": "array"
+    },
+    "merge_keys": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Merge Keys"
+    },
+    "milestones": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "column": {
+            "title": "Column",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "order": {
+            "minimum": 1,
+            "title": "Order",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "column",
+          "order"
+        ],
+        "title": "FactMilestoneConfig",
+        "type": "object"
+      },
+      "title": "Milestones",
+      "type": "array"
+    },
+    "natural_keys": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Natural Keys",
+      "type": "array"
+    },
+    "null_policy": {
+      "additionalProperties": false,
+      "properties": {
+        "attribute_substitutes": {
+          "additionalProperties": true,
+          "title": "Attribute Substitutes",
+          "type": "object"
+        }
+      },
+      "title": "NullPolicyConfig",
+      "type": "object"
+    },
+    "observability": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "alert_on": {
+              "items": {
+                "enum": [
+                  "warn",
+                  "error"
+                ],
+                "type": "string"
+              },
+              "title": "Alert On",
+              "type": "array"
+            },
+            "enabled": {
+              "default": true,
+              "title": "Enabled",
+              "type": "boolean"
+            },
+            "event_table": {
+              "default": "etl_data_quality_events",
+              "title": "Event Table",
+              "type": "string"
+            },
+            "state_table": {
+              "default": "etl_contract_monitor_state",
+              "title": "State Table",
+              "type": "string"
+            },
+            "temporal_state_table": {
+              "default": "etl_contract_temporal_state",
+              "title": "Temporal State Table",
+              "type": "string"
+            },
+            "unresolved_key_table": {
+              "default": "etl_unresolved_dimension_keys",
+              "title": "Unresolved Key Table",
+              "type": "string"
+            },
+            "webhook_env": {
+              "default": "KIMBALL_ALERT_WEBHOOK_URL",
+              "title": "Webhook Env",
+              "type": "string"
+            },
+            "write_failure": {
+              "default": "warn",
+              "enum": [
+                "warn",
+                "error"
+              ],
+              "title": "Write Failure",
+              "type": "string"
+            }
+          },
+          "title": "ObservabilityConfig",
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "optimize_after_merge": {
+      "default": false,
+      "title": "Optimize After Merge",
+      "type": "boolean"
+    },
+    "pii": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "description": "Container for PII column policies declared in the ``pii`` YAML block.\n\nApplied by ``orchestrator._transform_and_validate`` after\n``transformation_sql`` and before validation/merge.  On Databricks,\n``TableCreator._apply_pii_masks`` also emits Delta ``MASK`` clauses\nfor role-based read-time enforcement.",
+          "properties": {
+            "columns": {
+              "items": {
+                "additionalProperties": false,
+                "description": "Per-column PII masking declaration.\n\nSee CONFIGURATION.md > PII Masking for full documentation.",
+                "properties": {
+                  "column": {
+                    "title": "Column",
+                    "type": "string"
+                  },
+                  "mask_char": {
+                    "default": "*",
+                    "maxLength": 1,
+                    "title": "Mask Char",
+                    "type": "string"
+                  },
+                  "reveal_prefix": {
+                    "default": 0,
+                    "minimum": 0,
+                    "title": "Reveal Prefix",
+                    "type": "integer"
+                  },
+                  "secret_ref": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Secret Ref"
+                  },
+                  "strategy": {
+                    "default": "mask",
+                    "enum": [
+                      "tokenize",
+                      "fast_hash",
+                      "mask",
+                      "null",
+                      "drop"
+                    ],
+                    "title": "Strategy",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "column"
+                ],
+                "title": "PIIColumnConfig",
+                "type": "object"
+              },
+              "title": "Columns",
+              "type": "array"
+            }
+          },
+          "title": "PIIPolicy",
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "preserve_all_changes": {
+      "default": false,
+      "title": "Preserve All Changes",
+      "type": "boolean"
+    },
+    "row_filter": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "description": "Unity Catalog row-level security via ``ALTER TABLE SET ROW FILTER``.\n\nDeclares a SQL UDF that returns a boolean per row.  Rows for which the\nfunction returns ``False`` are hidden from queries.",
+          "properties": {
+            "column": {
+              "title": "Column",
+              "type": "string"
+            },
+            "function_body": {
+              "title": "Function Body",
+              "type": "string"
+            },
+            "function_name": {
+              "title": "Function Name",
+              "type": "string"
+            },
+            "grant_to": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Grant To"
+            }
+          },
+          "required": [
+            "function_name",
+            "function_body",
+            "column"
+          ],
+          "title": "RowFilterConfig",
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "scd_type": {
+      "default": 1,
+      "enum": [
+        1,
+        2,
+        4,
+        6,
+        7
+      ],
+      "title": "Scd Type",
+      "type": "integer"
+    },
+    "schema_evolution": {
+      "default": false,
+      "title": "Schema Evolution",
+      "type": "boolean"
+    },
+    "snapshot_period": {
+      "anyOf": [
+        {
+          "enum": [
+            "day",
+            "week",
+            "month",
+            "quarter",
+            "year"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Snapshot Period"
+    },
+    "sources": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "alias": {
+            "title": "Alias",
+            "type": "string"
+          },
+          "cdc_strategy": {
+            "default": "cdf",
+            "enum": [
+              "cdf",
+              "full",
+              "timestamp",
+              "append"
+            ],
+            "title": "Cdc Strategy",
+            "type": "string"
+          },
+          "contract": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "description": "Executable, consumer-side contract for one upstream source.",
+                "properties": {
+                  "cdc": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "primary_key": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "title": "Primary Key",
+                            "type": "array"
+                          },
+                          "required": {
+                            "default": false,
+                            "title": "Required",
+                            "type": "boolean"
+                          }
+                        },
+                        "title": "ContractCDCConfig",
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "compatibility": {
+                    "default": "nullable_additions",
+                    "enum": [
+                      "nullable_additions",
+                      "strict"
+                    ],
+                    "title": "Compatibility",
+                    "type": "string"
+                  },
+                  "freshness": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "max_age": {
+                            "title": "Max Age",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "max_age"
+                        ],
+                        "title": "ContractFreshnessConfig",
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "id": {
+                    "title": "Id",
+                    "type": "string"
+                  },
+                  "owner": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Owner"
+                  },
+                  "quality": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "column": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "default": null,
+                          "title": "Column"
+                        },
+                        "columns": {
+                          "anyOf": [
+                            {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "default": null,
+                          "title": "Columns"
+                        },
+                        "expression": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "default": null,
+                          "title": "Expression"
+                        },
+                        "max_ratio": {
+                          "anyOf": [
+                            {
+                              "maximum": 1,
+                              "minimum": 0,
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "default": null,
+                          "title": "Max Ratio"
+                        },
+                        "name": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "default": null,
+                          "title": "Name"
+                        },
+                        "rule": {
+                          "enum": [
+                            "not_null",
+                            "unique",
+                            "null_rate",
+                            "accepted_values",
+                            "expression"
+                          ],
+                          "title": "Rule",
+                          "type": "string"
+                        },
+                        "severity": {
+                          "default": "error",
+                          "enum": [
+                            "warn",
+                            "error"
+                          ],
+                          "title": "Severity",
+                          "type": "string"
+                        },
+                        "values": {
+                          "anyOf": [
+                            {
+                              "items": {},
+                              "type": "array"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "default": null,
+                          "title": "Values"
+                        }
+                      },
+                      "required": [
+                        "rule"
+                      ],
+                      "title": "ContractQualityRule",
+                      "type": "object"
+                    },
+                    "title": "Quality",
+                    "type": "array"
+                  },
+                  "schema": {
+                    "additionalProperties": {
+                      "additionalProperties": false,
+                      "description": "A supplier column expectation used by a consumer pipeline.",
+                      "properties": {
+                        "nullable": {
+                          "default": true,
+                          "title": "Nullable",
+                          "type": "boolean"
+                        },
+                        "required": {
+                          "default": true,
+                          "title": "Required",
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "title": "Type",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type"
+                      ],
+                      "title": "ContractColumnConfig",
+                      "type": "object"
+                    },
+                    "title": "Schema",
+                    "type": "object"
+                  },
+                  "temporal": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "allowed_lateness": {
+                            "default": "0 hours",
+                            "title": "Allowed Lateness",
+                            "type": "string"
+                          },
+                          "event_time_column": {
+                            "title": "Event Time Column",
+                            "type": "string"
+                          },
+                          "late_event_severity": {
+                            "default": "warn",
+                            "enum": [
+                              "warn",
+                              "error"
+                            ],
+                            "title": "Late Event Severity",
+                            "type": "string"
+                          },
+                          "out_of_order_severity": {
+                            "default": "warn",
+                            "enum": [
+                              "warn",
+                              "error"
+                            ],
+                            "title": "Out Of Order Severity",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "event_time_column"
+                        ],
+                        "title": "ContractTemporalConfig",
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "validation": {
+                    "additionalProperties": false,
+                    "description": "Execution budget for runtime consumer-side contract checks.",
+                    "properties": {
+                      "max_actions": {
+                        "anyOf": [
+                          {
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "title": "Max Actions"
+                      },
+                      "max_failure_samples": {
+                        "default": 5,
+                        "maximum": 100,
+                        "minimum": 0,
+                        "title": "Max Failure Samples",
+                        "type": "integer"
+                      },
+                      "max_sample_rows": {
+                        "anyOf": [
+                          {
+                            "exclusiveMinimum": 0,
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "title": "Max Sample Rows"
+                      },
+                      "mode": {
+                        "default": "full",
+                        "enum": [
+                          "full",
+                          "sampled",
+                          "approximate"
+                        ],
+                        "title": "Mode",
+                        "type": "string"
+                      },
+                      "sample_fraction": {
+                        "anyOf": [
+                          {
+                            "exclusiveMinimum": 0,
+                            "maximum": 1,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "title": "Sample Fraction"
+                      },
+                      "sample_seed": {
+                        "default": 17,
+                        "title": "Sample Seed",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "ContractValidationPolicy",
+                    "type": "object"
+                  },
+                  "version": {
+                    "title": "Version",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version",
+                  "schema"
+                ],
+                "title": "SourceContractConfig",
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "contract_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Contract Ref"
+          },
+          "format": {
+            "default": "delta",
+            "title": "Format",
+            "type": "string"
+          },
+          "join_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Join On"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "options": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Options",
+            "type": "object"
+          },
+          "primary_keys": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Primary Keys"
+          },
+          "starting_version": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Starting Version",
+            "type": "integer"
+          },
+          "streaming": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "description": "Optional streaming configuration for a CDF source.\n\nWhen set on a ``SourceConfig``, the framework consumes CDF through a\nSpark structured-streaming query rather than the default batch\n``readChangeDataFeed`` path. All other source fields (``name``,\n``alias``, ``primary_keys``, ``cdc_strategy: cdf``) keep their\nexisting semantics.\n\nExample YAML::\n\n    sources:\n      - name: silver.customers\n        alias: c\n        cdc_strategy: cdf\n        primary_keys: [customer_id]\n        streaming:\n          enabled: true\n          trigger: available_now       # or processing_time\n          trigger_interval: \"30 seconds\"  # only used by processing_time\n          checkpoint_location: /path/to/_checkpoints",
+                "properties": {
+                  "checkpoint_location": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Checkpoint Location"
+                  },
+                  "enabled": {
+                    "default": false,
+                    "title": "Enabled",
+                    "type": "boolean"
+                  },
+                  "ignore_changes": {
+                    "default": false,
+                    "title": "Ignore Changes",
+                    "type": "boolean"
+                  },
+                  "ignore_deletes": {
+                    "default": false,
+                    "title": "Ignore Deletes",
+                    "type": "boolean"
+                  },
+                  "per_version": {
+                    "default": false,
+                    "title": "Per Version",
+                    "type": "boolean"
+                  },
+                  "starting_timestamp": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Starting Timestamp"
+                  },
+                  "starting_version": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Starting Version"
+                  },
+                  "trigger": {
+                    "default": "available_now",
+                    "enum": [
+                      "available_now",
+                      "processing_time"
+                    ],
+                    "title": "Trigger",
+                    "type": "string"
+                  },
+                  "trigger_interval": {
+                    "default": "30 seconds",
+                    "title": "Trigger Interval",
+                    "type": "string"
+                  }
+                },
+                "title": "StreamingSourceConfig",
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "name",
+          "alias"
+        ],
+        "title": "SourceConfig",
+        "type": "object"
+      },
+      "title": "Sources",
+      "type": "array"
+    },
+    "surrogate_key": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Surrogate Key"
+    },
+    "table_description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Table Description"
+    },
+    "table_name": {
+      "title": "Table Name",
+      "type": "string"
+    },
+    "table_type": {
+      "enum": [
+        "dimension",
+        "fact"
+      ],
+      "title": "Table Type",
+      "type": "string"
+    },
+    "tests": {
+      "anyOf": [
+        {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "column": {
+                "title": "Column",
+                "type": "string"
+              },
+              "severity": {
+                "default": "error",
+                "enum": [
+                  "error",
+                  "warn"
+                ],
+                "title": "Severity",
+                "type": "string"
+              },
+              "tests": {
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  ]
+                },
+                "title": "Tests",
+                "type": "array"
+              }
+            },
+            "required": [
+              "column"
+            ],
+            "title": "TestDefinition",
+            "type": "object"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tests"
+    },
+    "track_history_columns": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Track History Columns"
+    },
+    "transformation_sql": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Transformation Sql"
+    },
+    "vacuum_after_merge": {
+      "default": false,
+      "title": "Vacuum After Merge",
+      "type": "boolean"
+    },
+    "vacuum_retention_hours": {
+      "default": 168,
+      "minimum": 168,
+      "title": "Vacuum Retention Hours",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "table_name",
+    "table_type",
+    "sources"
+  ],
+  "title": "TableConfig",
+  "type": "object"
+}

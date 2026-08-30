@@ -67,7 +67,7 @@ RUN pip install --no-cache-dir \
 # layer can be refreshed without rebuilding the Spark dependency layer.
 RUN python -m pip install --no-cache-dir --upgrade \
     "pip>=26.1.2" \
-    "setuptools>=83.0.0"
+    "setuptools>=68.0.0"
 
 # Bencher publishes pytest-benchmark JSON from the same pinned environment that
 # produced it. The vendor installer is intentionally unpinned for Bencher Cloud;

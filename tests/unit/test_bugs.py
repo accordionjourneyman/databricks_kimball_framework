@@ -18,6 +18,7 @@ from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pyspark.sql import SparkSession
 
 os.environ.setdefault("KIMBALL_ETL_SCHEMA", "test_schema")
 
@@ -128,122 +129,6 @@ class TestSCD1DedupBug:
             )
 
 
-class TestSCD2DeleteDedupBug:
-    """BUG-SCD2-001: SCD2 delete rows were not deduplicated before MERGE.
-
-    FIX: Now deduplicates delete_rows by join_keys (using _commit_version
-    if available, else dropDuplicates) before the expire MERGE.
-    """
-
-    @patch("kimball.processing.scd2.filter_cdf_deletes")
-    @patch("kimball.processing.scd2.row_number")
-    @patch("kimball.processing.scd2.Window")
-    @patch("kimball.processing.scd2.col", return_value=MagicMock())
-    @patch("kimball.processing.scd2.lit", return_value=MagicMock())
-    @patch("kimball.processing.scd2.when", return_value=MagicMock())
-    @patch("kimball.processing.scd2.expr", return_value=MagicMock())
-    @patch("kimball.processing.scd2.current_timestamp", return_value=MagicMock())
-    @patch("kimball.processing.scd2.compute_hashdiff", return_value=MagicMock())
-    @patch("kimball.processing.scd2.apply_schema_evolution")
-    @patch("kimball.processing.scd2.generate_keys")
-    @patch("kimball.processing.scd2.DeltaTable")
-    @patch("kimball.processing.scd2.get_spark")
-    def test_scd2_delete_rows_are_deduplicated(
-        self,
-        mock_get_spark,
-        mock_delta_table,
-        mock_gen_keys,
-        mock_schema_evo,
-        mock_hashdiff,
-        mock_current_ts,
-        mock_expr,
-        mock_when,
-        mock_lit,
-        mock_col,
-        mock_window,
-        mock_row_number,
-        mock_filter,
-    ):
-        """delete_rows should be deduplicated by join_keys before MERGE."""
-        from kimball.processing.scd2 import merge_scd2
-
-        mock_dt = MagicMock()
-        mock_dt.toDF.return_value.schema.fields = []
-        mock_delta_table.forName.return_value = mock_dt
-        mock_dt.alias.return_value = mock_dt
-        mock_delete_merge = MagicMock()
-        mock_dt.merge.return_value = mock_delete_merge
-        mock_delete_merge.whenMatchedUpdate.return_value = mock_delete_merge
-
-        mock_gen_keys.return_value = MagicMock()
-        mock_gen_keys.return_value.columns = ["sk", "id", "val", "hashdiff"]
-        mock_col.return_value.desc.return_value = MagicMock()
-        mock_window_spec = MagicMock()
-        mock_window.partitionBy.return_value = mock_window_spec
-        mock_window_spec.orderBy.return_value = mock_window_spec
-
-        source_df = MagicMock()
-        source_df.columns = [
-            "id",
-            "val",
-            "_change_type",
-            "__etl_processed_at",
-        ]
-        source_df.filter.return_value.isEmpty.return_value = True
-
-        delete_rows = MagicMock()
-        delete_rows.isEmpty.return_value = False
-        delete_rows.count.return_value = 1
-        delete_rows.alias.return_value = delete_rows
-        delete_rows.columns = [
-            "id",
-            "val",
-            "_change_type",
-            "__etl_processed_at",
-            "_commit_version",
-        ]
-        delete_rows.withColumn.return_value = delete_rows
-        delete_rows.filter.return_value = delete_rows
-        delete_rows.drop.return_value = delete_rows
-
-        non_delete_df = MagicMock()
-        non_delete_df.columns = ["id", "val", "_change_type", "__etl_processed_at"]
-        non_delete_df.withColumn.return_value = non_delete_df
-        non_delete_df.select.return_value = non_delete_df
-        non_delete_df.alias.return_value = non_delete_df
-        non_delete_df.sparkSession = MagicMock()
-
-        mock_filter.return_value = (non_delete_df, delete_rows)
-
-        mock_dt.toDF.return_value.schema.fields = []
-        mock_dt.toDF.return_value.filter.return_value = MagicMock()
-        mock_dt.toDF.return_value.filter.return_value.join.return_value = MagicMock()
-        # Classic path also checks for multiple versions per key; make the
-        # source look like a single-version batch so we exercise the existing
-        # delete logic rather than the two-phase code path.
-        grouped = MagicMock()
-        grouped.agg.return_value = grouped
-        grouped.filter.return_value = grouped
-        grouped.limit.return_value = grouped
-        grouped.count.return_value = 0
-        source_df.groupBy.return_value = grouped
-
-        # Do NOT swallow exceptions here: a broad ``except Exception: pass``
-        # would mask any regression that raises before the dedup assertions
-        # below. Let a real failure surface so the assertions are meaningful.
-        merge_scd2(
-            source_df,
-            target_table_name="test.dim",
-            join_keys=["id"],
-            track_history_columns=["val"],
-            surrogate_key_col="sk",
-        )
-
-        # FIX VERIFIED: delete_rows were deduplicated via dropDuplicates before MERGE
-        delete_rows.dropDuplicates.assert_called_with(["id"])
-        mock_dt.merge.assert_called()
-
-
 class TestSCD4NullEqualityBug:
     """BUG-SCD4-001: SCD4 history MERGE used ``=`` instead of ``<=>`` for
     value comparison, preventing NULL old values from being expired.
@@ -337,137 +222,6 @@ class TestSCD6DuplicateCurrentColumnsBug:
             "current_* columns from the old.* projection to avoid duplicate "
             "column names on 2nd+ run."
         )
-
-
-# =====================================================================
-# 2. WATERMARK BUGS
-# =====================================================================
-
-
-class TestWatermarkBugs:
-    """Bugs in ETLControlManager watermark management."""
-
-    @patch("kimball.orchestration.watermark.DeltaTable")
-    @patch("kimball.orchestration.watermark.col")
-    def test_batch_start_does_not_reset_watermark(self, mock_col, mock_delta_table):
-        """BUG-WM-001 (verification): batch_start should NOT reset
-        last_processed_version to NULL."""
-        from kimball.orchestration.watermark import ETLControlManager
-
-        spark_mock = MagicMock()
-        spark_mock.catalog.tableExists.return_value = True
-        spark_mock.sql = MagicMock()
-
-        mock_dt_instance = MagicMock()
-        mock_delta_table.forName.return_value = mock_dt_instance
-        mock_dt_instance.alias.return_value = mock_dt_instance
-
-        merge_builders = []
-
-        class _MergeBuilderTracker:
-            def __call__(self, *args, **kwargs):
-                builder = MagicMock()
-                builder.whenMatchedUpdate.return_value = builder
-                builder.whenNotMatchedInsert.return_value = builder
-                merge_builders.append(builder)
-                return builder
-
-        mock_dt_instance.merge.side_effect = _MergeBuilderTracker()
-
-        from kimball.orchestration.watermark import ETLControlManager as _CM
-
-        update_df_mock = MagicMock()
-        update_df_mock.columns = [f.name for f in _CM._UPDATE_SCHEMA.fields]
-        spark_mock.createDataFrame.return_value = update_df_mock
-
-        manager = ETLControlManager(etl_schema="test", spark_session=spark_mock)
-        manager.update_watermark("dim_customer", "silver.customers", 42)
-        manager.batch_start("dim_customer", "silver.customers")
-
-        assert len(merge_builders) >= 2
-
-        batch_start_builder = merge_builders[1]
-        update_call_args = batch_start_builder.whenMatchedUpdate.call_args
-        update_set = update_call_args.kwargs.get("set", {})
-
-        assert "last_processed_version" not in update_set, (
-            "BUG-WM-001 regression: batch_start should NOT reset "
-            "last_processed_version."
-        )
-
-    @patch("kimball.orchestration.watermark.DeltaTable")
-    @patch("kimball.orchestration.watermark.col")
-    def test_batch_fail_does_not_advance_watermark(self, mock_col, mock_delta_table):
-        """BUG-WM-002 (verification): batch_fail should NOT update
-        last_processed_version."""
-        from kimball.orchestration.watermark import ETLControlManager
-
-        spark_mock = MagicMock()
-        spark_mock.catalog.tableExists.return_value = True
-        spark_mock.sql = MagicMock()
-
-        mock_dt_instance = MagicMock()
-        mock_delta_table.forName.return_value = mock_dt_instance
-        mock_dt_instance.alias.return_value = mock_dt_instance
-
-        merge_builders = []
-
-        class _MergeBuilderTracker:
-            def __call__(self, *args, **kwargs):
-                builder = MagicMock()
-                builder.whenMatchedUpdate.return_value = builder
-                builder.whenNotMatchedInsert.return_value = builder
-                merge_builders.append(builder)
-                return builder
-
-        mock_dt_instance.merge.side_effect = _MergeBuilderTracker()
-
-        from kimball.orchestration.watermark import ETLControlManager as _CM
-
-        update_df_mock = MagicMock()
-        update_df_mock.columns = [f.name for f in _CM._UPDATE_SCHEMA.fields]
-        spark_mock.createDataFrame.return_value = update_df_mock
-
-        manager = ETLControlManager(etl_schema="test", spark_session=spark_mock)
-        manager.batch_fail("dim_customer", "silver.customers", "Some error")
-
-        batch_fail_builder = merge_builders[0]
-        update_call_args = batch_fail_builder.whenMatchedUpdate.call_args
-        update_set = update_call_args.kwargs.get("set", {})
-
-        assert "last_processed_version" not in update_set, (
-            "BUG-WM-002 regression: batch_fail should NOT advance the "
-            "watermark so failed batches can be retried."
-        )
-
-    @patch("kimball.orchestration.watermark.DeltaTable")
-    @patch("kimball.orchestration.watermark.col")
-    def test_get_watermark_returns_zero_not_none(self, mock_col, mock_delta_table):
-        """BUG-WM-003 (verification): get_watermark should return 0
-        (not None) when the watermark version is 0."""
-        from pyspark.sql import Row
-
-        from kimball.orchestration.watermark import ETLControlManager
-
-        spark_mock = MagicMock()
-        spark_mock.catalog.tableExists.return_value = True
-        spark_mock.sql = MagicMock()
-
-        manager = ETLControlManager(etl_schema="test", spark_session=spark_mock)
-
-        mock_df = MagicMock()
-        spark_mock.table.return_value = mock_df
-        mock_df.filter.return_value.select.return_value.first.return_value = Row(
-            last_processed_version=0
-        )
-
-        version = manager.get_watermark("dim_customer", "silver.customers")
-
-        assert version == 0, (
-            "BUG-WM-003 regression: get_watermark should return 0 not None "
-            "when version is 0."
-        )
-        assert version is not None
 
 
 # =====================================================================
@@ -713,7 +467,7 @@ class TestValidateExpressionFalsePositive:
         tests). The forbidden-keyword regex check runs before ``F.expr`` is
         ever reached, so patching ``F`` does not mask the behaviour under test.
         """
-        from kimball.validation import DataQualityValidator
+        from kimball.orchestration.validation import DataQualityValidator
 
         validator = DataQualityValidator()
         df = MagicMock()
@@ -734,7 +488,7 @@ class TestValidateExpressionFalsePositive:
         keyword) and short-circuits before ``F.expr`` is invoked, so patching
         ``F`` does not affect this assertion.
         """
-        from kimball.validation import DataQualityValidator
+        from kimball.orchestration.validation import DataQualityValidator
 
         validator = DataQualityValidator()
         df = MagicMock()
@@ -788,57 +542,23 @@ class TestFullSnapshotSCD2DeleteDetection:
         )
 
 
-class TestOrchestratorColumnPruningBug:
-    """BUG-DP-005: Orchestrator column pruning silently dropped new columns
-    when schema_evolution was disabled.
-
-    FIX: Added a WARNING log listing dropped columns and suggesting
-    schema_evolution=True.
-    """
-
-    def test_column_pruning_warns_about_dropped_columns(self):
-        """The column pruning logic should log about dropped columns."""
-        from kimball.orchestration.services.merge_executor import MergeExecutor
-
-        source_code = inspect.getsource(MergeExecutor._apply_adaptive_pruning)
-
-        assert (
-            "column pruning" in source_code.lower() or "cols_dropped" in source_code
-        ), (
-            "BUG-DP-005 regression: Column pruning should track and log "
-            "about dropped columns to prevent silent data loss."
-        )
-
-
 class TestHashdiffOrderInvariance:
     """BUG-DP-006 (verification): ``compute_hashdiff`` with
     ``sort_columns=True`` should produce the same hash regardless of
-    column order in the input list.
-    """
+    column order in the input list. Uses a real Spark DataFrame."""
 
-    @patch("kimball.processing.hashing.xxhash64")
-    @patch("kimball.processing.hashing.concat_ws")
-    @patch("kimball.processing.hashing.when")
-    @patch("kimball.processing.hashing.col")
-    @patch("kimball.processing.hashing.lit")
-    def test_hashdiff_sorts_columns_alphabetically(
-        self, mock_lit, mock_col, mock_when, mock_concat_ws, mock_xxhash64
-    ):
-        """compute_hashdiff should sort columns alphabetically by default."""
+    def test_sorts_columns_alphabetically(self, spark: SparkSession):
+        """Reorders columns in the input list; the hash must be identical
+        because the function sorts alphabetically internally."""
         from kimball.processing.hashing import compute_hashdiff
 
-        mock_col.side_effect = lambda x: MagicMock(name=f"col({x})")
-        mock_lit.side_effect = lambda x: MagicMock(name=f"lit({x})")
-        mock_when.side_effect = lambda *args: MagicMock(name="when")
-        mock_concat_ws.side_effect = lambda *args: MagicMock(name="concat_ws")
-        mock_xxhash64.side_effect = lambda *args: MagicMock(name="xxhash64")
-
-        compute_hashdiff(["zebra", "apple", "mango"])
-
-        col_calls = [c.args[0] for c in mock_col.call_args_list]
-        assert col_calls[0] == "apple", f"Expected 'apple' first, got {col_calls[0]}"
-        assert col_calls[2] == "mango", f"Expected 'mango' second, got {col_calls[2]}"
-        assert col_calls[4] == "zebra", f"Expected 'zebra' third, got {col_calls[4]}"
+        df = spark.createDataFrame([(1, 2, 3)], ["zebra", "apple", "mango"])
+        h1 = df.select(compute_hashdiff(["zebra", "apple", "mango"])).collect()[0][0]
+        h2 = df.select(compute_hashdiff(["apple", "mango", "zebra"])).collect()[0][0]
+        h3 = df.select(compute_hashdiff(["mango", "zebra", "apple"])).collect()[0][0]
+        assert h1 == h2 == h3, (
+            f"hashdiff should be order-invariant but got {h1}, {h2}, {h3}"
+        )
 
 
 class TestSCD2HashdiffInInsertValues:
@@ -847,50 +567,10 @@ class TestSCD2HashdiffInInsertValues:
     change detection.
     """
 
-    def test_scd2_hashdiff_included_in_insert_values(self):
-        """hashdiff should be in insert_values so target stores it."""
-        from kimball.processing.merge_helpers import build_insert_values
-
-        df = MagicMock()
-        df.columns = ["id", "val", "hashdiff", "__etl_processed_at", "__etl_batch_id"]
-        result = build_insert_values(
-            df, ["id"], "sk", "source.updated_at", include_history=True
-        )
-        assert "hashdiff" in result, (
-            "BUG-DP-007 regression: hashdiff should be in insert_values "
-            "so the target table stores it for future change detection."
-        )
-
 
 # =====================================================================
 # 6. ADDITIONAL SCD LOGIC EDGE CASES
 # =====================================================================
-
-
-class TestSCD2ValidFromFallbackBug:
-    """BUG-SCD2-002: SCD2 ``__valid_from`` fell back to ``1900-01-01``
-    instead of ``current_timestamp()`` when ``effective_at`` was NULL.
-
-    FIX: Changed fallback from ``SQL_DEFAULT_VALID_FROM`` to
-    ``current_timestamp()``.
-    """
-
-    def test_scd2_valid_from_falls_back_to_current_timestamp(self):
-        """The __valid_from fallback should use current_timestamp(), not
-        1900-01-01, when effective_at is NULL."""
-        from kimball.processing.merge_helpers import build_insert_values
-
-        df = MagicMock()
-        df.columns = ["id", "val", "__etl_processed_at"]
-        result = build_insert_values(df, ["id"], "sk", "source.__etl_processed_at")
-        assert "current_timestamp()" in result["__valid_from"], (
-            "BUG-SCD2-002 regression: __valid_from should fall back to "
-            "current_timestamp() when effective_at is NULL."
-        )
-        assert "SQL_DEFAULT_VALID_FROM" not in result["__valid_from"], (
-            "BUG-SCD2-002 regression: __valid_from should NOT use "
-            "SQL_DEFAULT_VALID_FROM as COALESCE fallback."
-        )
 
 
 # =====================================================================

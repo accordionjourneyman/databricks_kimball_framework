@@ -44,7 +44,7 @@ def _make_df(columns: list[str]):
         fields.append(f)
     schema.fields = fields
     df.schema = schema
-    schema_dict = {c: f for c, f in zip(columns, fields, strict=True)}
+    schema_dict = dict(zip(columns, fields, strict=True))
     df.schema.__getitem__ = MagicMock(side_effect=lambda k: schema_dict[k])
     df.drop.return_value = df
     df.withColumn.return_value = df
@@ -54,7 +54,9 @@ def _make_df(columns: list[str]):
 class TestPIIMasking:
     def test_hash_strategy_applies_xxhash64(self):
         df = _make_df(["customer_id", "email"])
-        policy = PIIPolicy(columns=[PIIColumnConfig(column="email", strategy="hash")])
+        policy = PIIPolicy(
+            columns=[PIIColumnConfig(column="email", strategy="fast_hash")]
+        )
         result = apply_pii_masking(df, policy)
         assert result is df
         df.withColumn.assert_called()
@@ -127,7 +129,9 @@ class TestPIIMasking:
 
     def test_missing_column_skips_silently(self):
         df = _make_df(["customer_id"])
-        policy = PIIPolicy(columns=[PIIColumnConfig(column="email", strategy="hash")])
+        policy = PIIPolicy(
+            columns=[PIIColumnConfig(column="email", strategy="fast_hash")]
+        )
         apply_pii_masking(df, policy)
         df.withColumn.assert_not_called()
 
@@ -135,7 +139,7 @@ class TestPIIMasking:
         df = _make_df(["customer_id", "email", "address", "ssn"])
         policy = PIIPolicy(
             columns=[
-                PIIColumnConfig(column="email", strategy="hash"),
+                PIIColumnConfig(column="email", strategy="fast_hash"),
                 PIIColumnConfig(column="address", strategy="mask", reveal_prefix=3),
                 PIIColumnConfig(column="ssn", strategy="drop"),
             ]
@@ -173,7 +177,8 @@ class TestPIIMaskingRealSpark:
             ["email"],
         )
         out = apply_pii_masking(
-            df, PIIPolicy(columns=[PIIColumnConfig(column="email", strategy="hash")])
+            df,
+            PIIPolicy(columns=[PIIColumnConfig(column="email", strategy="fast_hash")]),
         ).collect()
         h = [r["email"] for r in out]
         assert h[0] == h[2]  # identical inputs hash alike
@@ -184,7 +189,8 @@ class TestPIIMaskingRealSpark:
         # The hashed column must never contain the original plaintext.
         df = spark.createDataFrame([("secret@example.com",)], ["email"])
         out = apply_pii_masking(
-            df, PIIPolicy(columns=[PIIColumnConfig(column="email", strategy="hash")])
+            df,
+            PIIPolicy(columns=[PIIColumnConfig(column="email", strategy="fast_hash")]),
         ).head()
         assert "secret" not in str(out["email"])
         assert out["email"] != "secret@example.com"
@@ -237,7 +243,8 @@ class TestPIIMaskingRealSpark:
     def test_missing_column_skips_without_error(self, spark):
         df = spark.createDataFrame([(1,)], ["customer_id"])
         out = apply_pii_masking(
-            df, PIIPolicy(columns=[PIIColumnConfig(column="email", strategy="hash")])
+            df,
+            PIIPolicy(columns=[PIIColumnConfig(column="email", strategy="fast_hash")]),
         )
         assert out.columns == ["customer_id"]  # nothing changed
 
@@ -253,10 +260,10 @@ class TestPIIMaskingRealSpark:
     def test_column_map_property(self):
         policy = PIIPolicy(
             columns=[
-                PIIColumnConfig(column="email", strategy="hash"),
+                PIIColumnConfig(column="email", strategy="fast_hash"),
                 PIIColumnConfig(column="address", strategy="mask"),
             ]
         )
         assert "email" in policy.column_map
         assert "address" in policy.column_map
-        assert policy.column_map["email"].strategy == "hash"
+        assert policy.column_map["email"].strategy == "fast_hash"

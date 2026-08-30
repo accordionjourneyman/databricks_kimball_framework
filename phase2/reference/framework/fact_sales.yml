@@ -1,0 +1,13 @@
+table_name: framework_result.fact_sales
+table_type: fact
+keys:
+  natural_keys: [source_system, line_id]
+sources:
+  - name: phase2_source.retail_events
+    alias: events
+    cdc_strategy: full
+transformation_sql: |
+  SELECT source_system, line_id, invoice_no, stock_code, customer_id,
+         invoice_ts, quantity, unit_price
+  FROM events
+  WHERE event_type IN ('sale', 'cancellation')
