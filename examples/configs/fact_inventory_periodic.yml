@@ -9,9 +9,19 @@ measures:
     aggregation: sum
     additivity: semi_additive
     non_additive_dimensions: [snapshot_date]
+table_description: >
+  Daily periodic inventory snapshot: one row per product per warehouse per
+  day. on_hand_quantity is semi-additive (sums across products/warehouses,
+  not across snapshot days).
+column_descriptions:
+  snapshot_date: Snapshot business date; grain component.
+  product_id: Stable product identifier from the source system.
+  warehouse_id: Stable warehouse identifier from the source system.
+  on_hand_quantity: Semi-additive quantity on hand at the snapshot boundary.
 sources:
   - name: silver.inventory_movements
     alias: inventory
+    primary_keys: [snapshot_date, product_id, warehouse_id]
 transformation_sql: |
   SELECT snapshot_date, product_id, warehouse_id, SUM(on_hand_quantity) AS on_hand_quantity
   FROM silver.inventory_movements

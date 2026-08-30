@@ -28,6 +28,17 @@ foreign_keys:
 # Enable schema evolution to automatically handle new columns
 schema_evolution: true
 
+# Intentional modeling decision, recorded per docs/adr/ADR-003-schema-model-integrity.md:
+# customer_id means "broker lookup input" here, not the customer's stable
+# attribute semantics; the drift from the customer dimension is waived.
+modeling_exceptions:
+  - code: COLUMN_SEMANTICS_CONFLICT
+    columns: [customer_id]
+    reason: >
+      customer_id on the fact is the broker's lookup input, intentionally
+      narrower than the dimension attribute's meaning.
+    decision_ref: docs/adr/ADR-003-model-integrity-validator.md
+
 # Liquid Clustering for optimal fact table queries
 # Cluster by primary foreign keys and date for best query performance
 cluster_by: [customer_sk, order_date]
@@ -69,5 +80,19 @@ transformation_sql: |
              AND o.order_date < e.__valid_to
   -- Current lookup for Product (SCD1)
   LEFT JOIN p ON oi.product_id = p.product_id
+
+table_description: >
+  Transaction-grain sales fact: one row per order item, with brokered
+  type7 customer keys and point-in-time employee dimension capture.
+column_descriptions:
+  order_item_id: Degenerate dimension; the source line-item identifier.
+  order_id: Parent business order identifier; the fact's grain and merge key.
+  customer_id: Source customer identifier consumed by the key broker.
+  product_sk: Surrogate key of the current product (SCD1 lookup).
+  employee_sk: Surrogate key of the employee version effective at order time.
+  order_date: Business date of the order; clustered with customer_sk.
+  quantity: Additive measure, units sold on this line item.
+  sales_amount: Additive measure, gross revenue for this line item.
+  net_profit: Additive measure, sales minus standard cost for this line item.
 
 audit_columns: true

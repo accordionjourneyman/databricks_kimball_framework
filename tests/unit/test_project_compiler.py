@@ -19,7 +19,15 @@ def _dimension(name: str, *, sources: list[SourceConfig] | None = None, **kwargs
         table_type="dimension",
         surrogate_key=f"{name.split('.')[-1]}_sk",
         natural_keys=["id"],
-        sources=sources or [SourceConfig(name=f"silver.{name}", alias="src")],
+        sources=sources
+        or [
+            SourceConfig(
+                name=f"silver.{name}",
+                alias="src",
+                primary_keys=["id"],
+            )
+        ],
+        table_description=kwargs.pop("table_description", f"{name} dimension fixture."),
         **kwargs,
     )
 
@@ -30,8 +38,16 @@ def _fact(name: str, **kwargs):
         table_type="fact",
         merge_keys=["id"],
         sources=kwargs.pop(
-            "sources", [SourceConfig(name="silver.orders", alias="src")]
+            "sources",
+            [
+                SourceConfig(
+                    name="silver.orders",
+                    alias="src",
+                    primary_keys=["order_id", "id"],
+                )
+            ],
         ),
+        table_description=kwargs.pop("table_description", f"{name} fact fixture."),
         **kwargs,
     )
 
@@ -59,6 +75,7 @@ def test_compiler_builds_deterministic_dependency_levels():
             ForeignKeyConfig(column="customer_sk", references="gold.dim_customer"),
             ForeignKeyConfig(column="order_date_sk", references="gold.dim_date"),
         ],
+        column_descriptions={"customer_sk": "customer", "order_date_sk": "date"},
     )
 
     project = ProjectCompiler(profile="production").compile(
@@ -102,7 +119,10 @@ def test_development_warns_and_uses_inferred_dependency():
     )
 
     assert project.levels == (("gold.dim_customer",), ("gold.fact_sales",))
-    assert [issue.code for issue in project.warnings] == ["UNDECLARED_DEPENDENCY"]
+    assert sorted(issue.code for issue in project.warnings) == [
+        "INCREMENTAL_LOAD_FRAGILE",
+        "UNDECLARED_DEPENDENCY",
+    ]
 
 
 def test_compiler_rejects_missing_explicit_upstream():

@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from typing import Literal
 
 from kimball.common.config import TableConfig
+from kimball.planning.model_integrity import (
+    Fixability,
+    FixSuggestion,
+    check_project,
+)
 
 Profile = Literal["dev", "test", "production"]
 Severity = Literal["warning", "error"]
@@ -17,6 +22,8 @@ class ProjectIssue:
     severity: Severity
     message: str
     pipeline: str | None = None
+    fixability: Fixability | None = None
+    fix: FixSuggestion | None = None
 
     def __str__(self) -> str:
         location = f" ({self.pipeline})" if self.pipeline else ""
@@ -48,6 +55,7 @@ class CompiledProject:
     nodes: dict[str, CompiledPipeline]
     levels: tuple[tuple[str, ...], ...]
     issues: tuple[ProjectIssue, ...] = ()
+    model_integrity_summary: str | None = None
 
     @property
     def warnings(self) -> tuple[ProjectIssue, ...]:
@@ -62,10 +70,11 @@ class ProjectCompiler:
     plans are accurate, but production rejects an omitted declaration.
     """
 
-    def __init__(self, profile: Profile = "dev"):
+    def __init__(self, profile: Profile = "dev", *, strict: bool = False):
         if profile not in ("dev", "test", "production"):
             raise ValueError(f"Unknown compilation profile: {profile}")
         self.profile = profile
+        self.strict = strict
 
     def compile(self, entries: Sequence[tuple[str, TableConfig]]) -> CompiledProject:
         issues: list[ProjectIssue] = []
@@ -156,14 +165,78 @@ class ProjectCompiler:
                 )
             )
 
-        if errors := [issue for issue in issues if issue.severity == "error"]:
+        issues.extend(self._model_integrity_issues(nodes))
+        errors = [issue for issue in issues if issue.severity == "error"]
+        if errors:
             raise ProjectValidationError(errors)
 
         return CompiledProject(
             nodes=nodes,
             levels=self._topological_levels(nodes),
             issues=tuple(issues),
+            model_integrity_summary=_summaries(issues),
         )
+
+    def _model_integrity_issues(
+        self, nodes: dict[str, CompiledPipeline]
+    ) -> list[ProjectIssue]:
+        """Run ADR-003 cross-table checks; resolve severity and suppression.
+
+        Profile policy (ADR-003 §Decision 5): warnings in ``dev``, errors in
+        ``test``/``production``. ``--strict`` promotes every finding to error
+        in all profiles. A matching ``modeling_exceptions`` entry waives the
+        finding: for a finding anchored on table T (same code + column), T's
+        ledger entry suppresses it; a cross-table finding anchored on a table
+        without an entry can still be waived by *any* project table listing
+        the same (code, column) — the exemption is visible either way via the
+        ``EXCEPTION_APPROVED`` warning, which then names the waiving table.
+        """
+        configs = {name: pipeline.config for name, pipeline in nodes.items()}
+        findings = check_project(configs)
+        error_profiles = ("test", "production")
+        issues: list[ProjectIssue] = []
+        for finding in findings:
+            waived_by = _waiving_table(configs, finding.code, finding.column)
+            if waived_by is not None:
+                if finding.severity == "error" or self.profile in error_profiles:
+                    ref = next(
+                        (
+                            exception.decision_ref
+                            for exception in configs[waived_by].modeling_exceptions
+                            if exception.code == finding.code
+                            and (
+                                finding.column is None
+                                or finding.column in exception.columns
+                            )
+                        ),
+                        None,
+                    )
+                    suffix = f" via decision_ref={ref}" if ref else ""
+                    issues.append(
+                        ProjectIssue(
+                            "EXCEPTION_APPROVED",
+                            "warning",
+                            f"suppressed {finding.code}"
+                            f" for column '{finding.column}'{suffix}",
+                            waived_by,
+                        )
+                    )
+                continue
+            if self.strict or self.profile in error_profiles:
+                severity: Severity = "error"
+            else:
+                severity = "error" if finding.severity == "error" else "warning"
+            issues.append(
+                ProjectIssue(
+                    finding.code,
+                    severity,
+                    finding.message,
+                    finding.pipeline,
+                    fixability=finding.fixability,
+                    fix=finding.fix,
+                )
+            )
+        return issues
 
     @staticmethod
     def _infer_dependencies(config: TableConfig, known_targets: set[str]) -> set[str]:
@@ -239,3 +312,72 @@ class ProjectCompiler:
             completed.update(ready)
             remaining.difference_update(ready)
         return tuple(levels)
+
+
+def _column_in_exception(config: TableConfig, code: str, column: str | None) -> bool:
+    """True when a modeling exception covers (code, column).
+
+    Table-level findings carry ``column=None``; any entry with the matching
+    code waives them (at least one column entry is required by the model).
+    """
+    for exception in config.modeling_exceptions:
+        if exception.code != code:
+            continue
+        if column is None or column in exception.columns:
+            return True
+    return False
+
+
+def _waiving_table(
+    configs: dict[str, TableConfig], code: str, column: str | None
+) -> str | None:
+    """The table whose modeling_exceptions waive this finding, if any.
+
+    The anchored table (``finding.pipeline``) is checked first, then any other
+    project table: a cross-table finding can be waived by the ledger entry of
+    whichever table the modeler annotated (ADR-003 §Decision 4).
+    """
+    if column is None:
+        return None
+    waived = [
+        name
+        for name, config in configs.items()
+        if _column_in_exception(config, code, column)
+    ]
+    return waived[0] if waived else None
+
+
+def _summaries(issues: Sequence[ProjectIssue]) -> str:
+    """Sourcery-style overview line for the model-integrity findings (ADR-003 §6)."""
+    integrity = [issue for issue in issues if issue.code in _INTEGRITY_CODES]
+    approved = [issue for issue in issues if issue.code == "EXCEPTION_APPROVED"]
+    if not integrity and not approved:
+        return "model-integrity: no issues"
+    errors = [issue for issue in integrity if issue.severity == "error"]
+    warnings = [issue for issue in integrity if issue.severity == "warning"]
+    parts = [f"{len(errors)} error", f"{len(warnings)} warning"]
+    fixable = [
+        issue
+        for issue in integrity
+        if issue.fixability in ("auto_fixable", "suggest_fix")
+    ]
+    if fixable:
+        parts.append(f"{len(fixable)} fixable")
+    if approved:
+        parts.append(f"{len(approved)} exception-approved")
+    counted = len(integrity)
+    return f"model-integrity: {counted} issues — {', '.join(parts)}"
+
+
+_INTEGRITY_CODES = frozenset(
+    {
+        "COLUMN_SEMANTICS_CONFLICT",
+        "FACT_DIMENSION_ATTRIBUTE",
+        "GRAIN_KEY_MISMATCH",
+        "MEASURE_ADDITIVITY_MISSING",
+        "INCREMENTAL_LOAD_FRAGILE",
+        "MISSING_REFERENCE_TARGET",
+        "ORPHAN_REFERENCE",
+        "MISSING_DESCRIPTION",
+    }
+)

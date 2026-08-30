@@ -1,0 +1,37 @@
+# Conformed date dimension referenced by role-playing facts.
+# A warehouse-owned calendar: no upstream source, generated in SQL.
+table_name: demo_gold.dim_date
+table_type: dimension
+scd_type: 1
+keys:
+  surrogate_key: date_sk
+  natural_keys: [date_id]
+
+depends_on: []
+
+sources:
+  - name: demo_silver.calendar
+    alias: cal
+    cdc_strategy: full
+
+transformation_sql: |
+  SELECT
+    cal.date_id,
+    cal.calendar_date,
+    cal.day_of_week,
+    cal.month_number,
+    cal.quarter_number,
+    cal.year_number
+  FROM cal
+
+table_description: >
+  Conformed date dimension played by every date-role FK (order date,
+  ship date, snapshot boundaries). Warehouse-owned calendar with no upstream
+  supplier; regenerated per environment.
+column_descriptions:
+  date_id: Stable ISO date identifier (YYYYMMDD) used as the natural key.
+  calendar_date: The date value itself, typed DATE.
+  day_of_week: ISO weekday number 1-7, Monday first.
+  month_number: Calendar month 1-12.
+  quarter_number: Calendar quarter 1-4.
+  year_number: Calendar year.

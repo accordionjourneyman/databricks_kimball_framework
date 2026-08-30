@@ -43,6 +43,10 @@ column_descriptions:
   customer_sk: Warehouse surrogate key for a customer version.
   customer_dk: Durable warehouse key shared by all versions of a customer.
   customer_id: Stable CRM customer identifier.
+  first_name: Person first name as of this version.
+  last_name: Person last name as of this version.
+  email: Customer email address; PII, tokenized downstream.
+  address: Postal address as of this version.
   updated_at: Supplier business-effective timestamp for this version.
 
 transformation_sql: |

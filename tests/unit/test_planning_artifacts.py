@@ -12,7 +12,14 @@ def _dimension(name: str, **kwargs) -> TableConfig:
         table_type="dimension",
         surrogate_key="dimension_sk",
         natural_keys=["id"],
-        sources=[SourceConfig(name=f"silver.{name.split('.')[-1]}", alias="src")],
+        sources=[
+            SourceConfig(
+                name=f"silver.{name.split('.')[-1]}",
+                alias="src",
+                primary_keys=["id"],
+            )
+        ],
+        table_description=kwargs.pop("table_description", f"{name} fixture."),
         **kwargs,
     )
 
@@ -23,12 +30,19 @@ def _fact(*, sql: str = "SELECT * FROM src", description: str | None = None):
         table_type="fact",
         merge_keys=["sale_id"],
         depends_on=["gold.dim_customer"],
-        sources=[SourceConfig(name="silver.sales", alias="src")],
+        sources=[
+            SourceConfig(
+                name="silver.sales",
+                alias="src",
+                primary_keys=["sale_id"],
+            )
+        ],
         transformation_sql=sql,
         foreign_keys=[
             ForeignKeyConfig(column="customer_sk", references="gold.dim_customer")
         ],
-        table_description=description,
+        table_description=description or "Sales fact fixture.",
+        column_descriptions={"customer_sk": "Customer surrogate key."},
     )
 
 
@@ -74,7 +88,10 @@ def test_plan_marks_sql_change_for_backfill_and_includes_downstream():
         table_type="fact",
         merge_keys=["day"],
         depends_on=["gold.fact_sales"],
-        sources=[SourceConfig(name="gold.fact_sales", alias="sales")],
+        sources=[
+            SourceConfig(name="gold.fact_sales", alias="sales", primary_keys=["day"])
+        ],
+        table_description="Daily sales aggregate fixture.",
     )
     previous_project = ProjectCompiler(profile="production").compile(
         [(node.config_path, node.config) for node in base.nodes.values()]

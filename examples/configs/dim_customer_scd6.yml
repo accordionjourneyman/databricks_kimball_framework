@@ -39,6 +39,7 @@ effective_at: updated_at
 sources:
   - name: silver.customers
     cdc_strategy: cdf
+    primary_keys: [customer_id]
 
 transformation_sql: |
   SELECT 
@@ -51,3 +52,17 @@ transformation_sql: |
     status,
     updated_at
   FROM silver_customers
+
+table_description: >
+  SCD Type 6 customer dimension: full history rows plus backfilled
+  current_* columns so reports can show a transaction against the
+  customer's current address/status without self-joins.
+column_descriptions:
+  customer_id: Stable CRM customer identifier.
+  first_name: Person first name as of this version.
+  last_name: Person last name as of this version.
+  email: Customer email address; PII, tokenized downstream.
+  city: City as of this version; current_city carries the backfilled value.
+  state: State/province as of this version; current_state carries the backfilled value.
+  status: Lifecycle status as of this version; current_status carries the backfilled value.
+  updated_at: Supplier business-effective timestamp for this version.

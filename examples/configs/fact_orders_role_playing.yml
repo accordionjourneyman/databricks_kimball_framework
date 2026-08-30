@@ -1,5 +1,6 @@
 table_name: demo_gold.fact_orders
 table_type: fact
+depends_on: [demo_gold.dim_date]
 merge_keys: [order_id]
 grain: one order
 fact_pattern: transaction
@@ -25,7 +26,7 @@ foreign_keys:
     role: ship_date
 table_description: Order transaction fact with two roles played by one physical date dimension.
 column_descriptions:
-  order_id: Durable merge key at the declared order grain.
+  order_id: Parent business order identifier; the fact's grain and merge key.
   order_number: Operational identifier retained as a degenerate dimension.
   order_date_sk: Order-date role foreign key to the physical date dimension.
   ship_date_sk: Ship-date role foreign key to the physical date dimension.
@@ -33,6 +34,7 @@ column_descriptions:
 sources:
   - name: silver.orders
     alias: orders
+    primary_keys: [order_id]
 transformation_sql: |
   SELECT
     order_id,

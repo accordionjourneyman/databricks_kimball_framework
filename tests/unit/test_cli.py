@@ -17,7 +17,12 @@ def _project():
         table_type="dimension",
         surrogate_key="customer_sk",
         natural_keys=["customer_id"],
-        sources=[SourceConfig(name="silver.customers", alias="src")],
+        sources=[
+            SourceConfig(
+                name="silver.customers", alias="src", primary_keys=["customer_id"]
+            )
+        ],
+        table_description="Customer dimension fixture.",
     )
     return ProjectCompiler(profile="production").compile([("dim.yml", config)])
 

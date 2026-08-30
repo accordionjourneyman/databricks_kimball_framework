@@ -16,6 +16,16 @@ milestones:
 sources:
   - name: silver.order_events
     alias: orders
+    primary_keys: [order_id]
+table_description: >
+  Accumulating-snapshot fact tracking each order through its lifecycle
+  milestones (ordered -> shipped -> delivered); milestone timestamps fill in
+  as events arrive.
+column_descriptions:
+  order_id: Parent business order identifier; the fact's grain and merge key.
+  ordered_at: Milestone timestamp when the order was placed.
+  shipped_at: Milestone timestamp when the order shipped; NULL until shipped.
+  delivered_at: Milestone timestamp when the order was delivered; NULL until delivered.
 transformation_sql: |
   SELECT order_id, ordered_at, shipped_at, delivered_at
   FROM silver.order_events

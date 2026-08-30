@@ -160,8 +160,12 @@ table_description: Type 7 customer dimension with supplier contract monitoring.
 column_descriptions:
   customer_sk: Surrogate key for one historical customer version.
   customer_dk: Durable customer key shared by all historical versions.
-  customer_id: Durable CRM customer identifier.
-  updated_at: Supplier business-effective timestamp.
+  customer_id: Stable CRM customer identifier.
+  first_name: Person first name as of this version.
+  last_name: Person last name as of this version.
+  email: Customer email address; PII, tokenized downstream.
+  address: Postal address as of this version.
+  updated_at: Supplier business-effective timestamp for this version.
 transformation_sql: |
   SELECT customer_id, first_name, last_name, email, address, updated_at, _change_type FROM c
 audit_columns: true

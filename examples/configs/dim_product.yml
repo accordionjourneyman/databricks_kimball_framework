@@ -21,4 +21,12 @@ transformation_sql: |
     p._change_type  -- Required for CDF delete detection
   FROM p
 
+table_description: Current-state product master (SCD1) sourced from the inventory CDF feed.
+column_descriptions:
+  product_id: Stable product identifier from the source system.
+  name: Product display name.
+  category: Product category used for hierarchy rollups.
+  unit_cost: Standard unit cost; not a measure, an attribute.
+  updated_at: Supplier business-effective timestamp for this version.
+
 audit_columns: true

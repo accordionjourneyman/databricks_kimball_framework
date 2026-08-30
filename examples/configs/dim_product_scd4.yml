@@ -29,6 +29,7 @@ effective_at: updated_at
 sources:
   - name: silver.products
     cdc_strategy: cdf
+    primary_keys: [product_id]
 
 transformation_sql: |
   SELECT 
@@ -40,3 +41,15 @@ transformation_sql: |
     cost,
     updated_at
   FROM silver_products
+
+table_description: >
+  SCD Type 4 product reference: a current-state row plus an EAV history
+  table (gold.dim_product_history) tracking field-level changes.
+column_descriptions:
+  product_id: Stable product identifier from the source system.
+  product_name: Product display name.
+  category: Product category used for hierarchy rollups.
+  subcategory: Product subcategory within the category.
+  price: Current list price; attribute, not a measure.
+  cost: Current standard unit cost; attribute, not a measure.
+  updated_at: Supplier business-effective timestamp for this version.

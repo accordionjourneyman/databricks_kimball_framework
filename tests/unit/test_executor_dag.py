@@ -16,7 +16,8 @@ def _dimension(name: str, depends_on: list[str] | None = None) -> TableConfig:
         surrogate_key="dimension_sk",
         natural_keys=["id"],
         depends_on=depends_on or [],
-        sources=[SourceConfig(name=f"silver.{name}", alias="src")],
+        sources=[SourceConfig(name=f"silver.{name}", alias="src", primary_keys=["id"])],
+        table_description=f"{name} fixture.",
     )
 
 
@@ -26,7 +27,8 @@ def _fact(name: str, depends_on: list[str]) -> TableConfig:
         table_type="fact",
         merge_keys=["id"],
         depends_on=depends_on,
-        sources=[SourceConfig(name="silver.sales", alias="src")],
+        sources=[SourceConfig(name="silver.sales", alias="src", primary_keys=["id"])],
+        table_description=f"{name} fixture.",
     )
 
 

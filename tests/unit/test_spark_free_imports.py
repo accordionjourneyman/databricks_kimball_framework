@@ -16,7 +16,8 @@ def guarded(name, *args, **kwargs):
 builtins.__import__ = guarded
 import kimball
 from kimball.common.config import ConfigLoader
-print(json.dumps({'spark_loaded': any(n == 'pyspark' or n.startswith('pyspark.') for n in sys.modules), 'loader': ConfigLoader.__name__, 'exports': 'Orchestrator' in kimball.__all__}))
+from kimball.planning import model_integrity
+print(json.dumps({'spark_loaded': any(n == 'pyspark' or n.startswith('pyspark.') for n in sys.modules), 'loader': ConfigLoader.__name__, 'integrity': model_integrity.__name__, 'exports': 'Orchestrator' in kimball.__all__}))
 """
     result = subprocess.run(
         [sys.executable, "-c", code],
@@ -28,5 +29,6 @@ print(json.dumps({'spark_loaded': any(n == 'pyspark' or n.startswith('pyspark.')
     assert json.loads(result.stdout) == {
         "spark_loaded": False,
         "loader": "ConfigLoader",
+        "integrity": "kimball.planning.model_integrity",
         "exports": True,
     }

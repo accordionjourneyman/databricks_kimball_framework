@@ -19,7 +19,8 @@ def _dim_config(name="dim_customer", depends_on=None):
         surrogate_key="dimension_sk",
         natural_keys=["id"],
         depends_on=depends_on or [],
-        sources=[SourceConfig(name=f"silver.{name}", alias="src")],
+        sources=[SourceConfig(name=f"silver.{name}", alias="src", primary_keys=["id"])],
+        table_description=f"{name} fixture.",
     )
 
 
@@ -29,7 +30,8 @@ def _fact_config(name="fact_sales", depends_on=None):
         table_type="fact",
         merge_keys=["id"],
         depends_on=depends_on or [],
-        sources=[SourceConfig(name="silver.sales", alias="src")],
+        sources=[SourceConfig(name="silver.sales", alias="src", primary_keys=["id"])],
+        table_description=f"{name} fixture.",
     )
 
 

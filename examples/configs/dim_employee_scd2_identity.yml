@@ -36,4 +36,14 @@ transformation_sql: |
     e.updated_at
   FROM e
 
+table_description: Type 2 employee dimension with Delta identity-column surrogate keys.
+column_descriptions:
+  employee_id: Stable HR employee identifier shared by all versions.
+  first_name: Person first name as of this version.
+  last_name: Person last name as of this version.
+  department: Department as of this version; changes start a new row.
+  title: Job title as of this version; changes start a new row.
+  manager_id: Reporting manager's employee_id as of this version.
+  updated_at: Supplier business-effective timestamp for this version.
+
 audit_columns: true

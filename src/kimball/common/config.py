@@ -8,7 +8,14 @@ from typing import Any, Literal
 import yaml
 from jinja2 import StrictUndefined, TemplateError
 from jinja2.sandbox import SandboxedEnvironment
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 
 class StrictConfigModel(BaseModel):
@@ -454,6 +461,53 @@ class ConformedDimensionConfig(StrictConfigModel):
     shared_attributes: list[str] = Field(default_factory=list)
 
 
+MODEL_INTEGRITY_CODES = (
+    "COLUMN_SEMANTICS_CONFLICT",
+    "FACT_DIMENSION_ATTRIBUTE",
+    "GRAIN_KEY_MISMATCH",
+    "MEASURE_ADDITIVITY_MISSING",
+    "INCREMENTAL_LOAD_FRAGILE",
+    "MISSING_REFERENCE_TARGET",
+    "ORPHAN_REFERENCE",
+    "MISSING_DESCRIPTION",
+)
+
+Fixability = Literal["auto_fixable", "suggest_fix", "decision_required"]
+
+
+class ModelingExceptionConfig(StrictConfigModel):
+    """A recorded, intentional deviation from a model-integrity rule."""
+
+    code: str
+    columns: list[str] = Field(min_length=1)
+    reason: str
+    decision_ref: str | None = None
+
+    @field_validator("code")
+    @classmethod
+    def _code_known(cls, value: str) -> str:
+        if value not in MODEL_INTEGRITY_CODES:
+            known = ", ".join(MODEL_INTEGRITY_CODES)
+            raise ValueError(
+                f"unknown modeling-exception code '{value}'; known codes: {known}"
+            )
+        return value
+
+    @field_validator("columns")
+    @classmethod
+    def _columns_non_blank(cls, value: list[str]) -> list[str]:
+        if any(not column or not column.strip() for column in value):
+            raise ValueError("modeling_exceptions columns must be non-blank")
+        return value
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_non_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("modeling_exceptions reason must not be blank")
+        return value
+
+
 def _default_alert_on() -> list[Literal["warn", "error"]]:
     return ["error"]
 
@@ -517,6 +571,7 @@ class TableConfig(StrictConfigModel):
     junk_dimensions: list[JunkDimensionConfig] = Field(default_factory=list)
     table_description: str | None = None
     column_descriptions: dict[str, str] = Field(default_factory=dict)
+    modeling_exceptions: list[ModelingExceptionConfig] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -628,6 +683,15 @@ class TableConfig(StrictConfigModel):
         if self.scd_type == 6 and not self.current_value_columns:
             raise ValueError(
                 "SCD Type 6 requires 'current_value_columns' to be specified."
+            )
+        exception_keys = [
+            (exception.code, column)
+            for exception in self.modeling_exceptions
+            for column in exception.columns
+        ]
+        if len(exception_keys) != len(set(exception_keys)):
+            raise ValueError(
+                "modeling_exceptions must not repeat the same (code, column) pair"
             )
         for source in self.sources:
             if source.contract and source.contract.cdc:
