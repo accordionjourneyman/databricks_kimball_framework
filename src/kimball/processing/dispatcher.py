@@ -80,17 +80,16 @@ def _build_merge_fn(
             raise ValueError("SCD4 requires surrogate_key_col")
         if not history_table:
             raise ValueError("scd_type=4 requires history_table parameter")
-        else:
-            return lambda df: merge_scd4(
-                df,
-                target_table_name=target_table_name,
-                history_table_name=history_table,
-                join_keys=join_keys,
-                track_history_columns=track_history_columns or ["*"],
-                surrogate_key_col=surrogate_key_col,
-                schema_evolution=schema_evolution,
-                effective_at_column=effective_at_column,
-            )
+        return lambda df: merge_scd4(
+            df,
+            target_table_name=target_table_name,
+            history_table_name=history_table,
+            join_keys=join_keys,
+            track_history_columns=track_history_columns or ["*"],
+            surrogate_key_col=surrogate_key_col,
+            schema_evolution=schema_evolution,
+            effective_at_column=effective_at_column,
+        )
     elif scd_type == 6:
         if surrogate_key_col is None:
             raise ValueError("SCD6 requires surrogate_key_col")

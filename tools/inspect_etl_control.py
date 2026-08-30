@@ -279,18 +279,17 @@ def _render_overview(reports: list[dict[str, Any]], args: argparse.Namespace) ->
         batches = rep["batches"]
         if args.running and all(b.get("status") != "RUNNING" for b in batches):
             continue
-        if args.failed and all(b.get("status") != "FAILED" for b in batches):
-            continue
-        rows.append(
-            {
-                "target": rep["target_table"],
-                "verdict": rec["verdict"],
-                "watermark": rec["watermark_version"],
-                "target_version": rec["target_version"],
-                "zombies": rec["zombie_batches"],
-                "writer": rep["writer_contract"]["verdict"],
-            }
-        )
+        if not args.failed or any(b.get("status") == "FAILED" for b in batches):
+            rows.append(
+                {
+                    "target": rep["target_table"],
+                    "verdict": rec["verdict"],
+                    "watermark": rec["watermark_version"],
+                    "target_version": rec["target_version"],
+                    "zombies": rec["zombie_batches"],
+                    "writer": rep["writer_contract"]["verdict"],
+                }
+            )
     if args.limit:
         rows = rows[: args.limit]
     headers = ["TARGET", "VERDICT", "WATERMARK", "TARGET_V", "ZOMBIES", "WRITER"]

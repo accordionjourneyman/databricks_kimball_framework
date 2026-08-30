@@ -327,11 +327,7 @@ class TestBugStopOnFailureCosmetic:
         not_started_future.cancel.return_value = True
 
         futures = [running_future, not_started_future]
-        actually_cancelled = []
-        for f in futures:
-            if f.cancel():
-                actually_cancelled.append(f)
-
+        actually_cancelled = [f for f in futures if f.cancel()]
         assert len(actually_cancelled) == 1
         assert not_started_future in actually_cancelled
         assert running_future not in actually_cancelled

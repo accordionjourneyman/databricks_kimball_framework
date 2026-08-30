@@ -101,15 +101,14 @@ class ValidationReport:
     def error_count(self) -> int:
         """Count of failed ERROR-severity tests."""
         return sum(
-            bool(not r.passed and r.severity == TestSeverity.ERROR)
-            for r in self.results
+            not r.passed and r.severity == TestSeverity.ERROR for r in self.results
         )
 
     @property
     def warning_count(self) -> int:
         """Count of failed WARN-severity tests."""
         return sum(
-            bool(not r.passed and r.severity == TestSeverity.WARN) for r in self.results
+            not r.passed and r.severity == TestSeverity.WARN for r in self.results
         )
 
     def __str__(self) -> str:

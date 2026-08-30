@@ -94,15 +94,15 @@ class ProjectCompiler:
                 continue
             explicit = set(config.depends_on)
             missing = explicit - known_targets
-            for upstream in sorted(missing):
-                issues.append(
-                    ProjectIssue(
-                        "MISSING_UPSTREAM",
-                        "error",
-                        f"declared upstream '{upstream}' is not part of the project",
-                        config.table_name,
-                    )
+            issues.extend(
+                ProjectIssue(
+                    "MISSING_UPSTREAM",
+                    "error",
+                    f"declared upstream '{upstream}' is not part of the project",
+                    config.table_name,
                 )
+                for upstream in sorted(missing)
+            )
 
             inferred = self._infer_dependencies(config, known_targets)
             undeclared = inferred - explicit
