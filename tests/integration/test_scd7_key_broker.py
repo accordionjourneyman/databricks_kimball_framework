@@ -43,13 +43,13 @@ def _dimension_rows(spark: SparkSession, rows: list[tuple]):
 
 
 def _type7_fk(table: str, **lookup_overrides: Any) -> ForeignKeyConfig:
-    lookup = ForeignKeyLookupConfig(
-        source_columns=["customer_id"],
-        event_time="order_at",
-        early_arriving="default",
-        invalid_action="default",
+    lookup_fields: dict[str, Any] = {
+        "source_columns": ["customer_id"],
+        "event_time": "order_at",
+        "early_arriving": "default",
+        "invalid_action": "default",
         **lookup_overrides,
-    )
+    }
     return ForeignKeyConfig(
         column="customer_sk",
         references=table,
@@ -57,7 +57,7 @@ def _type7_fk(table: str, **lookup_overrides: Any) -> ForeignKeyConfig:
         relationship="type7",
         durable_column="customer_dk",
         durable_dimension_key="customer_dk",
-        lookup=lookup,
+        lookup=ForeignKeyLookupConfig(**lookup_fields),
     )
 
 
