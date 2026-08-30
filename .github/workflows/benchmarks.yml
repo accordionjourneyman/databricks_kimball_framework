@@ -41,12 +41,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -70,7 +70,7 @@ jobs:
         run: find benchmark-results -name summary.md -exec cat {} \; >> "$GITHUB_STEP_SUMMARY"
       - name: Upload immutable results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: microbenchmarks-${{ github.sha }}
           path: benchmark-results/
@@ -83,12 +83,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -111,7 +111,7 @@ jobs:
         run: find benchmark-results -name summary.md -exec cat {} \; >> "$GITHUB_STEP_SUMMARY"
       - name: Upload immutable results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: spark-benchmarks-${{ github.sha }}
           path: benchmark-results/
