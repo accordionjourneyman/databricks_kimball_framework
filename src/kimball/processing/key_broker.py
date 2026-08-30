@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import logging
 from functools import reduce
-from typing import Any
+from typing import Any, cast
 
 from delta.tables import DeltaTable
 from pyspark.sql import Column, DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
     BooleanType,
+    DataType,
     DateType,
     DecimalType,
     DoubleType,
@@ -17,6 +18,7 @@ from pyspark.sql.types import (
     LongType,
     ShortType,
     StringType,
+    StructField,
     TimestampType,
 )
 
@@ -36,11 +38,11 @@ def _any_null(columns: list[str]) -> Column:
     )
 
 
-def _placeholder(field, *, status: str = "NOT_YET_AVAILABLE") -> Column:
+def _placeholder(field: StructField, *, status: str = "NOT_YET_AVAILABLE") -> Column:
     data_type = field.dataType
     for types, value in _PLACEHOLDER_MAP:
         if isinstance(data_type, types):
-            return F.lit(value).cast(data_type)
+            return F.lit(value).cast(cast("DataType | str", data_type))
     raise ValueError(
         f"Skeleton requires an explicit substitute for {field.name} ({data_type})"
     )
