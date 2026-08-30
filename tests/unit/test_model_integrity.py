@@ -665,3 +665,162 @@ class TestCompilerIntegration:
 def test_empty_project_is_clean() -> None:
     project = ProjectCompiler().compile([])
     assert project.model_integrity_summary == "model-integrity: no issues"
+
+
+class TestRulePolicy:
+    """ADR-003 §Decision 8: per-target rule enable/disable/customize."""
+
+    def test_disabled_rule_skips_findings_and_emits_rule_disabled(self) -> None:
+        from kimball.common.config import (
+            ModelIntegrityPolicy,
+            ModelIntegrityRulePolicy,
+        )
+
+        dim = _dimension(column_descriptions={"customer_name": "legal name"})
+        fact = _fact(
+            depends_on=["gold.dim_customer"],
+            column_descriptions={"customer_name": "legal name"},
+            foreign_keys=[
+                ForeignKeyConfig(
+                    column="customer_sk",
+                    references="gold.dim_customer",
+                    dimension_key="customer_sk",
+                )
+            ],
+        )
+        policy = ModelIntegrityPolicy(
+            rules=[
+                ModelIntegrityRulePolicy(code="FACT_DIMENSION_ATTRIBUTE", enabled=False)
+            ]
+        )
+        project = ProjectCompiler(profile="production", rule_policy=policy).compile(
+            [("dim.yml", dim), ("fact.yml", fact)]
+        )
+        codes = [issue.code for issue in project.issues]
+        assert "FACT_DIMENSION_ATTRIBUTE" not in codes
+        assert "RULE_DISABLED" in codes
+        assert "model-integrity:" in (project.model_integrity_summary or "")
+        assert "rule-disabled" in (project.model_integrity_summary or "")
+
+    def test_severity_override_downgrades_in_production(self) -> None:
+        from kimball.common.config import (
+            ModelIntegrityPolicy,
+            ModelIntegrityRulePolicy,
+        )
+
+        # MISSING_DESCRIPTION is engine-warning; override to error and verify
+        # production compile fails on it. Use the inverse: a rule error via
+        # severity=error in dev profile compiles cleanly (warnings only).
+        dim = _dimension()
+        policy = ModelIntegrityPolicy(
+            rules=[
+                ModelIntegrityRulePolicy(code="GRAIN_KEY_MISMATCH", severity="warning"),
+                ModelIntegrityRulePolicy(code="ORPHAN_REFERENCE", enabled=False),
+            ]
+        )
+        # A GRAIN_KEY_MISMATCH finding in production is promoted to error by
+        # the profile; the policy override keeps it a warning while the
+        # interfering ORPHAN_REFERENCE is disabled by policy.
+        fact_mismatch = _fact(
+            depends_on=["gold.dim_customer"],
+            foreign_keys=[
+                ForeignKeyConfig(
+                    column="wrong_sk",
+                    references="gold.dim_customer",
+                    dimension_key="not_declared",
+                )
+            ],
+        )
+        project = ProjectCompiler(profile="production", rule_policy=policy).compile(
+            [("dim.yml", dim), ("fact.yml", fact_mismatch)]
+        )
+        grain = [
+            issue for issue in project.issues if issue.code == "GRAIN_KEY_MISMATCH"
+        ]
+        assert len(grain) == 1
+        assert grain[0].severity == "warning"
+
+    def test_profile_override_applies_when_no_policy_severity(self) -> None:
+        from kimball.common.config import ModelIntegrityPolicy
+
+        dim = _dimension()
+        fact_mismatch = _fact(
+            depends_on=["gold.dim_customer"],
+            foreign_keys=[
+                ForeignKeyConfig(
+                    column="wrong_sk",
+                    references="gold.dim_customer",
+                    dimension_key="not_declared",
+                )
+            ],
+        )
+        # Empty policy: production still error-promotes the warning finding.
+        with pytest.raises(ProjectValidationError, match="GRAIN_KEY_MISMATCH"):
+            ProjectCompiler(
+                profile="production", rule_policy=ModelIntegrityPolicy()
+            ).compile([("dim.yml", dim), ("fact.yml", fact_mismatch)])
+
+    def test_param_reaches_rule(self) -> None:
+
+        fact = _fact(sources=[_source("silver.orders", primary_keys=None)])
+        # Default: key-less CDF source flagged...
+        assert any(
+            i.code == "INCREMENTAL_LOAD_FRAGILE"
+            for i in check_project({"gold.fact_sales": fact})
+        )
+        # ...unless require_primary_keys=False.
+        from kimball.planning.model_integrity import check_project as cp
+
+        findings = cp(
+            {"gold.fact_sales": fact},
+            rule_params={"INCREMENTAL_LOAD_FRAGILE": {"require_primary_keys": False}},
+        )
+        assert all(i.code != "INCREMENTAL_LOAD_FRAGILE" for i in findings)
+
+    def test_unknown_param_rejected_at_config_load(self) -> None:
+        from kimball.common.config import (
+            ModelIntegrityPolicy,
+            ModelIntegrityRulePolicy,
+        )
+
+        with pytest.raises(ValidationError, match="does not accept parameter"):
+            ModelIntegrityPolicy(
+                rules=[
+                    ModelIntegrityRulePolicy(
+                        code="MISSING_DESCRIPTION",
+                        params={"require_primary_keys": True},
+                    )
+                ]
+            )
+
+    def test_unknown_code_rejected_in_policy(self) -> None:
+        from kimball.common.config import (
+            ModelIntegrityPolicy,
+            ModelIntegrityRulePolicy,
+        )
+
+        with pytest.raises(ValidationError, match="unknown model_integrity rule"):
+            ModelIntegrityPolicy(rules=[ModelIntegrityRulePolicy(code="NO_SUCH_RULE")])
+
+    def test_rule_disabled_counted_in_summary(self) -> None:
+        from kimball.common.config import (
+            ModelIntegrityPolicy,
+            ModelIntegrityRulePolicy,
+        )
+
+        dim = _dimension()
+        fact = _fact(
+            depends_on=["gold.dim_customer"],
+            sources=[_source("silver.orders", primary_keys=None)],
+        )
+        policy = ModelIntegrityPolicy(
+            rules=[
+                ModelIntegrityRulePolicy(code="INCREMENTAL_LOAD_FRAGILE", enabled=False)
+            ]
+        )
+        project = ProjectCompiler(profile="dev", rule_policy=policy).compile(
+            [("dim.yml", dim), ("fact.yml", fact)]
+        )
+        disabled = [issue for issue in project.issues if issue.code == "RULE_DISABLED"]
+        assert disabled
+        assert "rule-disabled" in (project.model_integrity_summary or "")

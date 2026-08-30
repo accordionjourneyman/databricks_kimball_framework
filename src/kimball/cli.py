@@ -73,7 +73,9 @@ def load_compiled_project(
         )
     loader = ConfigLoader(template_context=target.template_context())
     entries = [(path, loader.load_config(path)) for path in paths]
-    return ProjectCompiler(profile=_profile_for_target(target)).compile(entries)
+    return ProjectCompiler(
+        profile=_profile_for_target(target), rule_policy=target.model_integrity
+    ).compile(entries)
 
 
 def _write_text(path_value: str, content: str) -> None:

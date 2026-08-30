@@ -18,3 +18,15 @@ targets:
     gold_schema: prod_gold
     etl_schema: prod_kimball_ops
     checkpoint_root: /Volumes/workspace/prod_kimball_ops/checkpoints
+    # Model-integrity rule policy (ADR-003 §Decision 8). Per-target tuning:
+    # enabled / severity / params. Unknown codes or params are hard errors
+    # at load; a disabled rule that would have issued a finding emits a
+    # RULE_DISABLED notice so 'off' is never silent.
+    #
+    # model_integrity:
+    #   rules:
+    #     - code: MISSING_DESCRIPTION
+    #       severity: warning
+    #     - code: INCREMENTAL_LOAD_FRAGILE
+    #       params:
+    #         require_primary_keys: true

@@ -614,6 +614,38 @@ unrelated comments are not claimed. Description text is SQL-escaped.
 
 A description-sync failure is best-effort: data remains loaded and the next run retries the metadata synchronization. Empty descriptions are rejected during configuration loading.
 
+### Model-integrity rule policy
+
+The model-integrity validator (ADR-003) runs six cross-table rules at compile
+time. Each target can tune the rules in `kimball.targets.yml` under
+`model_integrity.rules`:
+
+```yaml
+targets:
+  prod:
+    # ...schema settings...
+    model_integrity:
+      rules:
+        - code: MISSING_DESCRIPTION
+          severity: warning        # override the rule's default severity
+        - code: INCREMENTAL_LOAD_FRAGILE
+          params:
+            require_primary_keys: false
+        - code: FACT_DIMENSION_ATTRIBUTE
+          enabled: false           # skip the rule on this target
+```
+
+`enabled: false`, `severity`, and `params` are the three axes. Validation is
+fail-closed: an unknown rule code or an unknown parameter name is a hard
+configuration error, so a typo can never silently disable a rule. A disabled
+rule that would have produced a finding emits a visible `RULE_DISABLED`
+notice, and the `kimball validate` summary counts them separately
+(`rule-disabled`). Severity resolution order: policy override beats the
+target profile promotion; `--strict` beats policy; the per-table
+`modeling_exceptions` ledger beats everything. A table-level modeling
+decision (not a target-level one) belongs in `modeling_exceptions` with a
+`decision_ref`.
+
 ## Project dependencies and planning
 
 Production projects declare every in-project upstream explicitly:

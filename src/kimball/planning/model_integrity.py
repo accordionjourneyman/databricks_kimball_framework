@@ -13,6 +13,7 @@ fixability classification; suppression belongs to the compiler (ADR-003
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from difflib import get_close_matches
 from typing import Literal
@@ -21,6 +22,85 @@ from kimball.common.config import MODEL_INTEGRITY_CODES, TableConfig
 
 IssueSeverity = Literal["error", "warning"]
 Fixability = Literal["auto_fixable", "suggest_fix", "decision_required"]
+CheckFn = Callable[..., list["ModelIssue"]]
+
+
+@dataclass(frozen=True)
+class RuleSpec:
+    """Registry entry for one integrity rule (ADR-003 §Decision 8)."""
+
+    code: str
+    description: str
+    default_severity: IssueSeverity
+    params: frozenset[str] = frozenset()
+
+
+_RULE_INCREMENTAL_PARAMS = frozenset({"require_primary_keys"})
+
+RULE_SPECS: dict[str, RuleSpec] = {
+    "COLUMN_SEMANTICS_CONFLICT": RuleSpec(
+        code="COLUMN_SEMANTICS_CONFLICT",
+        description=(
+            "Column name reused across tables with diverging descriptions "
+            "or conflicting declared contract types."
+        ),
+        default_severity="warning",
+    ),
+    "FACT_DIMENSION_ATTRIBUTE": RuleSpec(
+        code="FACT_DIMENSION_ATTRIBUTE",
+        description=(
+            "A fact declares a column that is a descriptive attribute of a "
+            "referenced dimension."
+        ),
+        default_severity="warning",
+    ),
+    "GRAIN_KEY_MISMATCH": RuleSpec(
+        code="GRAIN_KEY_MISMATCH",
+        description=(
+            "A fact FK resolves via a key the referenced dimension does not "
+            "declare as a grain key (surrogate, durable for type7, natural)."
+        ),
+        default_severity="warning",
+    ),
+    "MEASURE_ADDITIVITY_MISSING": RuleSpec(
+        code="MEASURE_ADDITIVITY_MISSING",
+        description=(
+            "A semi-additive measure lists non-additive dimensions the fact "
+            "does not reference (and that are not grain columns)."
+        ),
+        default_severity="warning",
+    ),
+    "INCREMENTAL_LOAD_FRAGILE": RuleSpec(
+        code="INCREMENTAL_LOAD_FRAGILE",
+        description=(
+            "A CDF source without primary_keys has no dedup basis, or a "
+            "hard-delete strategy can strand referenced downstream tables."
+        ),
+        default_severity="warning",
+        params=_RULE_INCREMENTAL_PARAMS,
+    ),
+    "MISSING_REFERENCE_TARGET": RuleSpec(
+        code="MISSING_REFERENCE_TARGET",
+        description=("A FK references a table outside the project or a non-dimension."),
+        default_severity="error",
+    ),
+    "ORPHAN_REFERENCE": RuleSpec(
+        code="ORPHAN_REFERENCE",
+        description=(
+            "A FK dimension_key is not a key the referenced dimension declares."
+        ),
+        default_severity="error",
+    ),
+    "MISSING_DESCRIPTION": RuleSpec(
+        code="MISSING_DESCRIPTION",
+        description=(
+            "A table or declared column ships without YAML-owned "
+            "documentation, so the catalog entry (or the semantics checks) "
+            "have no signal."
+        ),
+        default_severity="warning",
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -189,7 +269,7 @@ def _build_graph(nodes: dict[str, TableConfig]) -> ProjectGraph:
     )
 
 
-def _check_column_semantics(graph: ProjectGraph) -> list[ModelIssue]:
+def _check_column_semantics(graph: ProjectGraph, **_params) -> list[ModelIssue]:
     """Flag column names reused with diverging descriptions or declared types.
 
     Description drift is a warning (wording may legitimately evolve); a
@@ -254,7 +334,7 @@ def _check_column_semantics(graph: ProjectGraph) -> list[ModelIssue]:
     return issues
 
 
-def _check_fact_dimension_attribute(graph: ProjectGraph) -> list[ModelIssue]:
+def _check_fact_dimension_attribute(graph: ProjectGraph, **_params) -> list[ModelIssue]:
     """Flag descriptive dimension attributes denormalized into fact columns.
 
     Conservative by design (ADR-003): fires only when the fact explicitly
@@ -304,7 +384,7 @@ def _check_fact_dimension_attribute(graph: ProjectGraph) -> list[ModelIssue]:
     return issues
 
 
-def _check_grain_and_measures(graph: ProjectGraph) -> list[ModelIssue]:
+def _check_grain_and_measures(graph: ProjectGraph, **_params) -> list[ModelIssue]:
     """FKs resolve to the referenced dimension's declared key; measures add up."""
     issues: list[ModelIssue] = []
     for name, config in sorted(graph.nodes.items()):
@@ -405,12 +485,21 @@ def grain_keys_of(config: TableConfig) -> set[str]:
     return {*(config.merge_keys or []), *config.degenerate_dimensions}
 
 
-def _check_incremental_safety(graph: ProjectGraph) -> list[ModelIssue]:
-    """Incremental sources must be resumable; hard deletes must not strand."""
+def _check_incremental_safety(
+    graph: ProjectGraph, *, require_primary_keys: bool = True
+) -> list[ModelIssue]:
+    """Incremental sources must be resumable; hard deletes must not strand.
+
+    Params (ADR-003 §Decision 8):
+      require_primary_keys — key-less CDF sources are flagged (default
+      ``True``); set ``False`` for teams that dedupe downstream instead.
+    """
     issues: list[ModelIssue] = []
     for name, config in sorted(graph.nodes.items()):
         for source in config.sources:
-            if source.cdc_strategy != "cdf" or source.primary_keys:
+            if not require_primary_keys or source.cdc_strategy != "cdf":
+                continue
+            if source.primary_keys:
                 continue
             schema_columns = (
                 tuple(sorted(source.contract.schema_))
@@ -473,7 +562,7 @@ def _suggest_reference_target(
     return None, close
 
 
-def _check_reference_completeness(graph: ProjectGraph) -> list[ModelIssue]:
+def _check_reference_completeness(graph: ProjectGraph, **_params) -> list[ModelIssue]:
     """Every FK must resolve to a dimension in the project via a declared key."""
     issues: list[ModelIssue] = []
     for name, config in sorted(graph.nodes.items()):
@@ -602,7 +691,7 @@ def _check_reference_completeness(graph: ProjectGraph) -> list[ModelIssue]:
     return issues
 
 
-def _check_missing_description(graph: ProjectGraph) -> list[ModelIssue]:
+def _check_missing_description(graph: ProjectGraph, **_params) -> list[ModelIssue]:
     """Flag tables and output columns that lack YAML-owned documentation.
 
     The DescriptionManager can only publish what YAML declares, so a missing
@@ -679,14 +768,20 @@ def _is_reserved_or_key(
     return excused
 
 
-_CHECKS = (
-    _check_column_semantics,
-    _check_fact_dimension_attribute,
-    _check_grain_and_measures,
-    _check_incremental_safety,
-    _check_reference_completeness,
-    _check_missing_description,
-)
+# Dispatch table: each integrity code reports under the function that emits
+# its findings. A function may serve several codes (reference completeness
+# emits MISSING_REFERENCE_TARGET + ORPHAN_REFERENCE; grain/measures emits
+# GRAIN_KEY_MISMATCH + MEASURE_ADDITIVITY_MISSING).
+_CHECKS: dict[str, CheckFn] = {
+    "COLUMN_SEMANTICS_CONFLICT": _check_column_semantics,
+    "FACT_DIMENSION_ATTRIBUTE": _check_fact_dimension_attribute,
+    "GRAIN_KEY_MISMATCH": _check_grain_and_measures,
+    "MEASURE_ADDITIVITY_MISSING": _check_grain_and_measures,
+    "INCREMENTAL_LOAD_FRAGILE": _check_incremental_safety,
+    "MISSING_REFERENCE_TARGET": _check_reference_completeness,
+    "ORPHAN_REFERENCE": _check_reference_completeness,
+    "MISSING_DESCRIPTION": _check_missing_description,
+}
 
 
 def build_graph(nodes: dict[str, TableConfig]) -> ProjectGraph:
@@ -694,18 +789,35 @@ def build_graph(nodes: dict[str, TableConfig]) -> ProjectGraph:
     return _build_graph(nodes)
 
 
-def check_project(nodes: dict[str, TableConfig]) -> list[ModelIssue]:
+def check_project(
+    nodes: dict[str, TableConfig],
+    rule_params: dict[str, dict] | None = None,
+) -> list[ModelIssue]:
     """Run every cross-table check over the compiled project's nodes.
 
-    Returns raw findings. Severity resolution (profile, --strict, exception
-    suppression, EXCEPTION_APPROVED emission) is the compiler's responsibility
-    per ADR-003 §Decision 5: the engine stays a pure function of declared
-    metadata.
+    ``rule_params`` carries validated per-rule policy params (ADR-003 §Decision
+    8); each check receives the params declared by its RuleSpec.
+
+    Returns raw findings. Severity resolution (policy, profile, --strict,
+    exception suppression, EXCEPTION_APPROVED emission) is the compiler's
+    responsibility per ADR-003 §Decision 5: the engine stays a pure function of
+    declared metadata.
     """
     if not nodes:
         return []
     graph = _build_graph(nodes)
-    return [finding for check in _CHECKS for finding in check(graph)]
+    rule_params = rule_params or {}
+    findings: list[ModelIssue] = []
+    for check_fn in dict.fromkeys(_CHECKS.values()):
+        # One run per check function, merging params from every rule the
+        # function serves - prevents duplicate findings when two codes share
+        # a function.
+        params: dict = {}
+        for code, serving in _CHECKS.items():
+            if serving is check_fn:
+                params.update(rule_params.get(code, {}))
+        findings.extend(check_fn(graph, **params))
+    return findings
 
 
 __all__ = [
@@ -716,6 +828,8 @@ __all__ = [
     "IssueSeverity",
     "ModelIssue",
     "ProjectGraph",
+    "RuleSpec",
+    "RULE_SPECS",
     "build_graph",
     "check_project",
 ]

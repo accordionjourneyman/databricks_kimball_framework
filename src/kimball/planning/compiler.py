@@ -5,7 +5,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from kimball.common.config import TableConfig
+from kimball.common.config import (
+    ModelIntegrityPolicy,
+    TableConfig,
+)
 from kimball.planning.model_integrity import (
     Fixability,
     FixSuggestion,
@@ -70,11 +73,18 @@ class ProjectCompiler:
     plans are accurate, but production rejects an omitted declaration.
     """
 
-    def __init__(self, profile: Profile = "dev", *, strict: bool = False):
+    def __init__(
+        self,
+        profile: Profile = "dev",
+        *,
+        strict: bool = False,
+        rule_policy: ModelIntegrityPolicy | None = None,
+    ):
         if profile not in ("dev", "test", "production"):
             raise ValueError(f"Unknown compilation profile: {profile}")
         self.profile = profile
         self.strict = strict
+        self.rule_policy = rule_policy
 
     def compile(self, entries: Sequence[tuple[str, TableConfig]]) -> CompiledProject:
         issues: list[ProjectIssue] = []
@@ -182,20 +192,38 @@ class ProjectCompiler:
     ) -> list[ProjectIssue]:
         """Run ADR-003 cross-table checks; resolve severity and suppression.
 
-        Profile policy (ADR-003 §Decision 5): warnings in ``dev``, errors in
-        ``test``/``production``. ``--strict`` promotes every finding to error
-        in all profiles. A matching ``modeling_exceptions`` entry waives the
-        finding: for a finding anchored on table T (same code + column), T's
-        ledger entry suppresses it; a cross-table finding anchored on a table
-        without an entry can still be waived by *any* project table listing
-        the same (code, column) — the exemption is visible either way via the
-        ``EXCEPTION_APPROVED`` warning, which then names the waiving table.
+        Resolution order (ADR-003 §Decision 8; each layer only narrows):
+          1. policy.enabled == false  -> skip, emit RULE_DISABLED.
+          2. policy.severity          -> override the finding baseline.
+          3. profile                  -> test/production error-promote.
+          4. --strict                 -> force error in every profile.
+          5. modeling_exceptions      -> suppress, emit EXCEPTION_APPROVED.
         """
         configs = {name: pipeline.config for name, pipeline in nodes.items()}
-        findings = check_project(configs)
+        policy = self.rule_policy
+        rule_params: dict[str, dict] = {}
+        if policy:
+            for rule in policy.rules:
+                rule_params[rule.code] = dict(rule.params)
+        findings = check_project(configs, rule_params=rule_params)
         error_profiles = ("test", "production")
         issues: list[ProjectIssue] = []
         for finding in findings:
+            rule_policy = policy.policy_for(finding.code) if policy else None
+            if rule_policy is not None and rule_policy.enabled is False:
+                # A disabled rule is not invisible (ADR-003 §Decision 8):
+                # emit a visible notice instead of the finding itself.
+                issues.append(
+                    ProjectIssue(
+                        "RULE_DISABLED",
+                        "warning",
+                        f"rule '{finding.code}' is disabled by target policy; "
+                        f"suppressed finding on {finding.pipeline}"
+                        + (f", column '{finding.column}'" if finding.column else ""),
+                        finding.pipeline,
+                    )
+                )
+                continue
             waived_by = _waiving_table(configs, finding.code, finding.column)
             if waived_by is not None:
                 if finding.severity == "error" or self.profile in error_profiles:
@@ -222,8 +250,14 @@ class ProjectCompiler:
                         )
                     )
                 continue
-            if self.strict or self.profile in error_profiles:
+            # ADR-003 §Decision 8 resolution order: policy severity beats the
+            # profile promotion; --strict beats everything but suppression.
+            if self.strict:
                 severity: Severity = "error"
+            elif rule_policy is not None and rule_policy.severity is not None:
+                severity = rule_policy.severity
+            elif self.profile in error_profiles:
+                severity = "error"
             else:
                 severity = "error" if finding.severity == "error" else "warning"
             issues.append(
@@ -351,7 +385,8 @@ def _summaries(issues: Sequence[ProjectIssue]) -> str:
     """Sourcery-style overview line for the model-integrity findings (ADR-003 §6)."""
     integrity = [issue for issue in issues if issue.code in _INTEGRITY_CODES]
     approved = [issue for issue in issues if issue.code == "EXCEPTION_APPROVED"]
-    if not integrity and not approved:
+    disabled = [issue for issue in issues if issue.code == "RULE_DISABLED"]
+    if not integrity and not approved and not disabled:
         return "model-integrity: no issues"
     errors = [issue for issue in integrity if issue.severity == "error"]
     warnings = [issue for issue in integrity if issue.severity == "warning"]
@@ -365,7 +400,9 @@ def _summaries(issues: Sequence[ProjectIssue]) -> str:
         parts.append(f"{len(fixable)} fixable")
     if approved:
         parts.append(f"{len(approved)} exception-approved")
-    counted = len(integrity)
+    if disabled:
+        parts.append(f"{len(disabled)} rule-disabled")
+    counted = len(integrity) + len(disabled)
     return f"model-integrity: {counted} issues — {', '.join(parts)}"
 
 

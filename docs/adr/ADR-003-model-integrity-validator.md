@@ -181,6 +181,67 @@ omit `column_descriptions` are no longer silently under-validated** — the
 descriptions as their signal, so documentation coverage and model-governance
 coverage are the same knob. Example configs ship fully documented.
 
+### 8. Rule policy surface (enable/disable/customize per target)
+
+Adding rules must stay cheap, and teams must be able to tune them per target
+without touching engine code. Two mechanisms, both committed artifacts:
+
+**Rule registry.** Every rule is registered as a `RuleSpec`:
+
+```python
+@dataclass(frozen=True)
+class RuleSpec:
+    code: str                       # must be in MODEL_INTEGRITY_CODES
+    description: str
+    default_severity: IssueSeverity # engine-emitted baseline
+    params: frozenset[str] = frozenset()
+```
+
+`check_project` dispatches over the registry; a new rule is one function plus
+one `RuleSpec`. The registry double-serves as documentation (`kimball validate
+--list-rules`-style output can enumerate it) and as the validation universe
+for policy entries.
+
+**Per-target policy** in `kimball.targets.yml` under each target:
+
+```yaml
+model_integrity:
+  rules:
+    - code: FACT_DIMENSION_ATTRIBUTE
+      enabled: false              # skip the rule on this target
+    - code: COLUMN_SEMANTICS_CONFLICT
+      severity: warning           # override the rule's default severity
+    - code: INCREMENTAL_LOAD_FRAGILE
+      params:
+        require_primary_keys: true
+```
+
+- `enabled: false`, `severity`, `params` — the three customization axes.
+- **Fail-closed validation, same discipline as `ModelingExceptionConfig`:** an
+  unknown code, unknown param key, or invalid severity in the policy block is
+  a hard config error at load time. A typo can never silently disable a rule.
+- **No silent pass:** a disabled rule is not invisible. When a disabled rule
+  would have produced a finding, the compiler emits a `RULE_DISABLED` issue
+  (warning) naming the code — the `EXCEPTION_APPROVED` pattern — and the
+  summary line counts disabled-rule skips separately.
+- Rule functions receive their params as keyword arguments; a rule that does
+  not declare a param rejects it (registry `params` is the closed set).
+
+**Resolution order (one place, in the compiler; each layer only narrows):**
+
+1. `policy.enabled == false` → skip, emit `RULE_DISABLED`.
+2. `policy.severity` override → replace the finding's baseline severity.
+3. Profile: `test`/`production` error-promotes.
+4. `--strict` forces error.
+5. Per-table `modeling_exceptions` ledger → suppress (`EXCEPTION_APPROVED`).
+
+Rejected alternatives: per-table enable/disable (policy is a target-level
+concern; scattering it across table YAMLs makes the effective state unknowable
+without reading every file); free-form inline "silence this code" in table
+configs (that is the exception ledger's job, with `decision_ref`); runtime
+plugin loading (deferred — the registry seam is enough until a real
+third-party need appears).
+
 ## Consequences
 
 - Model-review latency drops from "run a pipeline / open a notebook" to a

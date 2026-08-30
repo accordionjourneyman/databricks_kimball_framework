@@ -24,6 +24,72 @@ class StrictConfigModel(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
 
+MODEL_INTEGRITY_CODES = (
+    "COLUMN_SEMANTICS_CONFLICT",
+    "FACT_DIMENSION_ATTRIBUTE",
+    "GRAIN_KEY_MISMATCH",
+    "MEASURE_ADDITIVITY_MISSING",
+    "INCREMENTAL_LOAD_FRAGILE",
+    "MISSING_REFERENCE_TARGET",
+    "ORPHAN_REFERENCE",
+    "MISSING_DESCRIPTION",
+)
+
+Fixability = Literal["auto_fixable", "suggest_fix", "decision_required"]
+
+
+ModelIntegritySeverity = Literal["error", "warning"]
+
+
+class ModelIntegrityRulePolicy(StrictConfigModel):
+    """Per-target policy for one model-integrity rule (ADR-003 §Decision 8)."""
+
+    code: str
+    enabled: bool = True
+    severity: ModelIntegritySeverity | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("code")
+    @classmethod
+    def _code_known(cls, value: str) -> str:
+        if value not in MODEL_INTEGRITY_CODES:
+            known = ", ".join(MODEL_INTEGRITY_CODES)
+            raise ValueError(
+                f"unknown model_integrity rule code '{value}'; known codes: {known}"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _params_declared(self) -> "ModelIntegrityRulePolicy":
+        from kimball.planning.model_integrity import RULE_SPECS
+
+        spec = RULE_SPECS.get(self.code)
+        if spec is None:
+            raise ValueError(
+                f"model_integrity rule '{self.code}' is registered but has no "
+                f"RuleSpec; this is a framework bug"
+            )
+        unknown = sorted(set(self.params) - spec.params)
+        if unknown:
+            raise ValueError(
+                f"model_integrity rule '{self.code}' does not accept parameter(s) "
+                f"{unknown}; declared params: {sorted(spec.params)}"
+            )
+        return self
+
+
+class ModelIntegrityPolicy(StrictConfigModel):
+    """Per-target tuning of the model-integrity validator (ADR-003 §Decision 8)."""
+
+    rules: list[ModelIntegrityRulePolicy] = Field(default_factory=list)
+
+    def policy_for(self, code: str) -> ModelIntegrityRulePolicy | None:
+        for rule in self.rules:
+            if rule.code == code:
+                return rule
+        return None
+
+
 class TargetConfig(StrictConfigModel):
     """Non-secret data-plane settings for one deployable environment."""
 
@@ -33,6 +99,7 @@ class TargetConfig(StrictConfigModel):
     gold_schema: str
     etl_schema: str
     checkpoint_root: str | None = None
+    model_integrity: ModelIntegrityPolicy = Field(default_factory=ModelIntegrityPolicy)
 
     def template_context(self) -> dict[str, Any]:
         return {"target": self.model_dump(exclude={"name"}), "target_name": self.name}
@@ -459,20 +526,6 @@ class ConformedDimensionConfig(StrictConfigModel):
     owner: str
     grain: str
     shared_attributes: list[str] = Field(default_factory=list)
-
-
-MODEL_INTEGRITY_CODES = (
-    "COLUMN_SEMANTICS_CONFLICT",
-    "FACT_DIMENSION_ATTRIBUTE",
-    "GRAIN_KEY_MISMATCH",
-    "MEASURE_ADDITIVITY_MISSING",
-    "INCREMENTAL_LOAD_FRAGILE",
-    "MISSING_REFERENCE_TARGET",
-    "ORPHAN_REFERENCE",
-    "MISSING_DESCRIPTION",
-)
-
-Fixability = Literal["auto_fixable", "suggest_fix", "decision_required"]
 
 
 class ModelingExceptionConfig(StrictConfigModel):

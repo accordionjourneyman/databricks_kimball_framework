@@ -9,7 +9,7 @@ from typing import Any
 
 from pyspark.sql import SparkSession
 
-from kimball.common.config import ConfigLoader
+from kimball.common.config import ConfigLoader, ModelIntegrityPolicy
 from kimball.common.errors import NonRetriableError
 from kimball.orchestration.orchestrator import Orchestrator
 from kimball.orchestration.runtime import PipelineRuntime
@@ -76,6 +76,7 @@ class PipelineExecutor:
         max_workers: int = 4,
         stop_on_failure: bool = True,
         profile: Profile = "dev",
+        rule_policy: ModelIntegrityPolicy | None = None,
     ):
 
         if etl_schema is None:
@@ -92,6 +93,7 @@ class PipelineExecutor:
         self.max_workers = max_workers
         self.stop_on_failure = stop_on_failure
         self.profile: Profile = profile
+        self.rule_policy = rule_policy
         self.config_loader = ConfigLoader()
         self.spark = spark
         self._categorize_pipelines()
@@ -113,7 +115,9 @@ class PipelineExecutor:
                 raise NonRetriableError(f"Invalid config file: {path}") from exc
 
         try:
-            self.project = ProjectCompiler(profile=self.profile).compile(entries)
+            self.project = ProjectCompiler(
+                profile=self.profile, rule_policy=self.rule_policy
+            ).compile(entries)
         except ProjectValidationError as exc:
             logger.error("FATAL: Invalid pipeline project: %s", exc)
             raise NonRetriableError(f"Invalid pipeline project: {exc}") from exc
