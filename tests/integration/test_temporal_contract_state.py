@@ -53,7 +53,9 @@ def test_temporal_state_is_replay_safe_and_detects_cross_batch_disorder(
         "gold.dim_customer", "silver.customer_events", "customer-events"
     )
     assert prior.count() == 1
-    assert str(prior.first()["max_event_time"]) == "2030-01-02 12:00:00"
+    prior_row = prior.first()
+    assert prior_row is not None
+    assert str(prior_row["max_event_time"]) == "2030-01-02 12:00:00"
 
     older = spark.createDataFrame(
         [(7, "2030-01-01T12:00:00", 11)],

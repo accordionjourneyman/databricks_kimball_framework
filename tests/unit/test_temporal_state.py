@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 from unittest.mock import MagicMock
 
 from kimball.observability.temporal_state import (
@@ -50,11 +51,13 @@ def test_temporal_state_commit_is_replay_safe_and_monotonic() -> None:
 
 def test_pipeline_context_starts_without_pending_temporal_state() -> None:
     assert "pending_temporal_state" in PipelineContext.__dataclass_fields__
-    assert (
-        PipelineContext.__dataclass_fields__["pending_temporal_state"].default_factory()
-        == []
-    )
-    assert (
-        PipelineContext.__dataclass_fields__["validation_metrics"].default_factory()
-        == []
-    )
+    pending_default = PipelineContext.__dataclass_fields__[
+        "pending_temporal_state"
+    ].default_factory
+    assert pending_default is not dataclasses.MISSING
+    assert pending_default() == []
+    metrics_default = PipelineContext.__dataclass_fields__[
+        "validation_metrics"
+    ].default_factory
+    assert metrics_default is not dataclasses.MISSING
+    assert metrics_default() == []

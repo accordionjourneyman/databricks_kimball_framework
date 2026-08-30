@@ -18,7 +18,7 @@ def _remote_only() -> bool:
     try:
         from pyspark.rdd import is_remote_only
 
-        return is_remote_only()
+        return bool(is_remote_only())
     except ImportError:
         return False
 

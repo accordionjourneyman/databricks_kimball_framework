@@ -84,7 +84,7 @@ def _create_remote_spark_session() -> SparkSession:
     cluster_id = os.environ.get("DATABRICKS_CLUSTER_ID")
     builder = DatabricksSession.builder
     builder = builder.clusterId(cluster_id) if cluster_id else builder.serverless()
-    return builder.getOrCreate()
+    return cast("SparkSession", builder.getOrCreate())
 
 
 def _is_remote_only() -> bool:
@@ -92,7 +92,7 @@ def _is_remote_only() -> bool:
     try:
         from pyspark.rdd import is_remote_only
 
-        return is_remote_only()
+        return bool(is_remote_only())
     except ImportError:
         return False
 

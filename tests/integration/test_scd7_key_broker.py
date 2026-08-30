@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 import pytest
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 
-from kimball.common.config import ForeignKeyConfig, NullPolicyConfig
+from kimball.common.config import (
+    ForeignKeyConfig,
+    ForeignKeyLookupConfig,
+    NullPolicyConfig,
+)
 from kimball.common.constants import DEFAULT_VALID_TO
 from kimball.common.errors import DataQualityError
 from kimball.observability.unresolved_keys import UnresolvedKeyRegistry
@@ -37,14 +42,14 @@ def _dimension_rows(spark: SparkSession, rows: list[tuple]):
     )
 
 
-def _type7_fk(table: str, **lookup_overrides) -> ForeignKeyConfig:
-    lookup = {
-        "source_columns": ["customer_id"],
-        "event_time": "order_at",
-        "early_arriving": "default",
-        "invalid_action": "default",
+def _type7_fk(table: str, **lookup_overrides: Any) -> ForeignKeyConfig:
+    lookup = ForeignKeyLookupConfig(
+        source_columns=["customer_id"],
+        event_time="order_at",
+        early_arriving="default",
+        invalid_action="default",
         **lookup_overrides,
-    }
+    )
     return ForeignKeyConfig(
         column="customer_sk",
         references=table,
@@ -141,8 +146,11 @@ def test_broker_assigns_dual_keys_and_all_reserved_states(spark, test_db) -> Non
         )
         .first()
     )
+    assert replay is not None
     assert replay["customer_sk"] not in {-1, -2, -3, -4}
-    assert spark.table(registry.table_name).first()["status"] == "RESOLVED"
+    status_row = spark.table(registry.table_name).first()
+    assert status_row is not None
+    assert status_row["status"] == "RESOLVED"
 
 
 def test_identity_map_resolves_supplier_identity_without_rewriting_fact(
@@ -190,6 +198,8 @@ def test_identity_map_resolves_supplier_identity_without_rewriting_fact(
         .first()
     )
     expected = spark.table(dimension_table).first()
+    assert resolved is not None
+    assert expected is not None
     assert resolved["customer_sk"] == expected["customer_sk"]
     assert resolved["customer_dk"] == expected["customer_dk"]
     assert resolved["customer_id"] == "A"
@@ -227,6 +237,8 @@ def test_skeleton_key_is_preserved_when_real_member_hydrates(spark, test_db) -> 
         .first()
     )
     skeleton = spark.table(dimension_table).filter("customer_id = 'LATE'").first()
+    assert first is not None
+    assert skeleton is not None
     assert first["customer_sk"] == skeleton["customer_sk"]
     assert skeleton["__is_skeleton"] is True
     merge_scd2(
@@ -300,6 +312,7 @@ def test_kimball_null_policy_substitutes_attributes_but_rejects_null_identity(
         NullPolicyConfig(),
         identity_columns=["customer_id", "updated_at"],
     ).first()
+    assert resolved is not None
     assert resolved["city"] == "Missing"
 
     invalid = spark.createDataFrame(

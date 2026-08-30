@@ -1,9 +1,10 @@
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
 from pyspark.sql.types import LongType, StringType, StructField, StructType
 
-from kimball.common.config import SourceConfig, TableConfig
+from kimball.common.config import SourceConfig, SourceContractConfig, TableConfig
 from kimball.observability.data_quality import (
     DataQualityEventSink,
     DataQualityEventWriter,
@@ -16,13 +17,13 @@ from kimball.orchestration.services.contracts import (
 from kimball.orchestration.validation import TestSeverity as Severity
 
 
-def _source(contract: dict) -> SourceConfig:
+def _source(contract: dict[str, Any]) -> SourceConfig:
     return SourceConfig(
         name="silver.customer",
         alias="customer",
         cdc_strategy="cdf",
         primary_keys=["customer_id"],
-        contract=contract,
+        contract=cast("SourceContractConfig", contract),
     )
 
 
@@ -36,8 +37,8 @@ def test_contract_accepts_short_duration_syntax() -> None:
             "temporal": {"event_time_column": "updated_at", "allowed_lateness": "24h"},
         }
     )
-    assert source.contract.freshness.max_age == "2h"
-    assert source.contract.temporal.allowed_lateness == "24h"
+    assert source.contract.freshness.max_age == "2h"  # type: ignore[union-attr]
+    assert source.contract.temporal.allowed_lateness == "24h"  # type: ignore[union-attr]
 
 
 def test_contract_rejects_mismatched_cdc_keys() -> None:
@@ -48,17 +49,20 @@ def test_contract_rejects_mismatched_cdc_keys() -> None:
             surrogate_key="customer_sk",
             natural_keys=["customer_id"],
             sources=[
-                {
-                    "name": "silver.customer",
-                    "alias": "customer",
-                    "primary_keys": ["customer_id"],
-                    "contract": {
-                        "id": "customer",
-                        "version": "1.0.0",
-                        "schema": {"customer_id": {"type": "bigint"}},
-                        "cdc": {"primary_key": ["other_id"]},
+                cast(
+                    "SourceConfig",
+                    {
+                        "name": "silver.customer",
+                        "alias": "customer",
+                        "primary_keys": ["customer_id"],
+                        "contract": {
+                            "id": "customer",
+                            "version": "1.0.0",
+                            "schema": {"customer_id": {"type": "bigint"}},
+                            "cdc": {"primary_key": ["other_id"]},
+                        },
                     },
-                }
+                )
             ],
         )
 
@@ -76,7 +80,7 @@ def test_table_config_rejects_unknown_settings() -> None:
             surrogate_key="customer_sk",
             natural_keys=["customer_id"],
             sources=[],
-            schema_evoluton=True,
+            schema_evoluton=True,  # type: ignore[call-arg]  # intentionally misspelled
         )
 
 

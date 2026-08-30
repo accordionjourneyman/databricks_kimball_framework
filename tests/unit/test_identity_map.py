@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -72,8 +73,8 @@ def test_identity_map_loader_validates_schema_budget_and_payload() -> None:
     frame = MagicMock()
     spark.table.return_value = frame
     frame.columns = list(IDENTITY_MAP_COLUMNS)
-    selected = frame.select.return_value
-    selected.limit.return_value.collect.return_value = []
+    selected = cast("MagicMock", frame.select.return_value)
+    cast("MagicMock", selected.limit.return_value).collect.return_value = []
 
     assert load_validated_identity_map(spark, "silver.identity_map") is selected
 
@@ -93,9 +94,9 @@ def test_identity_map_loader_validates_schema_budget_and_payload() -> None:
 
 def test_identity_map_loader_rejects_unflattened_survivor_chain() -> None:
     spark = MagicMock()
-    frame = spark.table.return_value
+    frame = cast("MagicMock", spark.table.return_value)
     frame.columns = list(IDENTITY_MAP_COLUMNS)
-    selected = frame.select.return_value
+    selected = cast("MagicMock", frame.select.return_value)
     rows = [
         _row("B", "A", "2025-01-01"),
         _row("A", "C", "2025-01-01"),

@@ -95,7 +95,7 @@ def _get_catalog(ws: Any, catalog_name: str | None) -> str:
 
     try:
         default = ws.catalogs.default()
-        return default.name
+        return str(default.name)
     except Exception:
         return "hive_metastore"
 

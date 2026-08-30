@@ -45,8 +45,8 @@ def _make_config(streaming_enabled: bool) -> TableConfig:
         table_type="dimension",
         scd_type=2,
         effective_at="updated_at",
-        keys={"surrogate_key": "customer_sk", "natural_keys": ["customer_id"]},
         surrogate_key="customer_sk",
+        natural_keys=["customer_id"],
         sources=[src],
     )
 
@@ -162,9 +162,6 @@ class TestWatermarkResume:
         cfg = _make_config(True)
         orch = StreamingOrchestrator.from_config(cfg, spark=spark)
 
-        orch.etl_control.get_watermark = MagicMock(return_value=3)
-        orch.stream_loader.get_latest_version = MagicMock(return_value=5)
-
         mock_stream_df = MagicMock()
         mock_stream_df.writeStream = MagicMock()
         writer = mock_stream_df.writeStream.return_value
@@ -173,11 +170,21 @@ class TestWatermarkResume:
         writer.option.return_value = writer
         writer.trigger.return_value = writer
         writer.start.return_value = MagicMock()
-        orch.stream_loader.stream_cdf = MagicMock(return_value=mock_stream_df)
 
-        orch._start_queries({"queries": {}})
+        with (
+            patch.object(type(orch.etl_control), "get_watermark", return_value=3),
+            patch.object(
+                type(orch.stream_loader), "get_latest_version", return_value=5
+            ),
+            patch.object(
+                type(orch.stream_loader),
+                "stream_cdf",
+                return_value=mock_stream_df,
+            ) as mock_cdf,
+        ):
+            orch._start_queries({"queries": {}})
 
-        call_kwargs = orch.stream_loader.stream_cdf.call_args[1]
+        call_kwargs = mock_cdf.call_args[1]
         assert call_kwargs["config"].starting_version == 4
 
     def test_start_queries_does_not_overshoot_when_watermark_at_latest(
@@ -187,9 +194,6 @@ class TestWatermarkResume:
         cfg = _make_config(True)
         orch = StreamingOrchestrator.from_config(cfg, spark=spark)
 
-        orch.etl_control.get_watermark = MagicMock(return_value=5)
-        orch.stream_loader.get_latest_version = MagicMock(return_value=5)
-
         mock_stream_df = MagicMock()
         mock_stream_df.writeStream = MagicMock()
         writer = mock_stream_df.writeStream.return_value
@@ -198,11 +202,21 @@ class TestWatermarkResume:
         writer.option.return_value = writer
         writer.trigger.return_value = writer
         writer.start.return_value = MagicMock()
-        orch.stream_loader.stream_cdf = MagicMock(return_value=mock_stream_df)
 
-        orch._start_queries({"queries": {}})
+        with (
+            patch.object(type(orch.etl_control), "get_watermark", return_value=5),
+            patch.object(
+                type(orch.stream_loader), "get_latest_version", return_value=5
+            ),
+            patch.object(
+                type(orch.stream_loader),
+                "stream_cdf",
+                return_value=mock_stream_df,
+            ) as mock_cdf,
+        ):
+            orch._start_queries({"queries": {}})
 
-        call_kwargs = orch.stream_loader.stream_cdf.call_args[1]
+        call_kwargs = mock_cdf.call_args[1]
         assert call_kwargs["config"].starting_version is None
 
 

@@ -160,21 +160,23 @@ def _prepare(
 
 
 def _run(spark: SparkSession, scenario: Scenario) -> dict[str, Any]:
-    return Orchestrator.from_config(
-        scenario.config_path,
-        spark=spark,
-        etl_schema=scenario.database,
-    ).run()
+    return dict(
+        Orchestrator.from_config(
+            scenario.config_path,
+            spark=spark,
+            etl_schema=scenario.database,
+        ).run()
+    )
 
 
 def _run_measured(spark: SparkSession, scenario: Scenario) -> dict[str, Any]:
     group_id = f"kimball-benchmark:{scenario.target_table}"
     spark.sparkContext.setJobGroup(group_id, group_id)
     try:
-        return _run(spark, scenario)
+        return dict(_run(spark, scenario))
     finally:
-        spark.sparkContext.setLocalProperty("spark.jobGroup.id", None)
-        spark.sparkContext.setLocalProperty("spark.job.description", None)
+        spark.sparkContext.setLocalProperty("spark.jobGroup.id", "")
+        spark.sparkContext.setLocalProperty("spark.job.description", "")
 
 
 def _measure(

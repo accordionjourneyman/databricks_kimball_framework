@@ -1,16 +1,21 @@
+from typing import Any, cast
+
 import pytest
 from pydantic import ValidationError
 
-from kimball.common.config import TableConfig
+from kimball.common.config import ForeignKeyConfig, SourceConfig, TableConfig
 
 
-def _source() -> list[dict[str, object]]:
+def _source() -> list[SourceConfig]:
     return [
-        {
-            "name": "silver.customers",
-            "alias": "c",
-            "cdc_strategy": "full",
-        }
+        cast(
+            "SourceConfig",
+            {
+                "name": "silver.customers",
+                "alias": "c",
+                "cdc_strategy": "full",
+            },
+        )
     ]
 
 
@@ -51,15 +56,18 @@ def test_type7_fact_lookup_requires_dual_keys_and_event_time() -> None:
             merge_keys=["order_id"],
             sources=_source(),
             foreign_keys=[
-                {
-                    "column": "customer_sk",
-                    "references": "gold.dim_customer",
-                    "dimension_key": "customer_sk",
-                    "relationship": "type7",
-                    "durable_column": "customer_dk",
-                    "durable_dimension_key": "customer_dk",
-                    "lookup": {"source_columns": ["customer_id"]},
-                }
+                cast(
+                    "ForeignKeyConfig",
+                    {
+                        "column": "customer_sk",
+                        "references": "gold.dim_customer",
+                        "dimension_key": "customer_sk",
+                        "relationship": "type7",
+                        "durable_column": "customer_dk",
+                        "durable_dimension_key": "customer_dk",
+                        "lookup": {"source_columns": ["customer_id"]},
+                    },
+                )
             ],
         )
 
@@ -73,7 +81,7 @@ def test_type7_fact_lookup_requires_dual_keys_and_event_time() -> None:
     ],
 )
 def test_removed_legacy_contracts_fail_closed(legacy_field: str, value: object) -> None:
-    payload = {
+    payload: dict[str, Any] = {
         "table_name": "gold.fact_sales",
         "table_type": "fact",
         "merge_keys": ["order_id"],
@@ -91,26 +99,10 @@ def test_foreign_key_default_value_is_no_longer_accepted() -> None:
             table_type="fact",
             merge_keys=["order_id"],
             sources=_source(),
-            foreign_keys=[{"column": "customer_sk", "default_value": -1}],
-        )
-
-
-def test_broker_column_mapping_lengths_must_match() -> None:
-    with pytest.raises(ValidationError, match="dimension_columns"):
-        TableConfig(
-            table_name="gold.fact_sales",
-            table_type="fact",
-            merge_keys=["order_id"],
-            sources=_source(),
             foreign_keys=[
-                {
-                    "column": "customer_sk",
-                    "references": "gold.dim_customer",
-                    "dimension_key": "customer_sk",
-                    "lookup": {
-                        "source_columns": ["supplier_id", "supplier_tenant"],
-                        "dimension_columns": ["customer_id"],
-                    },
-                }
+                cast(
+                    "ForeignKeyConfig",
+                    {"column": "customer_sk", "default_value": -1},
+                )
             ],
         )

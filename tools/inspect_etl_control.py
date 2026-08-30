@@ -87,14 +87,14 @@ def _resolve_etl_schema(args: argparse.Namespace) -> str:
         from kimball.common.config import TargetLoader
 
         try:
-            return TargetLoader(args.targets).load(args.target).etl_schema
+            return str(TargetLoader(args.targets).load(args.target).etl_schema)
         except Exception as exc:  # noqa: BLE001
             print(
                 f"error: could not load target '{args.target}': {exc}", file=sys.stderr
             )
             sys.exit(1)
     if args.etl_schema:
-        return args.etl_schema
+        return str(args.etl_schema)
     if env := os.environ.get("KIMBALL_ETL_SCHEMA"):
         return env
     print(
@@ -137,7 +137,7 @@ def _fmt_dt(dt: Any) -> str:
     if dt is None:
         return "-"
     if hasattr(dt, "strftime"):
-        return dt.strftime("%Y-%m-%d %H:%M")
+        return str(dt.strftime("%Y-%m-%d %H:%M"))
     return str(dt)[:16]
 
 
@@ -396,7 +396,12 @@ def main() -> int:
             args.table, providers, runtime, history_limit=args.history_limit
         )
         if args.running or args.failed:
-            report["batches"] = _filter_batches(report["batches"], args)
+            report["batches"] = _filter_batches(
+                report["batches"],
+                running=args.running,
+                failed=args.failed,
+                older_than=args.older_than if args.running else None,
+            )
         if args.json:
             print(json.dumps(report, indent=2, sort_keys=True, default=str))
             return 0 if report["reconciliation"]["verdict"] == "consistent" else 1
@@ -415,7 +420,18 @@ def main() -> int:
         for t in targets
     ]
     if args.running or args.failed:
-        reports = [r for r in reports if _filter_batches(r["batches"], args)]
+        reports = [
+            {
+                **r,
+                "batches": _filter_batches(
+                    r["batches"],
+                    running=args.running,
+                    failed=args.failed,
+                    older_than=args.older_than if args.running else None,
+                ),
+            }
+            for r in reports
+        ]
     if args.json:
         print(json.dumps(reports, indent=2, sort_keys=True, default=str))
         return (

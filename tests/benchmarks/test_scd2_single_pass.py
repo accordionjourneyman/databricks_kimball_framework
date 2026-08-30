@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 from pyspark.sql import DataFrame, SparkSession
@@ -60,7 +61,7 @@ def _target(spark: SparkSession, table: str) -> None:
 
 
 def _source(spark: SparkSession, keys: int, versions: int) -> DataFrame:
-    rows = []
+    rows: list[dict[str, Any]] = []
     for key in range(1, keys + 1):
         rows.extend(
             {
@@ -83,8 +84,8 @@ def _run_measured(scenario: MergeScenario) -> None:
     try:
         _run(scenario)
     finally:
-        spark.sparkContext.setLocalProperty("spark.jobGroup.id", None)
-        spark.sparkContext.setLocalProperty("spark.job.description", None)
+        spark.sparkContext.setLocalProperty("spark.jobGroup.id", "")
+        spark.sparkContext.setLocalProperty("spark.job.description", "")
 
 
 def _run(scenario: MergeScenario) -> None:

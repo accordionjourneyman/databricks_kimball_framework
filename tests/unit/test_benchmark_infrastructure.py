@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -42,7 +43,7 @@ def test_manifest_contains_reproducibility_metadata(tmp_path: Path) -> None:
 
 
 def test_comparison_rejects_different_testbeds_or_runtimes() -> None:
-    baseline = {
+    baseline: dict[str, Any] = {
         "testbed_id": "local-a",
         "runtime": {"spark": "4.0.1", "delta": "4.2.0", "python": "3.11.9"},
     }
@@ -83,7 +84,7 @@ def test_baseline_promotion_requires_clean_protected_branch() -> None:
             {
                 **baseline,
                 "runtime": {
-                    **baseline["runtime"],
+                    **cast("dict[str, Any]", baseline["runtime"]),
                     "spark": "4.1.0",
                 },
             },

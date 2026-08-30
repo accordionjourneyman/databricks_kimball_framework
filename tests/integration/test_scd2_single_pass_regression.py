@@ -28,6 +28,7 @@ mock-based.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 
 import pytest
 from pyspark.sql import DataFrame, SparkSession
@@ -57,7 +58,7 @@ CUSTOMER_SCHEMA = StructType(
 
 
 @pytest.fixture
-def scd2_db(spark: SparkSession) -> str:
+def scd2_db(spark: SparkSession) -> Iterator[str]:
     """A throwaway database per test, dropped on teardown."""
     db = f"kimball_scd2_reg_{uuid.uuid4().hex[:8]}"
     spark.sql(f"CREATE DATABASE IF NOT EXISTS {db}")
@@ -285,9 +286,11 @@ class TestSinglePassSkeletonHydration:
         assert current[0]["email"] == "alice@y.com"
 
         # No null-SK duplicate (the original bug inserted one).
-        null_sk = spark.sql(
+        null_row = spark.sql(
             f"SELECT COUNT(*) AS c FROM {scd2_db}.{TABLE} WHERE customer_sk IS NULL"
-        ).first()["c"]
+        ).first()
+        assert null_row is not None
+        null_sk = null_row["c"]
         assert null_sk == 0, (
             f"found {null_sk} null-SK row(s) -- skeleton not hydrated in place"
         )
@@ -399,7 +402,9 @@ class TestSinglePassExpireValidTo:
 
         # The half-open interval ends exactly at oldest_new_valid_from,
         # not at the latest new version's start.
-        expected = spark.sql("SELECT '2024-03-01'::timestamp AS t").first()["t"]
+        expected_row = spark.sql("SELECT '2024-03-01'::timestamp AS t").first()
+        assert expected_row is not None
+        expected = expected_row["t"]
         assert old_row["__valid_to"] == expected, (
             f"old row __valid_to should equal oldest_new ({expected}); "
             f"got {old_row['__valid_to']} (overlap bug if 2024-09-01)"

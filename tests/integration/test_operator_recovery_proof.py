@@ -25,7 +25,9 @@ pytestmark = pytest.mark.usefixtures("spark")
 def _create_target(spark: SparkSession, table: str) -> int:
     spark.sql(f"CREATE TABLE {table} (id INT, value STRING) USING DELTA")
     spark.sql(f"INSERT INTO {table} VALUES (1, 'baseline')")
-    return int(spark.sql(f"DESCRIBE HISTORY {table}").first()["version"])
+    row = spark.sql(f"DESCRIBE HISTORY {table}").first()
+    assert row is not None
+    return int(row["version"])
 
 
 def _inject_commit(

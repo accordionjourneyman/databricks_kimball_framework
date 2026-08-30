@@ -33,7 +33,8 @@ def _assigned_strings(path: Path, names: set[str]) -> dict[str, str]:
         ):
             original = value.func.value.value
             old = ast.literal_eval(value.args[0])
-            values[target.id] = original.replace(old, "/Volumes/test/checkpoints")
+            if isinstance(original, str) and isinstance(old, str):
+                values[target.id] = original.replace(old, "/Volumes/test/checkpoints")
     return values
 
 
@@ -81,6 +82,7 @@ def test_main_notebook_configs_form_a_valid_production_dag() -> None:
         "ship_date",
     ]
     assert advanced.junk_dimensions[0].surrogate_key == "order_flags_sk"
+    assert advanced.pii is not None
     assert advanced.pii.columns[0].strategy == "tokenize"
 
 
@@ -97,5 +99,9 @@ def test_streaming_notebook_embedded_configs_load_strictly() -> None:
 
     customer = next(config for config in configs if config.scd_type == 7)
     assert customer.durable_key == "customer_dk"
-    assert customer.sources[0].contract.temporal.event_time_column == "updated_at"
+    source_contract = customer.sources[0].contract
+    assert source_contract is not None
+    assert source_contract.temporal is not None
+    assert source_contract.temporal.event_time_column == "updated_at"
+    assert customer.observability is not None
     assert customer.observability.temporal_state_table == "etl_contract_temporal_state"

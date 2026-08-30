@@ -194,11 +194,11 @@ transformation_sql: |
         # Capture Widget's surrogate key BEFORE the update so we can prove the
         # streaming merge preserved it (in-place update) rather than re-inserting
         # the row with a new SK.
-        original_sk = (
-            spark.table(f"{test_db}.dim_product")
-            .filter("product_id = 100")
-            .first()["product_sk"]
+        original_row = (
+            spark.table(f"{test_db}.dim_product").filter("product_id = 100").first()
         )
+        assert original_row is not None
+        original_sk = original_row["product_sk"]
 
         # Update Widget's price
         spark.sql(f"""

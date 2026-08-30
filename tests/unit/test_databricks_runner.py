@@ -25,7 +25,12 @@ def _install_databricks_sdk_mock() -> None:
     jobs_mod = ModuleType("databricks.sdk.service.jobs")
     compute_mod = ModuleType("databricks.sdk.service.compute")
 
-    # Classes used by run_databricks_tests.py
+    # Classes used by run_databricks_tests.py (mock modules carry dynamic
+    # attributes, hence `setattr` instead of plain attribute assignment).
+    assert isinstance(jobs_mod, ModuleType)
+    assert isinstance(compute_mod, ModuleType)
+    assert isinstance(service_pkg, ModuleType)
+    assert isinstance(databricks_pkg, ModuleType)
     for name in [
         "SubmitTask",
         "SparkPythonTask",
@@ -46,9 +51,9 @@ def _install_databricks_sdk_mock() -> None:
     class _PerformanceTarget:
         STANDARD = "STANDARD"
 
-    jobs_mod.PerformanceTarget = _PerformanceTarget
+    jobs_mod.PerformanceTarget = _PerformanceTarget  # type: ignore[attr-defined]
 
-    compute_mod.Environment = type(
+    compute_mod.Environment = type(  # type: ignore[attr-defined]
         "Environment",
         (),
         {"__init__": lambda self, **kwargs: setattr(self, "_kwargs", kwargs)},
@@ -69,12 +74,12 @@ def _install_databricks_sdk_mock() -> None:
     class _ImportFormat:
         AUTO = "AUTO"
 
-    workspace_mod.ImportFormat = _ImportFormat
+    workspace_mod.ImportFormat = _ImportFormat  # type: ignore[attr-defined]
 
-    service_pkg.jobs = jobs_mod
-    service_pkg.compute = compute_mod
-    service_pkg.workspace = workspace_mod
-    databricks_pkg.sdk = sdk_pkg
+    service_pkg.jobs = jobs_mod  # type: ignore[attr-defined]
+    service_pkg.compute = compute_mod  # type: ignore[attr-defined]
+    service_pkg.workspace = workspace_mod  # type: ignore[attr-defined]
+    databricks_pkg.sdk = sdk_pkg  # type: ignore[attr-defined]
 
     sys.modules["databricks"] = databricks_pkg
     sys.modules["databricks.sdk"] = sdk_pkg
@@ -87,6 +92,7 @@ def _install_databricks_sdk_mock() -> None:
 def _load_runner_module() -> ModuleType:
     _install_databricks_sdk_mock()
     spec = importlib.util.spec_from_file_location("run_databricks_tests", RUNNER_PATH)
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules["run_databricks_tests"] = module
     spec.loader.exec_module(module)
