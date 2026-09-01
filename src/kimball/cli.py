@@ -462,10 +462,17 @@ def _recover(args: argparse.Namespace) -> int:
 def _explain(args: argparse.Namespace) -> int:
     from kimball.ops.explain import explain, explain_config_error
 
-    if args.config and not args.table:
+    # --config is declared without nargs on this subcommand, so a single
+    # path arrives as a bare string. Downstream helpers expect a sequence
+    # of paths; a bare string would be iterated character by character.
+    config_inputs: list[str] | None = (
+        [args.config] if isinstance(args.config, str) else args.config
+    )
+
+    if config_inputs and not args.table:
         try:
             target = load_target(args.target, args.targets)
-            load_compiled_project(args.config, target)
+            load_compiled_project(config_inputs, target)
             print(
                 json.dumps(
                     {"entry_point": "config", "category": "OK", "verdict": "config-ok"}
@@ -474,7 +481,7 @@ def _explain(args: argparse.Namespace) -> int:
             return 0
         except Exception as exc:  # noqa: BLE001 - any compile/config failure
             report = explain_config_error(
-                exc, args.config[0] if isinstance(args.config, list) else None
+                exc, config_inputs[0] if config_inputs else None
             )
             print(json.dumps(report.to_dict(), indent=2, sort_keys=True, default=str))
             return 1
