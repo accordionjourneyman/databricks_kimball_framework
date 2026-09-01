@@ -466,8 +466,10 @@ class KeyBroker:
                 "resolved"
             ),
         ).collect()[0]
-        total = stats["total"]
-        resolved = stats["resolved"]
+        total = int(stats["total"] or 0)
+        # F.sum returns NULL on an empty frame (e.g. an incremental run with
+        # an inactive source); treat it as zero, not arithmetic on None.
+        resolved = int(stats["resolved"] or 0)
         sentinel = total - resolved
         rate = (resolved / total * 100) if total > 0 else 100.0
 

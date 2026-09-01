@@ -16,7 +16,7 @@ from typing import Any
 from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import TimestampType
+from pyspark.sql.types import DateType, TimestampType
 
 from kimball.common.constants import DEFAULT_VALID_FROM, DEFAULT_VALID_TO
 from kimball.processing.key_generator import HashKeyGenerator
@@ -24,6 +24,21 @@ from kimball.processing.key_generator import HashKeyGenerator
 logger = logging.getLogger(__name__)
 
 _RESERVED_SKS = (-1, -2, -3, -4)
+
+
+def _replacement_for_type(data_type: Any) -> Any:
+    """Return the deterministic Kimball substitute for a NOT NULL column.
+
+    Wraps :func:`replacement_for_type` with skeleton-specific defaults for
+    the audit/validity columns a dimension table can carry.
+    """
+    if isinstance(data_type, TimestampType):
+        return DEFAULT_VALID_FROM
+    if isinstance(data_type, DateType):
+        return DEFAULT_VALID_FROM.date()
+    from kimball.processing.dimension_nulls import replacement_for_type as _rft
+
+    return _rft(data_type)
 
 
 class SkeletonGenerator:
@@ -55,6 +70,7 @@ class SkeletonGenerator:
         batch_id: str | None = None,
         *,
         version_column: str | None = None,
+        durable_key_col: str | None = None,
     ) -> None:
         """Insert skeleton rows for *fact_df* keys missing from *dim_table_name*.
 
@@ -130,6 +146,28 @@ class SkeletonGenerator:
             ).drop(min_effective[fact_join_key])
         skeletons = key_gen.generate_keys(skeletons, surrogate_key_col)
 
+        # SCD7 dimensions carry a durable key and hash fingerprints. Their
+        # columns are NOT NULL (a Type 7 table is created under the kimball
+        # null policy), so the skeleton must carry a real durable key derived
+        # the same way the merge will derive it. Later hydration in scd2.py
+        # overwrites these with the real row's values.
+        dim_columns = {f.name for f in dim.schema.fields}
+        if durable_key_col and durable_key_col in dim_columns:
+            from kimball.processing.key_generator import stamp_type7_columns
+
+            # __skeleton_valid_from is a stable effective-time input so the
+            # Type 7 key derivation has a version column; the derivation is
+            # dropped again after stamping (never projected to the target).
+            skeletons = stamp_type7_columns(
+                skeletons.withColumn(
+                    "__skeleton_valid_from",
+                    F.lit(DEFAULT_VALID_FROM).cast(TimestampType()),
+                ),
+                [dim_join_key],
+                "__skeleton_valid_from",
+                durable_key_col,
+            ).drop("__skeleton_valid_from")
+
         # Lookup table: column name -> (needs_column, apply_fn(skeletons, field, batch_id)).
         # Reduces 23 if/elif branches to a single dict lookup.
         _COLUMN_HANDLERS: dict[str, tuple[bool, Any]] = {
@@ -192,8 +230,18 @@ class SkeletonGenerator:
             if handler is not None:
                 _, apply_fn = handler
                 skeletons = apply_fn(skeletons, field, batch_id)
-            else:
+            elif field.nullable:
                 skeletons = skeletons.withColumn(name, F.lit(None).cast(field.dataType))
+            else:
+                # The target column carries a NOT NULL constraint (e.g. a
+                # dimension created under the "kimball" null policy stamps
+                # every attribute column NOT NULL).  Inserting NULL here
+                # would violate DELTA_NOT_NULL_CONSTRAINT_VIOLATED, so use
+                # the framework's type-appropriate substitute instead.
+                skeletons = skeletons.withColumn(
+                    name,
+                    F.lit(_replacement_for_type(field.dataType)).cast(field.dataType),
+                )
 
         # Project to target column order; drop helper columns not in dim.
         target_cols = [f.name for f in dim.schema.fields]

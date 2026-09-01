@@ -346,4 +346,5 @@ class MergeExecutor:
             dim_join_key=join_keys[0],
             surrogate_key_col=surrogate,
             batch_id=ctx.batch_id,
+            durable_key_col=ctx.config.durable_key,
         )

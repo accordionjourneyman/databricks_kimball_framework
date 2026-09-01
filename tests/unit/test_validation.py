@@ -941,10 +941,7 @@ class TestSparkProperty:
         validator = DataQualityValidator(spark=spark)
         assert validator.spark is spark
 
-    def test_falls_back_to_databricks_runtime(self):
-        from kimball.common import spark_session
-
-        spark_session._active_spark = None
+    def test_falls_back_to_databricks_runtime(self, _clear_active_spark):
         validator = DataQualityValidator(spark=None)
         mock_runtime = MagicMock()
         mock_runtime.spark = MagicMock()

@@ -480,19 +480,28 @@ def test_append_only_fact_loads(
     golden_schemas: tuple[str, str],
     rendered_configs: list[str],
 ) -> None:
-    """append_only + cdc_strategy: append should produce pure append, no dedup."""
+    """append_only + cdc_strategy: append should produce pure append, no dedup.
+
+    Module-scoped state: earlier tests may have already ingested day 2 into
+    the shared silver tables and run the incremental load, so the table can
+    legitimately hold more than the 3 day-1 events by the time this runs.
+    The append-only invariant asserted here is that the day-1 batch loaded
+    9001-9003 exactly once with no dedup/mutation — regardless of test order.
+    """
     _, out_schema = golden_schemas
     _run_pipelines(rendered_configs, day1_data, out_schema)
 
-    event_count = spark.table(_q(day1_data, out_schema, "fact_events")).count()
-    assert event_count == 3, f"Expected 3 events, got {event_count}"
-
-    rows = (
-        spark.table(_q(day1_data, out_schema, "fact_events"))
-        .orderBy("event_id")
-        .collect()
+    day1_ids = spark.sql(
+        f"""
+        SELECT event_id FROM {_q(day1_data, out_schema, "fact_events")}
+        WHERE event_id IN (9001, 9002, 9003)
+        ORDER BY event_id
+        """
+    ).collect()
+    assert [r.event_id for r in day1_ids] == [9001, 9002, 9003], (
+        f"Day-1 events should appear exactly once in event_id order, "
+        f"got {[r.event_id for r in day1_ids]}"
     )
-    assert [r.event_id for r in rows] == [9001, 9002, 9003]
 
 
 def test_append_only_fact_incremental(

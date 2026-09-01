@@ -604,10 +604,8 @@ class DataQualityValidator:
                 accepted_defaults.update({-1, -2, -3, -4})
             fact_fks = df.select(fk_column).distinct()
             if accepted_defaults:
-                from pyspark.sql.functions import col as _col
-
                 defaults_literal = list(accepted_defaults)
-                fact_fks = fact_fks.filter(~_col(fk_column).isin(defaults_literal))
+                fact_fks = fact_fks.filter(~F.col(fk_column).isin(defaults_literal))
             dim_df = self.spark.table(dim_table)
             if fk.get("current_only", True) and "__is_current" in dim_df.columns:
                 dim_df = dim_df.filter(F.col("__is_current") == True)  # noqa: E712

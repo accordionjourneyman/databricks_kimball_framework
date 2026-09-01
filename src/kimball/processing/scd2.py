@@ -341,6 +341,50 @@ def _merge_single_pass(
         rows_no_keys = rows_no_keys.withColumn(surrogate_key_col, col("target_sk"))
     elif surrogate_key_col not in rows_no_keys.columns:
         rows_no_keys = rows_no_keys.withColumn(surrogate_key_col, lit(None))
+    if scd_type == 7 and durable_key_col:
+        # HYDRATE rows bypass generate_keys (they keep the skeleton's SK), so
+        # they would carry a NULL durable key into the hydration update set
+        # (hydration_set[durable_key_col] = source.<dk>) and violate the
+        # target's NOT NULL constraint. Derive the true Type 7 durable key for
+        # the hydration bucket exactly as generate_keys does for insert rows.
+        has_hydrate = (
+            True
+            if lazy_eval
+            else rows_no_keys.filter(col("__merge_action") == "HYDRATE")
+            .limit(1)
+            .count()
+            > 0
+        )
+        if has_hydrate:
+            from kimball.processing.key_generator import stamp_type7_columns
+
+            dk_key_type = delta_table.toDF().schema[durable_key_col].dataType
+            fp_key_type = (
+                delta_table.toDF().schema["__durable_key_fingerprint"].dataType
+            )
+            for column in (
+                durable_key_col,
+                "__durable_key_fingerprint",
+                "__row_key_fingerprint",
+            ):
+                if column not in rows_no_keys.columns:
+                    rows_no_keys = rows_no_keys.withColumn(
+                        column,
+                        lit(None).cast(
+                            fp_key_type if "fingerprint" in column else dk_key_type
+                        ),
+                    )
+            # effective_at_column is nullable in the signature but the
+            # hydration bucket only exists for SCD7 merges where a validity
+            # column is present; guard keeps mypy narrowing honest.
+            # HYDRATE rows carry the skeleton's placeholder values; replace
+            # them wholesale with the same derivation generate_keys uses for
+            # insert rows. The skeleton's surrogate key is intentionally kept
+            # (matched via the SK merge condition below).
+            if effective_at_column and effective_at_column in rows_no_keys.columns:
+                rows_no_keys = stamp_type7_columns(
+                    rows_no_keys, join_keys, effective_at_column, durable_key_col
+                )
     final_source = rows_with_keys.unionByName(rows_no_keys, allowMissingColumns=True)
 
     # Nullify join keys on insert rows so they don't match on NK
@@ -408,6 +452,23 @@ def _merge_single_pass(
             "__etl_processed_at": "current_timestamp()",
             "__is_deleted": "false",
         }
+        # The skeleton row carried placeholder member metadata; a hydrated
+        # member is a REAL generated row. Without these the target keeps
+        # __key_origin='skeleton'/__member_status='NOT_YET_AVAILABLE', and on
+        # SCD7 tables the skeleton's zero durable key (customer_dk = 0)
+        # leaks into facts that resolve against the hydrated row.
+        if "__member_status" in target_col_names:
+            hydration_set["__member_status"] = "'REAL'"
+        if "__key_origin" in target_col_names:
+            hydration_set["__key_origin"] = "'generated'"
+        if durable_key_col and durable_key_col in target_col_names:
+            hydration_set[durable_key_col] = f"source.{durable_key_col}"
+        if "__durable_key_fingerprint" in target_col_names:
+            hydration_set["__durable_key_fingerprint"] = (
+                "source.__durable_key_fingerprint"
+            )
+        if "__row_key_fingerprint" in target_col_names:
+            hydration_set["__row_key_fingerprint"] = "source.__row_key_fingerprint"
         hydration_set.pop(surrogate_key_col, None)
         merge_builder = merge_builder.whenMatchedUpdate(
             condition="target.__is_skeleton = true AND source.__merge_action = 'HYDRATE'",

@@ -73,3 +73,29 @@ class HashKeyGenerator:
             .withColumn("__durable_key_fingerprint", keys["durable_fingerprint"])
             .withColumn("__row_key_fingerprint", keys["row_fingerprint"])
         )
+
+
+def stamp_type7_columns(
+    df: DataFrame,
+    natural_keys: list[str],
+    effective_at: str,
+    durable_key_col: str,
+    *,
+    fingerprint_columns: tuple[str, str] = (
+        "__durable_key_fingerprint",
+        "__row_key_fingerprint",
+    ),
+) -> DataFrame:
+    """Add the Type 7 durable key and fingerprint columns to *df*.
+
+    Single derivation point shared by insert-row key generation, skeleton
+    placeholders, and HYDRATE rows: all three must produce the same values
+    for the same natural key/effective-time so NOT NULL constraints hold and
+    collision evidence stays consistent across the pipeline.
+    """
+    keys = type7_key_columns(natural_keys, effective_at)
+    return (
+        df.withColumn(durable_key_col, keys["durable_key"])
+        .withColumn(fingerprint_columns[0], keys["durable_fingerprint"])
+        .withColumn(fingerprint_columns[1], keys["row_fingerprint"])
+    )

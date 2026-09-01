@@ -31,13 +31,15 @@ def spark():
         pytest.skip("Databricks Connect cannot create a local Spark session")
     if shutil.which("java") is None and not os.environ.get("JAVA_HOME"):
         pytest.skip("Java is required for Spark microbenchmarks")
+    # getOrCreate() may return the session-scoped fixture's live session.
+    # Stopping it here would kill the JVM for every later test in the run;
+    # the shared session's lifecycle is managed by the session fixture.
     session = (
         SparkSession.builder.appName("KimballMicrobenchmarks")
         .master("local[2]")
         .getOrCreate()
     )
     yield session
-    session.stop()
 
 
 def test_hashdiff_10_columns_1k(benchmark, spark):

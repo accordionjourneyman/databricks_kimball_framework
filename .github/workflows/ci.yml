@@ -57,7 +57,7 @@ jobs:
             -o junit_family=legacy \
             --cov=src/kimball \
             --cov-branch \
-            --cov-fail-under=70 \
+            --cov-fail-under=80 \
             --cov-report=xml
 
       - name: Publish test results

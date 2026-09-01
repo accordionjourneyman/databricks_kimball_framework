@@ -22,7 +22,17 @@ def merge_scd4(
     schema_evolution: bool = False,
     effective_at_column: str | None = None,
 ) -> None:
+    # Generate the surrogate key ONCE on the persisted source so the current
+    # table and the EAV history derive identical SKs. merge_scd1 keys its
+    # own local copy internally, but _merge_history needs the SK on the
+    # shared source as well — without this the history stack() expression
+    # cannot resolve the surrogate key column.
+    from kimball.processing.merge_helpers import generate_keys as _generate_keys
+
     reusable_source = source_df.persist()
+    reusable_source = _generate_keys(
+        reusable_source, join_keys, surrogate_key_col, scd_type=1
+    )
     try:
         merge_scd1(
             reusable_source,

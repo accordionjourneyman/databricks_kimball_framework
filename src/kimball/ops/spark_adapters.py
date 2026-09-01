@@ -47,13 +47,13 @@ class SparkETLControlStore:
     def get_target_state(self, target_table: str) -> TargetControlState:
         if not self.control_table_exists():
             return TargetControlState(target_table, False, ())
-        from pyspark.sql.functions import col
-
-        rows = (
-            self._spark.table(self._fq)
-            .filter(col("target_table") == target_table)
-            .collect()
-        )
+        # Filter via SQL string: SparkETLControlStore is also exercised
+        # without a live JVM in unit tests, and eager F.col(...) resolution
+        # would require a SparkContext merely to build the expression.
+        rows = self._spark.sql(
+            f"SELECT * FROM {quote_table_name(self._fq)} "
+            f"WHERE target_table = '{target_table}'"
+        ).collect()
         batches = tuple(_row_to_batch(r) for r in rows)
         return TargetControlState(target_table, True, batches)
 

@@ -86,6 +86,31 @@ class SourceLoader:
                 )
                 try:
                     table_schema = ctx.spark.table(item.source.name).schema
+                    # CDF sources expose _change_type et al. on a live read;
+                    # an inactive (caught-up) source must expose the same
+                    # columns or the user's transformation_sql -- which was
+                    # written against the CDF shape -- fails to resolve.
+                    if item.source.cdc_strategy == "cdf":
+                        from pyspark.sql.types import (
+                            LongType,
+                            StringType,
+                            StructField,
+                            StructType,
+                            TimestampType,
+                        )
+
+                        existing = set(table_schema.fieldNames())
+                        extra = [
+                            StructField(name, typ, True)
+                            for name, typ in (
+                                ("_change_type", StringType()),
+                                ("_commit_version", LongType()),
+                                ("_commit_timestamp", TimestampType()),
+                            )
+                            if name not in existing
+                        ]
+                        if extra:
+                            table_schema = StructType(list(table_schema.fields) + extra)
                     empty_df = ctx.spark.createDataFrame([], table_schema)
                 except Exception:
                     empty_df = ctx.spark.createDataFrame([], "x int")

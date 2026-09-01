@@ -5,7 +5,7 @@ from typing import Any, cast
 
 from delta.tables import DeltaTable
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import current_timestamp
+from pyspark.sql.functions import current_timestamp, lit
 
 from kimball.common.spark_session import get_spark
 from kimball.processing.merge_helpers import (
@@ -34,8 +34,6 @@ def merge_scd1(
     source_df = dedup_cdf(source_df, join_keys)
     if append_only:
         if "__is_deleted" not in source_df.columns:
-            from pyspark.sql.functions import lit
-
             source_df = source_df.withColumn("__is_deleted", lit(False))
         if "__etl_processed_at" not in source_df.columns:
             source_df = source_df.withColumn("__etl_processed_at", current_timestamp())
