@@ -136,6 +136,21 @@ def _create_local_spark_session(warehouse_dir: str | None = None) -> SparkSessio
     )
 
 
+def pytest_collection_modifyitems(config, items):
+    """Auto-mark tests that require a real Spark session.
+
+    A test needs the ``spark`` marker when it (or its module via a
+    module-scoped fixture) requests the session-scoped ``spark`` fixture.
+    This lets CI run two lanes: ``pytest -m spark`` (JVM container) and
+    ``pytest -m 'not spark'`` (fast, no JVM boot).
+    """
+    import pytest as _pytest
+
+    for item in items:
+        if "spark" in item.fixturenames:
+            item.add_marker(_pytest.mark.spark)
+
+
 @pytest.fixture(scope="session")
 def spark():
     """

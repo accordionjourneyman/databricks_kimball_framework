@@ -110,3 +110,6 @@ reportMissingImports = "none"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 pythonpath = ["src", "."]
+markers = [
+    "spark: test requires a real Spark/Delta session (JVM). Deselect with -m 'not spark' for the fast lane.",
+]

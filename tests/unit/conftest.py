@@ -131,6 +131,7 @@ def _isolate_pyspark_constructors(request: pytest.FixtureRequest):
             ("kimball.orchestration.watermark", ("col", "current_timestamp")),
             ("kimball.observability.resilience", ("col", "current_timestamp", "desc")),
             ("kimball.observability.unresolved_keys", ("F",)),
+            ("kimball.processing.key_broker", ("F",)),
             ("kimball.processing.scd1", ("current_timestamp", "lit")),
         ):
             target = importlib.import_module(module)

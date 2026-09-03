@@ -29,6 +29,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import reduce as _reduce
 from typing import TYPE_CHECKING, Any
 
 from pyspark.sql import functions as F
@@ -214,6 +215,25 @@ class DataQualityValidator:
             details=f"Test error: {e}",
         )
 
+    def run_check(
+        self,
+        test_name: str,
+        severity: TestSeverity,
+        check: Callable[[], TestResult],
+    ) -> TestResult:
+        """Run one validation body, converting any exception to a failed TestResult.
+
+        Combinator for the per-validator try/except shell: the body builds
+        the bad-row DataFrame and delegates to ``_build_test_result``; any
+        exception becomes a ``_test_error`` result with the given name and
+        severity. The ``details`` strings stay in the validator bodies —
+        they are operator-facing contract.
+        """
+        try:
+            return check()
+        except Exception as e:  # noqa: BLE001 - every failure becomes a finding
+            return self._test_error(test_name, severity, e)
+
     def validate_unique(
         self,
         df: DataFrame,
@@ -222,25 +242,26 @@ class DataQualityValidator:
         sample_size: int = 5,
     ) -> TestResult:
         test_name = f"unique({', '.join(columns)})"
-        try:
-            bad_df = (
+        return self.run_check(
+            test_name,
+            severity,
+            lambda: self._build_test_result(
+                df,
                 df.groupBy(*columns)
                 .agg(F.count("*").alias("_dq_count"))
-                .filter(F.col("_dq_count") > 1)
-            )
-
-            def details(count):
-                if count > 0:
-                    return f"Found {count} duplicate key combinations"
-                if count is None or count < 0:
-                    return "Found duplicate key combinations (count skipped for speed)"
-                return None
-
-            return self._build_test_result(
-                df, bad_df, test_name, severity, sample_size, details
-            )
-        except Exception as e:
-            return self._test_error(test_name, severity, e)
+                .filter(F.col("_dq_count") > 1),
+                test_name,
+                severity,
+                sample_size,
+                lambda count: (
+                    f"Found {count} duplicate key combinations"
+                    if count and count > 0
+                    else "Found duplicate key combinations (count skipped for speed)"
+                    if count is None or count < 0
+                    else None
+                ),
+            ),
+        )
 
     def validate_not_null(
         self,
@@ -250,24 +271,28 @@ class DataQualityValidator:
         sample_size: int = 5,
     ) -> TestResult:
         test_name = f"not_null({', '.join(columns)})"
-        try:
-            null_condition = F.lit(False)
-            for c in columns:
-                null_condition = null_condition | F.col(c).isNull()
-            bad_df = df.filter(null_condition)
-
-            def details(count):
-                if count > 0:
-                    return f"Found {count} rows with NULL values"
-                if count is None or count < 0:
-                    return "Found rows with NULL values (count skipped for speed)"
-                return None
-
-            return self._build_test_result(
-                df, bad_df, test_name, severity, sample_size, details
-            )
-        except Exception as e:
-            return self._test_error(test_name, severity, e)
+        return self.run_check(
+            test_name,
+            severity,
+            lambda: self._build_test_result(
+                df,
+                df.filter(
+                    _reduce(
+                        lambda acc, c: acc | F.col(c).isNull(), columns, F.lit(False)
+                    )
+                ),
+                test_name,
+                severity,
+                sample_size,
+                lambda count: (
+                    f"Found {count} rows with NULL values"
+                    if count and count > 0
+                    else "Found rows with NULL values (count skipped for speed)"
+                    if count is None or count < 0
+                    else None
+                ),
+            ),
+        )
 
     def validate_accepted_values(
         self,
@@ -278,27 +303,28 @@ class DataQualityValidator:
         sample_size: int = 5,
     ) -> TestResult:
         test_name = f"accepted_values({column})"
-        try:
-            bad_df = df.filter(~F.col(column).isin(values))
-
-            def details(count):
-                if count > 0:
-                    return f"Found {count} rows with values not in {values}"
-                if count is None or count < 0:
-                    return f"Found rows with values not in {values} (count skipped)"
-                return None
-
-            def sample_fn(d, n):
-                return [
+        return self.run_check(
+            test_name,
+            severity,
+            lambda: self._build_test_result(
+                df,
+                df.filter(~F.col(column).isin(values)),
+                test_name,
+                severity,
+                sample_size,
+                lambda count: (
+                    f"Found {count} rows with values not in {values}"
+                    if count and count > 0
+                    else f"Found rows with values not in {values} (count skipped)"
+                    if count is None or count < 0
+                    else None
+                ),
+                lambda d, n: [
                     row.asDict()
                     for row in d.select(column).distinct().limit(n).collect()
-                ]
-
-            return self._build_test_result(
-                df, bad_df, test_name, severity, sample_size, details, sample_fn
-            )
-        except Exception as e:
-            return self._test_error(test_name, severity, e)
+                ],
+            ),
+        )
 
     def validate_relationships(
         self,
@@ -312,8 +338,10 @@ class DataQualityValidator:
         test_name = (
             f"relationships({fk_column} -> {reference_table}.{reference_column})"
         )
-        try:
+
+        def _relationships_check() -> TestResult:
             dim_df = self.spark.table(reference_table)
+            # SCD2 dimensions only resolve against their current rows.
             if "__is_current" in dim_df.columns:
                 dim_df = dim_df.filter(F.col("__is_current") == True)  # noqa: E712
             orphans = df.join(
@@ -321,25 +349,26 @@ class DataQualityValidator:
                 df[fk_column] == F.col("_ref_col"),
                 "left_anti",
             ).filter(F.col(fk_column).isNotNull())
-
-            def details(count):
-                if count > 0:
-                    return f"Found {count} orphan FK values not in {reference_table}"
-                if count is None or count < 0:
-                    return f"Found orphan FK values not in {reference_table} (count skipped)"
-                return None
-
-            def sample_fn(d, n):
-                return [
+            return self._build_test_result(
+                df,
+                orphans,
+                test_name,
+                severity,
+                sample_size,
+                lambda count: (
+                    f"Found {count} orphan FK values not in {reference_table}"
+                    if count and count > 0
+                    else f"Found orphan FK values not in {reference_table} (count skipped)"
+                    if count is None or count < 0
+                    else None
+                ),
+                lambda d, n: [
                     row.asDict()
                     for row in d.select(fk_column).distinct().limit(n).collect()
-                ]
-
-            return self._build_test_result(
-                df, orphans, test_name, severity, sample_size, details, sample_fn
+                ],
             )
-        except Exception as e:
-            return self._test_error(test_name, severity, e)
+
+        return self.run_check(test_name, severity, _relationships_check)
 
     def validate_expression(
         self,
@@ -350,7 +379,8 @@ class DataQualityValidator:
         sample_size: int = 5,
     ) -> TestResult:
         test_name = test_name or f"expression({expression[:30]}...)"
-        try:
+
+        def _reject_forbidden_keywords() -> TestResult | None:
             forbidden_patterns = [
                 "select",
                 "insert",
@@ -374,21 +404,30 @@ class DataQualityValidator:
                         severity=severity,
                         details=f"Expression contains forbidden SQL keyword: '{pattern}'. Only boolean filter expressions are allowed.",
                     )
+            return None
 
-            bad_df = df.filter(~F.expr(f"({expression})"))
+        rejected = _reject_forbidden_keywords()
+        if rejected is not None:
+            return rejected
 
-            def details(count):
-                if count > 0:
-                    return f"Found {count} rows failing: {expression}"
-                if count is None or count < 0:
-                    return f"Found rows failing: {expression} (count skipped)"
-                return None
-
-            return self._build_test_result(
-                df, bad_df, test_name, severity, sample_size, details
-            )
-        except Exception as e:
-            return self._test_error(test_name, severity, e)
+        return self.run_check(
+            test_name,
+            severity,
+            lambda: self._build_test_result(
+                df,
+                df.filter(~F.expr(f"({expression})")),
+                test_name,
+                severity,
+                sample_size,
+                lambda count: (
+                    f"Found {count} rows failing: {expression}"
+                    if count and count > 0
+                    else f"Found rows failing: {expression} (count skipped)"
+                    if count is None or count < 0
+                    else None
+                ),
+            ),
+        )
 
     def validate_unique_approximate(
         self,
@@ -405,7 +444,8 @@ class DataQualityValidator:
         Use for large datasets where exact uniqueness is too expensive.
         """
         test_name = f"unique_approx({', '.join(columns)})"
-        try:
+
+        def _approx_check() -> TestResult:
             stats = (
                 df.select(*[F.col(c) for c in columns])
                 .agg(
@@ -436,8 +476,8 @@ class DataQualityValidator:
                 severity=severity,
                 details=details,
             )
-        except Exception as e:
-            return self._test_error(test_name, severity, e)
+
+        return self.run_check(test_name, severity, _approx_check)
 
     def run_config_tests(
         self,
@@ -545,7 +585,8 @@ class DataQualityValidator:
         test_name = f"natural_key_uniqueness({', '.join(natural_keys)})"
         if table_name:
             test_name = f"{table_name}: {test_name}"
-        try:
+
+        def _uniqueness_check() -> TestResult:
             is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
             if is_dev_mode:
                 total_rows: int | None = df.count()
@@ -580,8 +621,8 @@ class DataQualityValidator:
                 details=details,
                 sample_failures=sample_failures,
             )
-        except Exception as e:
-            return self._test_error(test_name, severity, e)
+
+        return self.run_check(test_name, severity, _uniqueness_check)
 
     def _check_single_fk(
         self,
@@ -598,7 +639,8 @@ class DataQualityValidator:
         if not dim_key:
             dim_key = fk_column
         test_name = f"fk_integrity({fk_column} -> {dim_table}.{dim_key})"
-        try:
+
+        def _single_fk_check() -> TestResult:
             accepted_defaults: set[Any] = set()
             if exclude_seeds:
                 accepted_defaults.update({-1, -2, -3, -4})
@@ -613,24 +655,23 @@ class DataQualityValidator:
             orphans = fact_fks.join(
                 valid_sks, fact_fks[fk_column] == valid_sks[dim_key], "left_anti"
             )
-
-            def details(count):
-                if count > 0:
-                    return f"Found {count} FK values with no matching dimension SK"
-                if count is None or count < 0:
-                    return (
-                        "Found FK values with no matching dimension SK (count skipped)"
-                    )
-                return None
-
-            def sample_fn(d, n):
-                return [row.asDict() for row in d.limit(n).collect()]
-
             return self._build_test_result(
-                df, orphans, test_name, severity, 5, details, sample_fn
+                df,
+                orphans,
+                test_name,
+                severity,
+                5,
+                lambda count: (
+                    f"Found {count} FK values with no matching dimension SK"
+                    if count and count > 0
+                    else "Found FK values with no matching dimension SK (count skipped)"
+                    if count is None or count < 0
+                    else None
+                ),
+                lambda d, n: [row.asDict() for row in d.limit(n).collect()],
             )
-        except Exception as e:
-            return self._test_error(test_name, severity, e)
+
+        return self.run_check(test_name, severity, _single_fk_check)
 
     def validate_fact_fk_integrity(
         self,
@@ -640,10 +681,7 @@ class DataQualityValidator:
         severity: TestSeverity = TestSeverity.ERROR,
     ) -> ValidationReport:
         results: list[TestResult] = []
-        try:
-            for fk in foreign_keys:
-                if result := self._check_single_fk(df, fk, exclude_seeds, severity):
-                    results.append(result)
-        finally:
-            pass
+        for fk in foreign_keys:
+            if result := self._check_single_fk(df, fk, exclude_seeds, severity):
+                results.append(result)
         return ValidationReport(results=results)

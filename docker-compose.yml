@@ -17,6 +17,10 @@ services:
       - ./kimball.targets.yml:/app/kimball.targets.yml:ro
       # Mount .env for Databricks credentials (remote target)
       - .env:/app/.env:ro
+      # Persist Spark's Delta JAR resolution across containers. Without this
+      # every --rm container re-downloads the Delta artifacts to ~/.ivy2 on
+      # first JVM boot (~30-60s per container).
+      - kimball-ivy-cache:/home/kimball/.ivy2
     environment:
       # Default to local target; override with -e KIMBALL_TARGET=databricks
       - KIMBALL_TARGET=local
@@ -48,3 +52,6 @@ services:
       - PYSPARK_PYTHON=python3
       - PYSPARK_DRIVER_PYTHON=python3
     command: ["python", "-m", "pytest", "tests/integration/test_streaming_cdf.py", "-v", "--tb=short"]
+
+volumes:
+  kimball-ivy-cache:

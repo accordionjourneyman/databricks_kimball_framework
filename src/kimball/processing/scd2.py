@@ -9,17 +9,12 @@ from delta.tables import DeltaTable
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import (
     col,
-    current_timestamp,
-    expr,
-    lag,
-    lead,
+    current_timestamp,  # noqa: F401  (test suite patches this module attribute)
+    expr,  # noqa: F401  (test suite patches this module attribute)
     lit,
-    row_number,
     when,
 )
-from pyspark.sql.window import Window
 
-from kimball.common.constants import DEFAULT_VALID_TO
 from kimball.common.spark_session import get_spark
 from kimball.processing.hashing import compute_hashdiff
 from kimball.processing.key_integrity import validate_type7_keys
@@ -31,6 +26,11 @@ from kimball.processing.merge_helpers import (
     generate_keys,
     get_current_df,
     get_validity_col,
+)
+from kimball.processing.staging import (
+    choose_order_column,
+    rank_source_versions,
+    stage_scd2_changes,
 )
 
 logger = logging.getLogger(__name__)
@@ -144,18 +144,11 @@ def _merge_single_pass(
     upserts = upserts.withColumn("hashdiff", compute_hashdiff(track_history_columns))
 
     # --- Stage all versions with chain metadata ---
-    order_col = next(
-        (
-            c
-            for c in ("_commit_version", "_commit_timestamp", "__etl_processed_at")
-            if c in upserts.columns
-        ),
-        None,
-    )
-    if order_col is None:
-        order_col = "__etl_processed_at"
-        if order_col not in upserts.columns:
-            upserts = upserts.withColumn("__etl_processed_at", current_timestamp())
+    # Staging algebra (order-column choice, ranking, target join, bucket
+    # classification, validity boundaries, union) lives in
+    # processing/staging.py as pure DataFrame functions (ADR-004). The
+    # write layer below only orchestrates key generation and the MERGE.
+    order_col, upserts = choose_order_column(upserts)
 
     # ``validity_col`` is SQL-qualified (for example ``source.updated_at``).
     # Spark window expressions need the bare source column name.
@@ -165,18 +158,9 @@ def _merge_single_pass(
     # splitting latest and historical rows.  Computing ``lead`` over only
     # historical rows leaves the newest historical row open-ended whenever a
     # newer current row exists in the same batch.
-    w_desc = Window.partitionBy(*join_keys).orderBy(col(order_col).desc())
-    if os.environ.get("KIMBALL_SINGLE_WINDOW_SCD2") == "1":
-        ranked = upserts.withColumn("_rn", row_number().over(w_desc)).withColumn(
-            "__scd2_next_valid_from", lag(_validity_col_name, 1).over(w_desc)
-        )
-    else:
-        w_asc = Window.partitionBy(*join_keys).orderBy(col(order_col).asc())
-        ranked = upserts.withColumn("_rn", row_number().over(w_desc)).withColumn(
-            "__scd2_next_valid_from", lead(_validity_col_name, 1).over(w_asc)
-        )
-    latest = ranked.filter(col("_rn") == 1).drop("_rn")
-    older = ranked.filter(col("_rn") > 1).drop("_rn")
+    latest, older = rank_source_versions(
+        upserts, join_keys, _validity_col_name, order_col
+    )
 
     # Join latest to target to get target_sk and target_hashdiff
     source_keys = latest.select(*join_keys).distinct()
@@ -203,112 +187,24 @@ def _merge_single_pass(
         )
     )
 
-    # Keep target_sk on expiration rows because the MERGE matches by version SK.
-    rows_new = joined.filter(col("target_sk").isNull()).drop(
-        "target_hashdiff", "target_sk", "target_is_skeleton"
-    )
-    rows_changed = joined.filter(
-        col("target_sk").isNotNull()
-        & ~col("target_is_skeleton")
-        & (
-            (col("hashdiff") != col("target_hashdiff"))
-            | (col("hashdiff").isNull() != col("target_hashdiff").isNull())
-        )
-    ).drop("target_hashdiff", "target_is_skeleton")
-
-    rows_to_hydrate = None
-    if target_has_skeleton_col:
-        # Keep target_sk so the HYDRATE row matches the skeleton via the SK-based
-        # MERGE condition (target.sk = source.sk) and gets hydrated in place,
-        # preserving the skeleton's original SK that fact FKs already point at.
-        # Previously target_sk was dropped and no __merge_action was set, so these
-        # rows failed to match and were inserted as null-SK duplicates while the
-        # skeleton stayed unfilled (silent data loss / orphaned FKs).
-        rows_to_hydrate = (
-            joined.filter(
-                col("target_sk").isNotNull()
-                & col("target_is_skeleton")
-                & (
-                    (col("hashdiff") != col("target_hashdiff"))
-                    | (col("hashdiff").isNull() != col("target_hashdiff").isNull())
-                )
-            )
-            .drop("target_hashdiff", "target_is_skeleton")
-            .withColumn("__merge_action", lit("HYDRATE"))
-        )
-
     # Build the chain: expire row + all versions
     validity_col, validity_note = get_validity_col(
         effective_at_column, upserts, target_table_name
     )
     logger.info(f"SCD2 time semantics: using {validity_note}")
-    # Oldest new version's valid_from per key. The old current target row must be
-    # expired at oldest_new_valid_from, NOT at the latest version's
-    # valid_from: expiring at the latest value makes the old row's
-    # [t0, latest_from] interval overlap the back-filled intermediate versions,
-    # so a point-in-time read between the oldest and latest new version returns
-    # the stale old row instead of the correct intermediate version.
-    oldest_valid_from = upserts.groupBy(*join_keys).agg(
-        expr(
-            f"min(CAST(`{_validity_col_name}` AS TIMESTAMP)) as __scd2_oldest_valid_from"
-        )
+
+    staged_changes = stage_scd2_changes(
+        joined=joined,
+        upserts=upserts,
+        older=older,
+        join_keys=join_keys,
+        validity_col=validity_col,
+        validity_col_name=_validity_col_name,
+        validity_note=validity_note,
+        lazy_eval=lazy_eval,
     )
-    rows_changed = rows_changed.join(oldest_valid_from, join_keys, "left")
-
-    # The expire row carries the exclusive upper bound for the old version.
-    expire_rows = rows_changed.withColumn("__merge_action", lit("EXPIRE"))
-    expire_rows = expire_rows.withColumn(
-        "__valid_to",
-        col("__scd2_oldest_valid_from"),
-    )
-
-    # Current versions use a concrete exclusive high-date boundary.
-    latest_version = rows_changed.withColumn("__merge_action", lit("INSERT_LATEST"))
-    latest_version = latest_version.withColumn("__is_current", lit(True))
-    latest_version = latest_version.withColumn(
-        "__valid_to", lit(DEFAULT_VALID_TO).cast("timestamp")
-    )
-
-    # New rows are current and use the same high-date boundary.
-    new_rows = rows_new.withColumn("__merge_action", lit("INSERT_NEW"))
-    new_rows = new_rows.withColumn("__is_current", lit(True))
-    new_rows = new_rows.withColumn(
-        "__valid_to", lit(DEFAULT_VALID_TO).cast("timestamp")
-    )
-
-    # Older versions: __is_current = false, chain valid_to to next version
-    older_versions = None
-    has_older = True if lazy_eval else not older.isEmpty()
-    if has_older:
-        older_versions = older.withColumn("__merge_action", lit("INSERT_OLDER"))
-        older_versions = older_versions.withColumn("__is_current", lit(False))
-        older_versions = older_versions.withColumn(
-            "__valid_to",
-            when(
-                col("__scd2_next_valid_from").isNull(),
-                lit(DEFAULT_VALID_TO).cast("timestamp"),
-            ).otherwise(col("__scd2_next_valid_from").cast("timestamp")),
-        ).drop("__scd2_next_valid_from")
-
-    # Union all staged rows
-    # has_changed gates both the expire/latest staging AND the EXPIRE
-    # whenMatchedUpdate branch below: the EXPIRE update set references
-    # source.__scd2_oldest_valid_from, which only exists on expire_rows
-    # (derived from rows_changed). When the only matched target is a skeleton
-    # (routed to HYDRATE, not rows_changed) there are no expire rows and the
-    # column is absent from final_source;    # adding the EXPIRE branch unconditionally then fails Delta plan resolution with DELTA_MERGE_UNRESOLVED_EXPRESSION.
-    # Note: If lazy evaluation is enabled, we unconditionally union and the column will be present.
-    has_changed = True if lazy_eval else not rows_changed.isEmpty()
-    staged = new_rows
-    if has_changed:
-        staged = staged.unionByName(expire_rows, allowMissingColumns=True)
-        staged = staged.unionByName(latest_version, allowMissingColumns=True)
-    if older_versions is not None:
-        staged = staged.unionByName(older_versions, allowMissingColumns=True)
-    if rows_to_hydrate is not None:
-        has_hydrate = True if lazy_eval else not rows_to_hydrate.isEmpty()
-        if has_hydrate:
-            staged = staged.unionByName(rows_to_hydrate, allowMissingColumns=True)
+    staged = staged_changes.buckets["*"]
+    has_changed = staged_changes.has_changed
 
     # Generate surrogate keys for all insert rows. EXPIRE and HYDRATE rows keep
     # the matched target row's existing SK (set below), so they are routed to
@@ -439,7 +335,7 @@ def _merge_single_pass(
         final_source.alias("source"), merge_condition
     )
 
-    if target_has_skeleton_col and rows_to_hydrate is not None:
+    if target_has_skeleton_col and staged_changes.has_hydrate:
         hydration_set = {
             c: (f"source.__orig_{c}" if c in join_keys else f"source.{c}")
             for c in upserts.columns

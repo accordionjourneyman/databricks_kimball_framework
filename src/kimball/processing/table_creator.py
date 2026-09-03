@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any
 
 from pyspark.errors import PySparkException
@@ -11,35 +10,31 @@ from kimball.common.constants import DEFAULT_VALID_TO
 from kimball.common.runtime_policy import get_runtime_policy
 from kimball.common.spark_session import get_spark
 from kimball.common.utils import quote_table_name
+from kimball.processing.ddl import (
+    CDF_METADATA_COLUMNS,
+    ColumnSpec,
+    is_safe_sql_data_type,
+    is_safe_sql_expression,
+    is_valid_identifier,
+    serialize_columns,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def _is_valid_identifier(name: str) -> bool:
-    """Validate that a name is a safe SQL identifier."""
-    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name))
+    """Validate that a name is a safe SQL identifier (delegates to ddl)."""
+    return is_valid_identifier(name)
 
 
 def _is_safe_sql_expression(expr: str) -> bool:
-    """
-    Validate that a SQL expression contains only safe characters.
-    Allows alphanumeric, whitespace, and common SQL operators/syntax: (), =<> .
-    FINDING-012: Removed single quotes to prevent SQL injection.
-    Rejecting semicolons -- and /* is handled implicitly by the whitelist.
-    """
-    # Check for quotes which could enable injection
-    if "'" in expr or '"' in expr:
-        raise ValueError(
-            f"SQL expression contains quotes, which are not allowed: {expr}. "
-            "Use column references only, no string literals."
-        )
-    # Whitelist: alphanumeric, underscore, whitespace, parens, dot, comparison ops
-    return bool(re.match(r"^[a-zA-Z0-9_().=<>\s\-,!+*/]+$", expr))
+    """Whitelist check for SQL expressions (delegates to ddl)."""
+    return is_safe_sql_expression(expr)
 
 
 def _is_safe_sql_data_type(data_type: str) -> bool:
-    """Validate a Delta SQL data type without permitting DDL injection."""
-    return bool(re.match(r"^[A-Za-z][A-Za-z0-9_(),<>\s]*$", data_type))
+    """Whitelist check for Delta data types (delegates to ddl)."""
+    return is_safe_sql_data_type(data_type)
 
 
 class TableCreator:
@@ -187,18 +182,10 @@ class TableCreator:
 
         policy = get_runtime_policy()
 
-        # Build CREATE TABLE statement
-        # We'll use the DataFrame schema to infer column definitions
-        columns = []
-
-        # CDF metadata columns should not be part of the table schema
-        # They are internal to Delta Lake's CDF feature
-        CDF_METADATA = {
-            "_change_type",
-            "_commit_version",
-            "_commit_timestamp",
-            "__merge_action",
-        }
+        # Build the column list as typed ColumnSpecs (ADR-004 step 3) and
+        # let ddl.serialize_columns do the rendering. CDF metadata columns
+        # are internal to Delta Lake's CDF feature and never part of the
+        # table schema.
 
         # Columns that should be NOT NULL based on config
         not_null_cols: set[str] = set()
@@ -220,7 +207,7 @@ class TableCreator:
                 not_null_cols.update(
                     field.name
                     for field in schema_df.schema.fields
-                    if field.name not in CDF_METADATA
+                    if field.name not in CDF_METADATA_COLUMNS
                 )
             if config.get("table_type") == "fact" and config.get("foreign_keys"):
                 for fk in config.get("foreign_keys") or []:
@@ -239,25 +226,23 @@ class TableCreator:
                     if durable_col:
                         not_null_cols.add(durable_col)
 
-        for field in schema_df.schema.fields:
-            col_name = field.name
+        column_specs = [
+            ColumnSpec(
+                name=field.name,
+                data_type=field.dataType.simpleString(),
+                not_null=not field.nullable or field.name in not_null_cols,
+            )
+            for field in schema_df.schema.fields
+            if field.name not in CDF_METADATA_COLUMNS
+        ]
 
-            # Skip CDF internal columns
-            if col_name in CDF_METADATA:
-                continue
-
-            col_def = f"{col_name} {field.dataType.simpleString()}"
-            if not field.nullable or col_name in not_null_cols:
-                col_def += " NOT NULL"
-            columns.append(col_def)
-
-        columns_sql = ",\n  ".join(columns)
-
-        # Generated columns: add GENERATED ALWAYS AS clauses
+        # Generated columns: appended with GENERATED ALWAYS AS clauses.
+        # Must not collide with input schema columns; expression and type
+        # are validated (fail closed) by ColumnSpec.validate().
         generated_cols = (config or {}).get("generated_columns") or {}
         schema_columns = {field.name for field in schema_df.schema.fields}
         for gen_col, definition in generated_cols.items():
-            if not _is_valid_identifier(gen_col):
+            if not is_valid_identifier(gen_col):
                 raise ValueError(f"Invalid generated column name: {gen_col}")
             if gen_col in schema_columns:
                 raise ValueError(
@@ -273,13 +258,15 @@ class TableCreator:
                 raise ValueError(
                     f"Generated column {gen_col} must define expression and data_type"
                 )
-            if not _is_safe_sql_expression(gen_expr):
-                raise ValueError(f"Invalid generated column expression: {gen_expr}")
-            if not _is_safe_sql_data_type(data_type):
-                raise ValueError(f"Invalid generated column data type: {data_type}")
-            columns_sql += (
-                f",\n  {gen_col} {data_type} GENERATED ALWAYS AS ({gen_expr})"
+            column_specs.append(
+                ColumnSpec(
+                    name=gen_col,
+                    data_type=data_type,
+                    generated_expression=gen_expr,
+                )
             )
+
+        columns_sql = serialize_columns(column_specs)
 
         # Properly quote multi-part table names for Unity Catalog compatibility
         quoted_table_name = quote_table_name(table_name)

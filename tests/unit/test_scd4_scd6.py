@@ -74,6 +74,7 @@ class TestSCD4Function:
         with (
             patch("kimball.processing.scd4.merge_scd1") as mock_scd1,
             patch("kimball.processing.scd4._merge_history") as mock_hist,
+            patch("kimball.processing.merge_helpers.generate_keys") as _,
         ):
             merge_scd4(
                 MagicMock(),

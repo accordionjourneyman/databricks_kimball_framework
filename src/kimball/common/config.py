@@ -640,127 +640,13 @@ class TableConfig(StrictConfigModel):
 
     @model_validator(mode="after")
     def validate_kimball_rules(self) -> "TableConfig":
-        if self.table_type == "dimension":
-            if not self.surrogate_key:
-                raise ValueError("Dimensions require keys.surrogate_key")
-            if not self.natural_keys:
-                raise ValueError("Dimensions require keys.natural_keys")
-        if self.table_type == "fact" and not self.merge_keys:
-            raise ValueError("fact tables require merge_keys")
-        if self.table_type == "fact" and self.fact_pattern and not self.grain:
-            raise ValueError("facts require a declared grain")
-        if self.table_description is not None and not self.table_description.strip():
-            raise ValueError("table_description must not be empty")
-        if any(
-            not name or not description.strip()
-            for name, description in self.column_descriptions.items()
-        ):
-            raise ValueError(
-                "column_descriptions requires non-empty column names and descriptions"
-            )
-        if self.table_type != "fact" and (
-            self.fact_pattern
-            or self.snapshot_period
-            or self.measures
-            or self.milestones
-            or self.degenerate_dimensions
-            or self.junk_dimensions
-        ):
-            raise ValueError("fact pattern metadata is only valid for fact tables")
-        if self.fact_pattern == "periodic_snapshot" and not self.snapshot_period:
-            raise ValueError("periodic_snapshot facts require snapshot_period")
-        if self.fact_pattern == "accumulating_snapshot":
-            if len(self.milestones) < 2:
-                raise ValueError(
-                    "accumulating_snapshot facts require at least two milestones"
-                )
-            orders = [m.order for m in self.milestones]
-            if len(orders) != len(set(orders)):
-                raise ValueError(
-                    "accumulating_snapshot milestones must have unique order values"
-                )
-        for fk in self.foreign_keys or []:
-            if fk.role_playing and not fk.role:
-                raise ValueError("role_playing foreign keys require role")
-            if fk.role_playing and not fk.references:
-                raise ValueError(
-                    "role_playing foreign keys require references to a physical dimension"
-                )
-        junk_keys = [junk.surrogate_key for junk in self.junk_dimensions]
-        if len(junk_keys) != len(set(junk_keys)):
-            raise ValueError("junk dimension surrogate_key values must be unique")
-        if set(self.degenerate_dimensions).intersection(junk_keys):
-            raise ValueError(
-                "a column cannot be both a degenerate and junk dimension key"
-            )
-        roles = [fk.role for fk in self.foreign_keys or [] if fk.role_playing]
-        if len(roles) != len(set(roles)):
-            raise ValueError("role_playing foreign key roles must be unique")
-        relationship_columns = [
-            column
-            for fk in self.foreign_keys or []
-            for column in (fk.column, fk.durable_column)
-            if column
-        ]
-        if len(relationship_columns) != len(set(relationship_columns)):
-            raise ValueError("foreign-key output columns must be unique")
-        measure_names = [measure.name for measure in self.measures]
-        if len(measure_names) != len(set(measure_names)):
-            raise ValueError("fact measure names must be unique")
-        milestone_names = [milestone.name for milestone in self.milestones]
-        milestone_columns = [milestone.column for milestone in self.milestones]
-        if len(milestone_names) != len(set(milestone_names)):
-            raise ValueError("fact milestone names must be unique")
-        if len(milestone_columns) != len(set(milestone_columns)):
-            raise ValueError("fact milestone columns must be unique")
-        if self.append_only and self.table_type != "fact":
-            raise ValueError("append_only is only valid for fact tables")
-        if (
-            any(s.cdc_strategy == "append" for s in self.sources)
-            and not self.append_only
-        ):
-            raise ValueError(
-                "cdc_strategy='append' requires append_only=true for the target table"
-            )
-        if self.scd_type in (2, 7) and not self.effective_at:
-            raise ValueError(
-                f"SCD Type {self.scd_type} requires 'effective_at' for idempotent history tracking. "
-                "Specify the business-time column (e.g. 'updated_at') in the YAML config."
-            )
-        if self.scd_type == 7 and not self.durable_key:
-            raise ValueError("SCD Type 7 requires keys.durable_key")
-        if self.scd_type != 7 and self.durable_key:
-            raise ValueError("keys.durable_key is only valid for SCD Type 7")
-        if self.scd_type == 4 and not self.history_table:
-            raise ValueError("SCD Type 4 requires 'history_table' to be specified.")
-        if self.scd_type == 6 and not self.current_value_columns:
-            raise ValueError(
-                "SCD Type 6 requires 'current_value_columns' to be specified."
-            )
-        exception_keys = [
-            (exception.code, column)
-            for exception in self.modeling_exceptions
-            for column in exception.columns
-        ]
-        if len(exception_keys) != len(set(exception_keys)):
-            raise ValueError(
-                "modeling_exceptions must not repeat the same (code, column) pair"
-            )
-        for source in self.sources:
-            if source.contract and source.contract.cdc:
-                contract_keys = source.contract.cdc.primary_key
-                if (
-                    contract_keys
-                    and source.primary_keys
-                    and contract_keys != source.primary_keys
-                ):
-                    raise ValueError(
-                        f"Source '{source.name}' primary_keys must match contract.cdc.primary_key"
-                    )
-                if source.contract.cdc.required and source.cdc_strategy != "cdf":
-                    raise ValueError(
-                        f"Source '{source.name}' contract requires CDF but cdc_strategy is '{source.cdc_strategy}'"
-                    )
+        # Kimball invariants live in config_rules.py as named, pure
+        # predicates (ADR-004 step 5): one home per invariant, enumerable
+        # rule set, fail-closed ValueError surface unchanged.
+        from kimball.common.config_rules import first_config_violation
+
+        if violation := first_config_violation(self):
+            raise ValueError(violation)
         return self
 
 

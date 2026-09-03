@@ -48,9 +48,12 @@ jobs:
       - name: Type-check package with Pyright
         run: pyright src/kimball
 
-      - name: Run unit tests
+      - name: Run unit tests (fast lane, no JVM)
+        # Marker split per ADR-004: tests needing a real Spark session carry
+        # the `spark` marker (auto-applied by tests/conftest.py). This lane
+        # runs everything else — pure Python, ~30s — on all Python versions.
         run: |
-          pytest tests/unit -v \
+          pytest tests/unit -m "not spark" -v \
             --ignore=tests/benchmarks \
             --ignore=tests/unit/test_performance.py \
             --junitxml=junit.xml \
@@ -90,6 +93,44 @@ jobs:
           name: kimball-framework-py${{ matrix.python-version }}-wheel
           path: dist/*.whl
           if-no-files-found: error
+
+  unit-spark-lane:
+    name: Unit tests (Spark lane, real JVM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Build Docker test image
+        run: docker compose build kimball-tests
+
+      - name: Run spark-marked unit tests against real Spark + Delta
+        # Behavior tests for the data plane (staging, key derivation, SCD
+        # merges, key broker) run here on one JVM; they are deselected in
+        # the fast lane above. Coverage is enforced on the fast lane only;
+        # this lane's job is behavioral truth on real Delta.
+        run: |
+          mkdir -p test-results
+          chmod 777 test-results
+          docker compose run --rm --no-deps \
+            -v "${PWD}/test-results:/test-results" \
+            -e KIMBALL_TARGET=local \
+            -e KIMBALL_ETL_SCHEMA=etl_control \
+            kimball-tests \
+            bash -c "python -m pytest tests/unit -m spark -v --tb=short --junitxml=/test-results/junit-unit-spark.xml -o junit_family=legacy"
+
+      - name: Publish Spark-lane unit results
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        if: always()
+        continue-on-error: true
+        with:
+          check_name: Spark-lane unit test results
+          files: test-results/junit-unit-spark.xml
 
   validate-bundle:
     name: Validate Databricks Asset Bundle
