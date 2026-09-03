@@ -18,7 +18,7 @@ from kimball.observability.temporal_state import (
 )
 from kimball.orchestration.services.context import PipelineContext
 from kimball.orchestration.services.contracts import ContractValidator
-from kimball.orchestration.services.work_plan import SourceWorkPlan
+from kimball.orchestration.services.work_plan import SourceWorkItem, SourceWorkPlan
 
 logger = logging.getLogger(__name__)
 
@@ -27,101 +27,138 @@ class SourceLoader:
     def load(
         self, ctx: PipelineContext, plan: SourceWorkPlan
     ) -> tuple[dict[str, Any], dict[str, DataFrame]]:
+        """Load every active source; register inactive ones as empty views.
+
+        Phases (ADR-004 grade-A pass): active sources are version-tracked,
+        contract-validated, loaded by strategy, CDF-deduplicated, and
+        registered as temp views; inactive (caught-up) sources get an empty
+        frame so transformation SQL still resolves.
+        """
+        stage_start = time.time()
         source_versions: dict[str, Any] = {}
         active_dfs: dict[str, DataFrame] = {}
-        stage_start = time.time()
-
         for item in plan.active_items:
-            source = item.source
-            processed_version = (
-                item.ending_version if item.ending_version is not None else 0
-            )
-            source_versions[source.name] = processed_version
-            self._validate_source_contract(ctx, source, processed_version)
-
-            if source.cdc_strategy == "full":
-                df = ctx.loader.load_full_snapshot(
-                    source.name, format=source.format, options=source.options
-                )
-            elif item.starting_version is None or item.ending_version is None:
-                raise ValueError(
-                    f"Incremental source {source.name} has no planned version range"
-                )
-            else:
-                df = ctx.loader.load_cdf(
-                    source.name,
-                    starting_version=item.starting_version,
-                    deduplicate_keys=None,
-                    ending_version=item.ending_version,
-                )
-
-            if source.cdc_strategy == "append":
-                if metadata := [
-                    column
-                    for column in (
-                        "_change_type",
-                        "_commit_version",
-                        "_commit_timestamp",
-                    )
-                    if column in df.columns
-                ]:
-                    df = df.drop(*metadata)
-
-            if (
-                isinstance(source.contract, SourceContractConfig)
-                and source.contract.temporal
-            ):
-                self._validate_temporal(ctx, source, df, processed_version)
-
-            if source.cdc_strategy == "cdf":
-                df = ctx.loader.deduplicate_cdf(df, source.primary_keys)
-            df.createOrReplaceTempView(source.alias)
-            active_dfs[source.name] = df
-
+            self._load_active_source(ctx, item, source_versions, active_dfs)
         active_names = {item.source.name for item in plan.active_items}
         for item in plan.items:
             if item.source.name not in active_names:
-                source_versions[item.source.name] = (
-                    item.prior_watermark if item.prior_watermark is not None else 0
-                )
-                try:
-                    table_schema = ctx.spark.table(item.source.name).schema
-                    # CDF sources expose _change_type et al. on a live read;
-                    # an inactive (caught-up) source must expose the same
-                    # columns or the user's transformation_sql -- which was
-                    # written against the CDF shape -- fails to resolve.
-                    if item.source.cdc_strategy == "cdf":
-                        from pyspark.sql.types import (
-                            LongType,
-                            StringType,
-                            StructField,
-                            StructType,
-                            TimestampType,
-                        )
-
-                        existing = set(table_schema.fieldNames())
-                        extra = [
-                            StructField(name, typ, True)
-                            for name, typ in (
-                                ("_change_type", StringType()),
-                                ("_commit_version", LongType()),
-                                ("_commit_timestamp", TimestampType()),
-                            )
-                            if name not in existing
-                        ]
-                        if extra:
-                            table_schema = StructType(list(table_schema.fields) + extra)
-                    empty_df = ctx.spark.createDataFrame([], table_schema)
-                except Exception:
-                    empty_df = ctx.spark.createDataFrame([], "x int")
-                empty_df.createOrReplaceTempView(item.source.alias)
-
+                self._register_inactive_source(ctx, item, source_versions)
         logger.info(
             "Loaded %d source(s) in %.2fs",
             len(active_dfs),
             time.time() - stage_start,
         )
         return source_versions, active_dfs
+
+    def _load_active_source(
+        self,
+        ctx: PipelineContext,
+        item: SourceWorkItem,
+        source_versions: dict[str, Any],
+        active_dfs: dict[str, DataFrame],
+    ) -> None:
+        """Load one active source by CDC strategy and register its view."""
+        source = item.source
+        processed_version = (
+            item.ending_version if item.ending_version is not None else 0
+        )
+        source_versions[source.name] = processed_version
+        self._validate_source_contract(ctx, source, processed_version)
+
+        df = self._read_by_strategy(ctx, item, source)
+
+        if source.cdc_strategy == "append":
+            # Append sources are pure inserts; CDF metadata is noise.
+            if metadata := [
+                column
+                for column in (
+                    "_change_type",
+                    "_commit_version",
+                    "_commit_timestamp",
+                )
+                if column in df.columns
+            ]:
+                df = df.drop(*metadata)
+
+        if (
+            isinstance(source.contract, SourceContractConfig)
+            and source.contract.temporal
+        ):
+            self._validate_temporal(ctx, source, df, processed_version)
+
+        if source.cdc_strategy == "cdf":
+            df = ctx.loader.deduplicate_cdf(df, source.primary_keys)
+        df.createOrReplaceTempView(source.alias)
+        active_dfs[source.name] = df
+
+    @staticmethod
+    def _read_by_strategy(
+        ctx: PipelineContext, item: SourceWorkItem, source
+    ) -> DataFrame:
+        """Full snapshot or versioned CDF read, per the source's strategy."""
+        if source.cdc_strategy == "full":
+            return ctx.loader.load_full_snapshot(
+                source.name, format=source.format, options=source.options
+            )
+        if item.starting_version is None or item.ending_version is None:
+            raise ValueError(
+                f"Incremental source {source.name} has no planned version range"
+            )
+        return ctx.loader.load_cdf(
+            source.name,
+            starting_version=item.starting_version,
+            deduplicate_keys=None,
+            ending_version=item.ending_version,
+        )
+
+    def _register_inactive_source(
+        self,
+        ctx: PipelineContext,
+        item: SourceWorkItem,
+        source_versions: dict[str, Any],
+    ) -> None:
+        """Register a caught-up (inactive) source as an empty typed view.
+
+        CDF sources expose _change_type et al. on a live read; an inactive
+        source must expose the same columns or the user's transformation_sql
+        -- written against the CDF shape -- fails to resolve.
+        """
+        source_versions[item.source.name] = (
+            item.prior_watermark if item.prior_watermark is not None else 0
+        )
+        try:
+            table_schema = ctx.spark.table(item.source.name).schema
+            if item.source.cdc_strategy == "cdf":
+                table_schema = self._schema_with_cdf_columns(table_schema)
+            empty_df = ctx.spark.createDataFrame([], table_schema)
+        except Exception:
+            empty_df = ctx.spark.createDataFrame([], "x int")
+        empty_df.createOrReplaceTempView(item.source.alias)
+
+    @staticmethod
+    def _schema_with_cdf_columns(table_schema):
+        """Add CDF metadata columns to a base schema (mirrors a live read)."""
+        from pyspark.sql.types import (
+            LongType,
+            StringType,
+            StructField,
+            StructType,
+            TimestampType,
+        )
+
+        existing = set(table_schema.fieldNames())
+        extra = [
+            StructField(name, typ, True)
+            for name, typ in (
+                ("_change_type", StringType()),
+                ("_commit_version", LongType()),
+                ("_commit_timestamp", TimestampType()),
+            )
+            if name not in existing
+        ]
+        if extra:
+            return StructType(list(table_schema.fields) + extra)
+        return table_schema
 
     @staticmethod
     def _event_sink(ctx: PipelineContext) -> DataQualityEventSink:

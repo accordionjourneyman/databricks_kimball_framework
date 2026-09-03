@@ -58,10 +58,14 @@ class TestBugSCD2DeleteExpiresDefaults:
 
     def test_guard_against_skeleton_expiration(self):
         """After fix: missing_in_source section contains a guard that
-        excludes skeleton rows when the column exists."""
-        from kimball.processing.scd2 import _merge_single_pass
+        excludes skeleton rows when the column exists.
 
-        src = inspect.getsource(_merge_single_pass)
+        ADR-004 moved full-snapshot delete detection into
+        ``_apply_full_snapshot_deletes``; the guard now lives there.
+        """
+        from kimball.processing.scd2 import _apply_full_snapshot_deletes
+
+        src = inspect.getsource(_apply_full_snapshot_deletes)
         assert 'current_target = current_target.filter(~col("__is_skeleton"))' in src
 
 

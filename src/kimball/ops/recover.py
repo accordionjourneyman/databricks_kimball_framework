@@ -106,84 +106,20 @@ def recover_target(
     history = providers.history
     reconciler = StateReconciler(control, history, runtime)
     reconciliation = reconciler.reconcile(target_table)
-
-    if reconciliation.verdict is ReconciliationVerdict.CONTROL_TABLE_MISSING:
-        raise StructuredError(
-            "cannot recover: etl_control table not found",
-            category=ErrorCategory.RECOVERY,
-            remediation="Run `kimball run` once to create the control schema.",
-            runbook_link=f"{RUNBOOK}#control-table-missing",
-        )
-    if reconciliation.verdict is ReconciliationVerdict.TARGET_MISSING:
-        raise StructuredError(
-            "cannot recover: target table does not exist",
-            category=ErrorCategory.RECOVERY,
-            remediation="Run the pipeline to create the target, then re-inspect.",
-            runbook_link=f"{RUNBOOK}#target-missing",
-        )
+    _fail_on_unrecoverable(target_table, reconciliation)
 
     control_state = control.get_target_state(target_table)
     delta_state = history.get_target_delta_state(
         target_table, history_limit=history_limit
     )
     warnings: list[str] = list(_upstream_warnings(control, upstream_targets))
-
-    # -- Single-writer pre-flight -----------------------------------------
-    known_ids = tuple(sorted({b.batch_id for b in control_state.batches}))
-    writer = check_writer_contract(
-        delta_state, known_ids, runtime.supports_commit_tagging
-    )
-    if writer.verdict is WriterVerdict.SUSPECTED_VIOLATION and not force:
-        raise StructuredError(
-            f"single-writer violation suspected on {target_table}: "
-            f"{len(writer.suspicious_commits)} commit(s) tagged with batch_ids "
-            "unknown to etl_control",
-            category=ErrorCategory.CONCURRENT_WRITER,
-            remediation="Confirm no other writer is active on the target, then "
-            "re-run with --force.",
-            runbook_link=f"{RUNBOOK}#concurrent-writer",
-        )
+    _enforce_single_writer(target_table, control_state, delta_state, runtime, force)
 
     # -- rewind-only mode -------------------------------------------------
     if rewind_only:
-        if (
-            reconciliation.verdict
-            is not ReconciliationVerdict.WATERMARK_AHEAD_OF_TARGET
-        ):
-            return RecoverResult(
-                target_table,
-                dry_run,
-                [],
-                [],
-                False,
-                [
-                    f"rewind-only requested but verdict is "
-                    f"{reconciliation.verdict.value} (not watermark-ahead-of-target); "
-                    "nothing to rewind."
-                ],
-            )
-        sources = sorted({b.source_table for b in control_state.batches})
-        plan = ZombieRecoveryPlan(
-            batch_id="(rewind-only)",
-            sources=tuple(sources),
-            has_committed_data=False,
-            restore_version=None,
-            rewind_watermarks={s: None for s in sources},
-            fallback=None,
+        return _recover_rewind_only(
+            target_table, control, control_state, reconciliation, dry_run, warnings
         )
-        executed: list[str] = []
-        partial = False
-        if not dry_run:
-            for source in sources:
-                try:
-                    control.rewind_watermark(target_table, source, None)
-                    executed.append(
-                        f"rewound watermark for {source} -> None (full replay next run)"
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    partial = True
-                    executed.append(f"FAILED to rewind watermark for {source}: {exc}")
-        return RecoverResult(target_table, dry_run, [plan], executed, partial, warnings)
 
     # -- zombie / orphan recovery -----------------------------------------
     zombies = list(reconciliation.zombie_batches)
@@ -224,7 +160,7 @@ def recover_target(
         return RecoverResult(target_table, dry_run, [], [], False, warnings + extra)
 
     plans: list[ZombieRecoveryPlan] = []
-    executed = []
+    executed: list[str] = []
     partial = False
 
     for zombie in zombies:
@@ -234,90 +170,241 @@ def recover_target(
         plans.append(plan)
 
         if plan.fallback:
-            warnings.append(f"batch {zombie.batch_id}: {plan.fallback}")
-            if full_reload:
-                if not dry_run:
-                    _full_reload(target_table, control, control_state, zombie, executed)
-                    executed.append(f"batch {zombie.batch_id}: full-reload executed")
-                else:
-                    executed.append(
-                        f"batch {zombie.batch_id}: would full-reload (--dry-run)"
-                    )
-            else:
-                warnings.append(
-                    f"batch {zombie.batch_id}: re-run with --full-reload, or RESTORE manually"
-                )
+            _handle_fallback(
+                target_table,
+                control,
+                control_state,
+                zombie,
+                plan,
+                dry_run,
+                full_reload,
+                executed,
+                warnings,
+            )
             continue
 
         if not plan.has_committed_data:
-            if not dry_run:
-                for source in plan.sources:
-                    control.set_batch_failed(
-                        target_table,
-                        source,
-                        "CRASH_RECOVERY: no commit, cleared RUNNING",
-                    )
-                    executed.append(
-                        f"batch {zombie.batch_id}: cleared RUNNING for {source}"
-                    )
-            else:
-                executed.append(
-                    f"batch {zombie.batch_id}: would clear RUNNING (no RESTORE)"
-                )
+            _clear_running_only(target_table, control, zombie, plan, dry_run, executed)
             continue
 
-        if not dry_run:
-            try:
-                if plan.restore_timestamp is not None:
-                    history.restore_to_timestamp(target_table, plan.restore_timestamp)
-                    executed.append(
-                        f"batch {zombie.batch_id}: RESTORE target -> timestamp "
-                        f"{plan.restore_timestamp.isoformat()}"
-                    )
-                else:
-                    history.restore_to_version(target_table, plan.restore_version)  # type: ignore[arg-type]
-                    executed.append(
-                        f"batch {zombie.batch_id}: RESTORE target -> version {plan.restore_version}"
-                    )
-            except Exception as exc:  # noqa: BLE001
-                partial = True
-                warnings.append(
-                    f"batch {zombie.batch_id}: RESTORE failed: {exc} "
-                    "(target untouched; aborting before etl_control reconcile)"
-                )
-                continue
-            for source in plan.sources:
-                try:
-                    control.set_batch_failed(
-                        target_table, source, "CRASH_RECOVERY: rolled back"
-                    )
-                    control.rewind_watermark(
-                        target_table, source, plan.rewind_watermarks.get(source)
-                    )
-                    executed.append(
-                        f"batch {zombie.batch_id}: reconciled {source} "
-                        f"(watermark -> {plan.rewind_watermarks.get(source)})"
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    partial = True
-                    warnings.append(
-                        f"batch {zombie.batch_id}: etl_control reconcile FAILED for "
-                        f"{source}: {exc} - TARGET RESTORED BUT WATERMARK STALE; "
-                        f"re-run `kimball recover --table {target_table} --rewind-watermark`"
-                    )
-        else:
-            if plan.restore_timestamp is not None:
-                target_spec = f"timestamp {plan.restore_timestamp.isoformat()}"
-            elif plan.restore_version is not None:
-                target_spec = f"version {plan.restore_version}"
-            else:
-                target_spec = "(no restore -- plan.fallback applies)"
-            executed.append(
-                f"batch {zombie.batch_id}: would RESTORE -> {target_spec} "
-                f"and rewind watermarks {plan.rewind_watermarks} (--dry-run)"
-            )
+        partial |= _execute_restore(
+            target_table, control, history, zombie, plan, dry_run, executed, warnings
+        )
 
     return RecoverResult(target_table, dry_run, plans, executed, partial, warnings)
+
+
+def _handle_fallback(
+    target_table: str,
+    control: ETLControlStore,
+    control_state,
+    zombie: BatchInfo,
+    plan: ZombieRecoveryPlan,
+    dry_run: bool,
+    full_reload: bool,
+    executed: list[str],
+    warnings: list[str],
+) -> None:
+    """No safe point-in-time restore exists for this zombie.
+
+    Either full-reload (re-running the pipeline for the batch's sources)
+    or an advisory to RESTORE manually — never a silent partial state.
+    """
+    warnings.append(f"batch {zombie.batch_id}: {plan.fallback}")
+    if full_reload:
+        if not dry_run:
+            _full_reload(target_table, control, control_state, zombie, executed)
+            executed.append(f"batch {zombie.batch_id}: full-reload executed")
+        else:
+            executed.append(f"batch {zombie.batch_id}: would full-reload (--dry-run)")
+    else:
+        warnings.append(
+            f"batch {zombie.batch_id}: re-run with --full-reload, or RESTORE manually"
+        )
+
+
+def _clear_running_only(
+    target_table: str,
+    control: ETLControlStore,
+    zombie: BatchInfo,
+    plan: ZombieRecoveryPlan,
+    dry_run: bool,
+    executed: list[str],
+) -> None:
+    """Zombie committed nothing: just clear its RUNNING rows."""
+    if not dry_run:
+        for source in plan.sources:
+            control.set_batch_failed(
+                target_table,
+                source,
+                "CRASH_RECOVERY: no commit, cleared RUNNING",
+            )
+            executed.append(f"batch {zombie.batch_id}: cleared RUNNING for {source}")
+    else:
+        executed.append(f"batch {zombie.batch_id}: would clear RUNNING (no RESTORE)")
+
+
+def _execute_restore(
+    target_table: str,
+    control: ETLControlStore,
+    history: DeltaHistoryProvider,
+    zombie: BatchInfo,
+    plan: ZombieRecoveryPlan,
+    dry_run: bool,
+    executed: list[str],
+    warnings: list[str],
+) -> bool:
+    """RESTORE the target to the plan's safe point, then reconcile watermarks.
+
+    Ordering is deliberate: the table is restored first; if etl_control
+    reconciliation then fails, the run is marked partial with an explicit
+    'TARGET RESTORED BUT WATERMARK STALE' warning and the rewind-only
+    recovery path finishes the job — never the other way round. Returns
+    whether any partial failure occurred.
+    """
+    if dry_run:
+        if plan.restore_timestamp is not None:
+            target_spec = f"timestamp {plan.restore_timestamp.isoformat()}"
+        elif plan.restore_version is not None:
+            target_spec = f"version {plan.restore_version}"
+        else:
+            target_spec = "(no restore -- plan.fallback applies)"
+        executed.append(
+            f"batch {zombie.batch_id}: would RESTORE -> {target_spec} "
+            f"and rewind watermarks {plan.rewind_watermarks} (--dry-run)"
+        )
+        return False
+    try:
+        if plan.restore_timestamp is not None:
+            history.restore_to_timestamp(target_table, plan.restore_timestamp)
+            executed.append(
+                f"batch {zombie.batch_id}: RESTORE target -> timestamp "
+                f"{plan.restore_timestamp.isoformat()}"
+            )
+        else:
+            history.restore_to_version(target_table, plan.restore_version)  # type: ignore[arg-type]
+            executed.append(
+                f"batch {zombie.batch_id}: RESTORE target -> version {plan.restore_version}"
+            )
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(
+            f"batch {zombie.batch_id}: RESTORE failed: {exc} "
+            "(target untouched; aborting before etl_control reconcile)"
+        )
+        return True
+    partial = False
+    for source in plan.sources:
+        try:
+            control.set_batch_failed(
+                target_table, source, "CRASH_RECOVERY: rolled back"
+            )
+            control.rewind_watermark(
+                target_table, source, plan.rewind_watermarks.get(source)
+            )
+            executed.append(
+                f"batch {zombie.batch_id}: reconciled {source} "
+                f"(watermark -> {plan.rewind_watermarks.get(source)})"
+            )
+        except Exception as exc:  # noqa: BLE001
+            partial = True
+            warnings.append(
+                f"batch {zombie.batch_id}: etl_control reconcile FAILED for "
+                f"{source}: {exc} - TARGET RESTORED BUT WATERMARK STALE; "
+                f"re-run `kimball recover --table {target_table} --rewind-watermark`"
+            )
+    return partial
+
+
+def _fail_on_unrecoverable(target_table: str, reconciliation) -> None:
+    """Refuse recovery when the control plane or the target itself is gone."""
+    if reconciliation.verdict is ReconciliationVerdict.CONTROL_TABLE_MISSING:
+        raise StructuredError(
+            "cannot recover: etl_control table not found",
+            category=ErrorCategory.RECOVERY,
+            remediation="Run `kimball run` once to create the control schema.",
+            runbook_link=f"{RUNBOOK}#control-table-missing",
+        )
+    if reconciliation.verdict is ReconciliationVerdict.TARGET_MISSING:
+        raise StructuredError(
+            "cannot recover: target table does not exist",
+            category=ErrorCategory.RECOVERY,
+            remediation="Run the pipeline to create the target, then re-inspect.",
+            runbook_link=f"{RUNBOOK}#target-missing",
+        )
+
+
+def _enforce_single_writer(
+    target_table: str,
+    control_state: TargetControlState,
+    delta_state: TargetDeltaState,
+    runtime: RuntimeProfile,
+    force: bool,
+) -> None:
+    """Refuse recovery on suspected concurrent-writer violations unless forced."""
+    known_ids = tuple(sorted({b.batch_id for b in control_state.batches}))
+    writer = check_writer_contract(
+        delta_state, known_ids, runtime.supports_commit_tagging
+    )
+    if writer.verdict is WriterVerdict.SUSPECTED_VIOLATION and not force:
+        raise StructuredError(
+            f"single-writer violation suspected on {target_table}: "
+            f"{len(writer.suspicious_commits)} commit(s) tagged with batch_ids "
+            "unknown to etl_control",
+            category=ErrorCategory.CONCURRENT_WRITER,
+            remediation="Confirm no other writer is active on the target, then "
+            "re-run with --force.",
+            runbook_link=f"{RUNBOOK}#concurrent-writer",
+        )
+
+
+def _recover_rewind_only(
+    target_table: str,
+    control: ETLControlStore,
+    control_state: TargetControlState,
+    reconciliation,
+    dry_run: bool,
+    warnings: list[str],
+) -> RecoverResult:
+    """--rewind-watermark mode: only reset watermarks, never touch the table.
+
+    Valid exclusively for the WATERMARK_AHEAD_OF_TARGET verdict; every other
+    verdict has nothing this mode can rewind.
+    """
+    if reconciliation.verdict is not ReconciliationVerdict.WATERMARK_AHEAD_OF_TARGET:
+        return RecoverResult(
+            target_table,
+            dry_run,
+            [],
+            [],
+            False,
+            [
+                f"rewind-only requested but verdict is "
+                f"{reconciliation.verdict.value} (not watermark-ahead-of-target); "
+                "nothing to rewind."
+            ],
+        )
+    sources = sorted({b.source_table for b in control_state.batches})
+    plan = ZombieRecoveryPlan(
+        batch_id="(rewind-only)",
+        sources=tuple(sources),
+        has_committed_data=False,
+        restore_version=None,
+        rewind_watermarks={s: None for s in sources},
+        fallback=None,
+    )
+    executed: list[str] = []
+    partial = False
+    if not dry_run:
+        for source in sources:
+            try:
+                control.rewind_watermark(target_table, source, None)
+                executed.append(
+                    f"rewound watermark for {source} -> None (full replay next run)"
+                )
+            except Exception as exc:  # noqa: BLE001
+                partial = True
+                executed.append(f"FAILED to rewind watermark for {source}: {exc}")
+    return RecoverResult(target_table, dry_run, [plan], executed, partial, warnings)
 
 
 def _upstream_warnings(control: ETLControlStore, upstream_targets: tuple[str, ...]):

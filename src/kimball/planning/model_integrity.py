@@ -390,93 +390,106 @@ def _check_grain_and_measures(graph: ProjectGraph, **_params) -> list[ModelIssue
     for name, config in sorted(graph.nodes.items()):
         if config.table_type != "fact":
             continue
-        for edge in graph.fk_edges_of(name):
-            dim = graph.nodes.get(edge.references)
-            if dim is None or dim.table_type != "dimension" or not edge.dimension_key:
-                continue
-            # A type7 relationship may resolve via either the durable key
-            # (current-state joins) or the surrogate key (point-in-time
-            # joins); both are declared keys of the dimension. Standard
-            # relationships must use the surrogate or a natural key.
-            allowed = {dim.surrogate_key, *(dim.natural_keys or [])}
-            if edge.relationship == "type7" and dim.durable_key:
-                allowed.add(dim.durable_key)
-            if edge.dimension_key in allowed:
-                continue
-            expected = (
-                dim.durable_key
-                if edge.relationship == "type7" and dim.durable_key
-                else dim.surrogate_key
-            )
-            issues.append(
-                ModelIssue(
-                    code="GRAIN_KEY_MISMATCH",
-                    severity="warning",
-                    message=(
-                        f"fact {name} FK '{edge.column}' resolves via "
-                        f"'{edge.dimension_key}' but dimension {edge.references} "
-                        f"declares {sorted(k for k in allowed if k)} as its keys"
-                    ),
-                    pipeline=name,
-                    column=edge.column,
-                    fixability="auto_fixable",
-                    fix=FixSuggestion(
-                        field=f"foreign_keys[{edge.column}].dimension_key",
-                        old=edge.dimension_key,
-                        new=expected,
-                    )
-                    if expected
-                    else None,
-                )
-            )
+        issues.extend(_grain_key_issues(graph, name))
+        issues.extend(_measure_additivity_issues(graph, name, config))
+    return issues
 
-        declared_keys = {
-            edge.dimension_key for edge in graph.fk_edges_of(name) if edge.dimension_key
-        }
-        referenced_dims = {edge.references for edge in graph.fk_edges_of(name)}
-        for measure in config.measures:
-            if measure.additivity != "semi_additive":
-                continue
-            # A semi-additive measure is also legitimately keyed by the
-            # fact's own grain: merge keys and degenerate dimensions are the
-            # "date/level" the value cannot be summed across.
-            unknown = sorted(
-                dimension
-                for dimension in measure.non_additive_dimensions
-                if dimension not in declared_keys
-                and dimension not in referenced_dims
-                and dimension not in grain_keys_of(config)
-            )
-            if not unknown:
-                continue
-            issues.append(
-                ModelIssue(
-                    code="MEASURE_ADDITIVITY_MISSING",
-                    severity="warning",
-                    message=(
-                        f"semi-additive measure '{measure.name}' on {name} lists "
-                        f"non-additive dimensions {unknown} that the fact does "
-                        f"not reference"
-                    ),
-                    pipeline=name,
-                    column=measure.name,
-                    fixability="suggest_fix",
-                    fix=FixSuggestion(
-                        field=(f"measures[{measure.name}].non_additive_dimensions"),
-                        old=tuple(measure.non_additive_dimensions),
-                        new=tuple(
-                            dimension
-                            for dimension in measure.non_additive_dimensions
-                            if dimension not in unknown
-                        ),
-                        candidates=tuple(
-                            sorted(
-                                declared_keys | referenced_dims | grain_keys_of(config)
-                            )
-                        ),
-                    ),
+
+def _grain_key_issues(graph: ProjectGraph, name: str) -> list[ModelIssue]:
+    """GRAIN_KEY_MISMATCH: FK keys the dimension via a non-declared key."""
+    issues: list[ModelIssue] = []
+    for edge in graph.fk_edges_of(name):
+        dim = graph.nodes.get(edge.references)
+        if dim is None or dim.table_type != "dimension" or not edge.dimension_key:
+            continue
+        # A type7 relationship may resolve via either the durable key
+        # (current-state joins) or the surrogate key (point-in-time
+        # joins); both are declared keys of the dimension. Standard
+        # relationships must use the surrogate or a natural key.
+        allowed = {dim.surrogate_key, *(dim.natural_keys or [])}
+        if edge.relationship == "type7" and dim.durable_key:
+            allowed.add(dim.durable_key)
+        if edge.dimension_key in allowed:
+            continue
+        expected = (
+            dim.durable_key
+            if edge.relationship == "type7" and dim.durable_key
+            else dim.surrogate_key
+        )
+        issues.append(
+            ModelIssue(
+                code="GRAIN_KEY_MISMATCH",
+                severity="warning",
+                message=(
+                    f"fact {name} FK '{edge.column}' resolves via "
+                    f"'{edge.dimension_key}' but dimension {edge.references} "
+                    f"declares {sorted(k for k in allowed if k)} as its keys"
+                ),
+                pipeline=name,
+                column=edge.column,
+                fixability="auto_fixable",
+                fix=FixSuggestion(
+                    field=f"foreign_keys[{edge.column}].dimension_key",
+                    old=edge.dimension_key,
+                    new=expected,
                 )
+                if expected
+                else None,
             )
+        )
+    return issues
+
+
+def _measure_additivity_issues(
+    graph: ProjectGraph, name: str, config: TableConfig
+) -> list[ModelIssue]:
+    """MEASURE_ADDITIVITY_MISSING: semi-additive dimensions must be referenced."""
+    issues: list[ModelIssue] = []
+    declared_keys = {
+        edge.dimension_key for edge in graph.fk_edges_of(name) if edge.dimension_key
+    }
+    referenced_dims = {edge.references for edge in graph.fk_edges_of(name)}
+    for measure in config.measures:
+        if measure.additivity != "semi_additive":
+            continue
+        # A semi-additive measure is also legitimately keyed by the
+        # fact's own grain: merge keys and degenerate dimensions are the
+        # "date/level" the value cannot be summed across.
+        unknown = sorted(
+            dimension
+            for dimension in measure.non_additive_dimensions
+            if dimension not in declared_keys
+            and dimension not in referenced_dims
+            and dimension not in grain_keys_of(config)
+        )
+        if not unknown:
+            continue
+        issues.append(
+            ModelIssue(
+                code="MEASURE_ADDITIVITY_MISSING",
+                severity="warning",
+                message=(
+                    f"semi-additive measure '{measure.name}' on {name} lists "
+                    f"non-additive dimensions {unknown} that the fact does "
+                    f"not reference"
+                ),
+                pipeline=name,
+                column=measure.name,
+                fixability="suggest_fix",
+                fix=FixSuggestion(
+                    field=(f"measures[{measure.name}].non_additive_dimensions"),
+                    old=tuple(measure.non_additive_dimensions),
+                    new=tuple(
+                        dimension
+                        for dimension in measure.non_additive_dimensions
+                        if dimension not in unknown
+                    ),
+                    candidates=tuple(
+                        sorted(declared_keys | referenced_dims | grain_keys_of(config))
+                    ),
+                ),
+            )
+        )
     return issues
 
 

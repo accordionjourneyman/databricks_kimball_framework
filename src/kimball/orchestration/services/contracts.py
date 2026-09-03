@@ -21,6 +21,7 @@ from kimball.common.config import (
     ContractQualityRule,
     ContractValidationPolicy,
     SourceConfig,
+    SourceContractConfig,
 )
 from kimball.observability.temporal_state import TemporalStateStore
 from kimball.orchestration.validation import TestSeverity
@@ -82,11 +83,15 @@ class ContractValidator:
         self.last_metrics: dict[str, Any] = {}
 
     def validate_source(self, source: SourceConfig) -> list[ContractFinding]:
-        """Validate the live source shape and CDF requirements, without reading rows."""
+        """Validate the live source shape and CDF requirements, without reading rows.
+
+        Phases (ADR-004 grade-A pass): existence, per-column schema
+        comparison, additive-column policy, CDF requirements, primary-key
+        agreement, and the temporal event-time column.
+        """
         contract = source.contract
         if contract is None:
             return []
-        findings: list[ContractFinding] = []
         if not self.spark.catalog.tableExists(source.name):
             return [
                 ContractFinding(
@@ -99,73 +104,83 @@ class ContractValidator:
             ]
         schema = self.spark.table(source.name).schema
         fields = {f.name: f for f in schema.fields}
+        findings: list[ContractFinding] = []
         for name, expected in contract.schema_.items():
-            field = fields.get(name)
-            if field is None:
-                findings.append(
-                    ContractFinding(
-                        "contract_schema",
-                        f"column:{name}",
-                        TestSeverity.ERROR,
-                        False,
-                        f"Required contract column '{name}' is missing",
-                        expected_value=expected.type,
-                    )
-                )
-                continue
-            actual_type = _spark_type_name(field)
-            if actual_type != expected.type.lower():
-                findings.append(
-                    ContractFinding(
-                        "contract_schema",
-                        f"type:{name}",
-                        TestSeverity.ERROR,
-                        False,
-                        f"Column '{name}' type changed",
-                        observed_value=actual_type,
-                        expected_value=expected.type,
-                    )
-                )
-            elif expected.nullable is False and field.nullable:
-                findings.append(
-                    ContractFinding(
-                        "contract_schema",
-                        f"nullable:{name}",
-                        TestSeverity.ERROR,
-                        False,
-                        f"Column '{name}' became nullable",
-                        observed_value="nullable",
-                        expected_value="not null",
-                    )
-                )
-            else:
-                findings.append(
-                    ContractFinding(
-                        "contract_schema",
-                        f"column:{name}",
-                        TestSeverity.ERROR,
-                        True,
-                        f"Column '{name}' matches contract",
-                    )
-                )
-        if undeclared := sorted(set(fields) - set(contract.schema_)):
-            severity = (
-                TestSeverity.WARN
-                if contract.compatibility == "nullable_additions"
-                else TestSeverity.ERROR
+            findings.append(self._compare_column(source.name, fields, name, expected))
+        if additive := self._additive_columns_finding(contract, fields):
+            findings.append(additive)
+        findings.extend(self._cdf_requirement_findings(source, contract, fields))
+        return findings
+
+    def _compare_column(
+        self, source_name: str, fields: dict, name: str, expected
+    ) -> ContractFinding:
+        """Compare one declared column: presence, type, nullability."""
+        field = fields.get(name)
+        if field is None:
+            return ContractFinding(
+                "contract_schema",
+                f"column:{name}",
+                TestSeverity.ERROR,
+                False,
+                f"Required contract column '{name}' is missing",
+                expected_value=expected.type,
             )
-            nullable = all(fields[name].nullable for name in undeclared)
-            findings.append(
-                ContractFinding(
-                    "contract_schema",
-                    "additive_columns",
-                    severity,
-                    contract.compatibility == "nullable_additions" and nullable,
-                    f"Source has undeclared columns: {', '.join(undeclared)}",
-                    observed_value=json.dumps(undeclared),
-                    expected_value="nullable additions only",
-                )
+        actual_type = _spark_type_name(field)
+        if actual_type != expected.type.lower():
+            return ContractFinding(
+                "contract_schema",
+                f"type:{name}",
+                TestSeverity.ERROR,
+                False,
+                f"Column '{name}' type changed",
+                observed_value=actual_type,
+                expected_value=expected.type,
             )
+        if expected.nullable is False and field.nullable:
+            return ContractFinding(
+                "contract_schema",
+                f"nullable:{name}",
+                TestSeverity.ERROR,
+                False,
+                f"Column '{name}' became nullable",
+                observed_value="nullable",
+                expected_value="not null",
+            )
+        return ContractFinding(
+            "contract_schema",
+            f"column:{name}",
+            TestSeverity.ERROR,
+            True,
+            f"Column '{name}' matches contract",
+        )
+
+    @staticmethod
+    def _additive_columns_finding(contract, fields: dict) -> ContractFinding | None:
+        """Flag undeclared columns under the contract's compatibility policy."""
+        if not (undeclared := sorted(set(fields) - set(contract.schema_))):
+            return None
+        severity = (
+            TestSeverity.WARN
+            if contract.compatibility == "nullable_additions"
+            else TestSeverity.ERROR
+        )
+        nullable = all(fields[name].nullable for name in undeclared)
+        return ContractFinding(
+            "contract_schema",
+            "additive_columns",
+            severity,
+            contract.compatibility == "nullable_additions" and nullable,
+            f"Source has undeclared columns: {', '.join(undeclared)}",
+            observed_value=json.dumps(undeclared),
+            expected_value="nullable additions only",
+        )
+
+    def _cdf_requirement_findings(
+        self, source: SourceConfig, contract, fields: dict
+    ) -> list[ContractFinding]:
+        """CDF-required, primary-key agreement, and event-time presence."""
+        findings: list[ContractFinding] = []
         if contract.cdc and contract.cdc.required and source.cdc_strategy != "cdf":
             findings.append(
                 ContractFinding(
@@ -381,13 +396,10 @@ class ContractValidator:
     ) -> list[ContractFinding]:
         """Inspect event-time disorder within this batch and across prior runs."""
         contract = source.contract
-        if contract is None:
+        if contract is None or contract.temporal is None:
             self.last_metrics = {}
             return []
         temporal = contract.temporal
-        if temporal is None:
-            self.last_metrics = {}
-            return []
         started_at = time.perf_counter()
         if temporal.event_time_column not in df.columns:
             self.last_metrics = {
@@ -407,78 +419,22 @@ class ContractValidator:
                     f"Missing event-time column '{temporal.event_time_column}'",
                 )
             ]
-        match = re.match(
-            r"^(\d+)\s*(s|m|h|d|seconds?|minutes?|hours?|days?)$",
-            temporal.allowed_lateness,
-            re.I,
-        )
-        amount, unit = (int(match[1]), match[2].lower()) if match else (0, "h")
-        seconds = amount * ({"s": 1, "m": 60, "h": 3600, "d": 86400}.get(unit[0], 3600))
-        cutoff = datetime.now(timezone.utc) - timedelta(seconds=seconds)
-        keys = (
-            (contract.cdc.primary_key if contract.cdc else None)
-            or source.primary_keys
-            or []
-        )
-        evaluated = TemporalStateStore.observations(
-            df, temporal.event_time_column, keys
-        )
-        if prior_state is not None:
-            previous = prior_state.select(
-                "business_key_hash",
-                F.col("max_event_time").alias("__prior_max_event_time"),
-            )
-            evaluated = evaluated.join(previous, "business_key_hash", "left")
-        else:
-            evaluated = evaluated.withColumn(
-                "__prior_max_event_time", F.lit(None).cast("timestamp")
-            )
 
-        if keys and "_commit_version" in df.columns:
-            window = Window.partitionBy("business_key_hash").orderBy("commit_version")
-            evaluated = evaluated.withColumn(
-                "__previous_event_time", F.lag("event_time").over(window)
-            )
-            has_commit_order = True
-        else:
-            evaluated = evaluated.withColumn(
-                "__previous_event_time", F.lit(None).cast("timestamp")
-            )
-            has_commit_order = False
-        evaluated = (
-            evaluated.withColumn("__late", F.col("event_time") < F.lit(cutoff))
-            .withColumn(
-                "__batch_disorder",
-                F.col("event_time") < F.col("__previous_event_time"),
-            )
-            .withColumn(
-                "__cross_batch_disorder",
-                F.col("event_time") < F.col("__prior_max_event_time"),
-            )
+        cutoff = self._lateness_cutoff(temporal.allowed_lateness)
+        evaluated = self._prepare_temporal_evaluated(
+            df, source, contract, temporal.event_time_column, prior_state, cutoff
         )
-        metrics = evaluated.agg(
-            F.sum(F.when(F.col("__late"), 1).otherwise(0)).alias("late"),
-            F.sum(F.when(F.col("__batch_disorder"), 1).otherwise(0)).alias(
-                "batch_disorder"
-            ),
-            F.sum(F.when(F.col("__cross_batch_disorder"), 1).otherwise(0)).alias(
-                "cross_batch_disorder"
-            ),
-        ).first()
-        if metrics is None:
-            raise RuntimeError("Temporal aggregation did not return metrics")
-        late_count = int(metrics["late"] or 0)
-        batch_disorder = int(metrics["batch_disorder"] or 0)
-        cross_batch_disorder = int(metrics["cross_batch_disorder"] or 0)
-        sample_limit = contract.validation.max_failure_samples
-        late_samples = (
-            [
-                row.asDict()
-                for row in evaluated.filter("__late").limit(sample_limit).collect()
-            ]
-            if late_count and sample_limit
-            else []
+        (
+            late_count,
+            batch_disorder,
+            cross_batch_disorder,
+            late_samples,
+            batch_samples,
+            cross_samples,
+        ) = self._measure_temporal_disorder(
+            evaluated, contract.validation.max_failure_samples
         )
+
         findings = [
             ContractFinding(
                 "late_event",
@@ -492,49 +448,10 @@ class ContractValidator:
                 samples=late_samples,
             )
         ]
-        if has_commit_order:
-            samples = (
-                [
-                    row.asDict()
-                    for row in evaluated.filter("__batch_disorder")
-                    .limit(sample_limit)
-                    .collect()
-                ]
-                if batch_disorder and sample_limit
-                else []
+        findings.extend(
+            self._ordering_findings(
+                evaluated, contract, temporal, df, batch_disorder, batch_samples
             )
-            findings.append(
-                ContractFinding(
-                    "out_of_order_event",
-                    "cdf_commit_order",
-                    TestSeverity(temporal.out_of_order_severity),
-                    batch_disorder == 0,
-                    "CDF event times are ordered"
-                    if batch_disorder == 0
-                    else f"Found {batch_disorder} out-of-order CDF events",
-                    failed_rows=batch_disorder,
-                    samples=samples,
-                )
-            )
-        elif "_commit_version" not in df.columns:
-            findings.append(
-                ContractFinding(
-                    "out_of_order_event",
-                    "cdf_capability",
-                    TestSeverity.WARN,
-                    False,
-                    "Cannot establish event ordering without CDF commit metadata",
-                )
-            )
-        cross_samples = (
-            [
-                row.asDict()
-                for row in evaluated.filter("__cross_batch_disorder")
-                .limit(sample_limit)
-                .collect()
-            ]
-            if cross_batch_disorder and sample_limit
-            else []
         )
         findings.append(
             ContractFinding(
@@ -562,6 +479,142 @@ class ContractValidator:
             "duration_ms": (time.perf_counter() - started_at) * 1000,
         }
         return findings
+
+    @staticmethod
+    def _lateness_cutoff(allowed_lateness: str) -> datetime:
+        """Parse a human lateness string ('5m', '2 hours') into a UTC cutoff."""
+        match = re.match(
+            r"^(\d+)\s*(s|m|h|d|seconds?|minutes?|hours?|days?)$",
+            allowed_lateness,
+            re.I,
+        )
+        amount, unit = (int(match[1]), match[2].lower()) if match else (0, "h")
+        seconds = amount * ({"s": 1, "m": 60, "h": 3600, "d": 86400}.get(unit[0], 3600))
+        return datetime.now(timezone.utc) - timedelta(seconds=seconds)
+
+    @staticmethod
+    def _prepare_temporal_evaluated(
+        df: DataFrame,
+        source: SourceConfig,
+        contract: SourceContractConfig,
+        event_time_column: str,
+        prior_state: DataFrame | None,
+        cutoff: datetime,
+    ) -> DataFrame:
+        """Per-business-key observations with prior-state and lag context."""
+        keys = (
+            (contract.cdc.primary_key if contract.cdc else None)
+            or source.primary_keys
+            or []
+        )
+        evaluated = TemporalStateStore.observations(df, event_time_column, keys)
+        if prior_state is not None:
+            previous = prior_state.select(
+                "business_key_hash",
+                F.col("max_event_time").alias("__prior_max_event_time"),
+            )
+            evaluated = evaluated.join(previous, "business_key_hash", "left")
+        else:
+            evaluated = evaluated.withColumn(
+                "__prior_max_event_time", F.lit(None).cast("timestamp")
+            )
+        if keys and "_commit_version" in df.columns:
+            window = Window.partitionBy("business_key_hash").orderBy("commit_version")
+            evaluated = evaluated.withColumn(
+                "__previous_event_time", F.lag("event_time").over(window)
+            )
+        else:
+            evaluated = evaluated.withColumn(
+                "__previous_event_time", F.lit(None).cast("timestamp")
+            )
+        return (
+            evaluated.withColumn("__late", F.col("event_time") < F.lit(cutoff))
+            .withColumn(
+                "__batch_disorder",
+                F.col("event_time") < F.col("__previous_event_time"),
+            )
+            .withColumn(
+                "__cross_batch_disorder",
+                F.col("event_time") < F.col("__prior_max_event_time"),
+            )
+        )
+
+    @staticmethod
+    def _measure_temporal_disorder(
+        evaluated: DataFrame, sample_limit: int
+    ) -> tuple[int, int, int, list[dict], list[dict], list[dict]]:
+        """Aggregate the three disorder flags; collect samples for non-zeros."""
+        metrics = evaluated.agg(
+            F.sum(F.when(F.col("__late"), 1).otherwise(0)).alias("late"),
+            F.sum(F.when(F.col("__batch_disorder"), 1).otherwise(0)).alias(
+                "batch_disorder"
+            ),
+            F.sum(F.when(F.col("__cross_batch_disorder"), 1).otherwise(0)).alias(
+                "cross_batch_disorder"
+            ),
+        ).first()
+        if metrics is None:
+            raise RuntimeError("Temporal aggregation did not return metrics")
+        late_count = int(metrics["late"] or 0)
+        batch_disorder = int(metrics["batch_disorder"] or 0)
+        cross_batch_disorder = int(metrics["cross_batch_disorder"] or 0)
+
+        def _samples(flag: str, count: int) -> list[dict]:
+            if not count or not sample_limit:
+                return []
+            return [
+                row.asDict()
+                for row in evaluated.filter(flag).limit(sample_limit).collect()
+            ]
+
+        return (
+            late_count,
+            batch_disorder,
+            cross_batch_disorder,
+            _samples("__late", late_count),
+            _samples("__batch_disorder", batch_disorder),
+            _samples("__cross_batch_disorder", cross_batch_disorder),
+        )
+
+    @staticmethod
+    def _ordering_findings(
+        evaluated: DataFrame,
+        contract: SourceContractConfig,
+        temporal,
+        df: DataFrame,
+        batch_disorder: int,
+        batch_samples: list[dict],
+    ) -> list[ContractFinding]:
+        """Within-batch ordering findings, or the CDF-capability warning.
+
+        Commit-order semantics require CDF metadata: with ``_commit_version``
+        present the lag window was built, so batch disorder is reportable;
+        without it the finding downgrades to a capability warning.
+        """
+        del evaluated, contract
+        if "_commit_version" in df.columns:
+            return [
+                ContractFinding(
+                    "out_of_order_event",
+                    "cdf_commit_order",
+                    TestSeverity(temporal.out_of_order_severity),
+                    batch_disorder == 0,
+                    "CDF event times are ordered"
+                    if batch_disorder == 0
+                    else f"Found {batch_disorder} out-of-order CDF events",
+                    failed_rows=batch_disorder,
+                    samples=batch_samples,
+                )
+            ]
+        return [
+            ContractFinding(
+                "out_of_order_event",
+                "cdf_capability",
+                TestSeverity.WARN,
+                False,
+                "Cannot establish event ordering without CDF commit metadata",
+            )
+        ]
 
     @staticmethod
     def raise_for_errors(findings: list[ContractFinding]) -> None:

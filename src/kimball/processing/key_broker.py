@@ -22,7 +22,11 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
-from kimball.common.config import ForeignKeyConfig, NullPolicyConfig
+from kimball.common.config import (
+    ForeignKeyConfig,
+    ForeignKeyLookupConfig,
+    NullPolicyConfig,
+)
 from kimball.common.constants import DEFAULT_VALID_FROM, DEFAULT_VALID_TO
 from kimball.common.errors import DataQualityError
 from kimball.observability.unresolved_keys import UnresolvedKeyRegistry
@@ -177,6 +181,31 @@ class KeyBroker:
         batch_id: str,
         null_policy: NullPolicyConfig,
     ) -> None:
+        """Create skeleton rows for early-arriving Type 7 fact keys.
+
+        Phases (ADR-004 grade-A pass): contract validation, candidate
+        identity derivation (per-key earliest event time), coverage check
+        against existing SCD2 validity intervals, key generation, system
+        column fill, insert-only merge.
+        """
+        self._validate_type7_contract(fk)
+        # _validate_type7_contract raises unless both are set.
+        assert fk.lookup is not None and fk.references is not None
+        dimension = self.spark.table(fk.references)
+        lookup = fk.lookup
+        source_columns = lookup.source_columns
+        dimension_columns = lookup.dimension_columns or source_columns
+
+        candidates = self._derive_candidates(
+            fact_df, dimension, fk, lookup, source_columns, dimension_columns
+        )
+        skeletons = self._build_skeleton_rows(
+            dimension, candidates, fk, null_policy, batch_id, dimension_columns
+        )
+        self._merge_skeleton_rows(fk, skeletons, dimension_columns)
+
+    def _validate_type7_contract(self, fk: ForeignKeyConfig) -> None:
+        """Skeletons exist only for type7 dimensions with the full contract."""
         lookup = fk.lookup
         assert lookup is not None and fk.references is not None
         if fk.relationship != "type7":
@@ -205,8 +234,20 @@ class KeyBroker:
                 + ", ".join(missing_columns)
             )
 
-        source_columns = lookup.source_columns
-        dimension_columns = lookup.dimension_columns or source_columns
+    @staticmethod
+    def _derive_candidates(
+        fact_df: DataFrame,
+        dimension: DataFrame,
+        fk: ForeignKeyConfig,
+        lookup: ForeignKeyLookupConfig,
+        source_columns: list[str],
+        dimension_columns: list[str],
+    ) -> DataFrame:
+        """Earliest valid event-time per resolvable identity combination.
+
+        Rows with NULL identities, blank strings, NULL event time, or a
+        not-applicable marker cannot produce a skeleton candidate.
+        """
         event_time = lookup.event_time
         assert event_time is not None
         usable = fact_df.filter(
@@ -219,7 +260,7 @@ class KeyBroker:
         candidates = usable.groupBy(*source_columns).agg(
             F.min(F.col(event_time).cast("timestamp")).alias("__valid_from")
         )
-        candidates = candidates.select(
+        return candidates.select(
             *[
                 F.col(source).alias(dimension)
                 for source, dimension in zip(
@@ -229,6 +270,16 @@ class KeyBroker:
             "__valid_from",
         )
 
+    @staticmethod
+    def _build_skeleton_rows(
+        dimension: DataFrame,
+        candidates: DataFrame,
+        fk: ForeignKeyConfig,
+        null_policy: NullPolicyConfig,
+        batch_id: str,
+        dimension_columns: list[str],
+    ) -> DataFrame:
+        """Generate Type 7 keys for uncovered candidates and fill the schema."""
         dim_keys = dimension.select(
             *dimension_columns, "__valid_from", "__valid_to"
         ).alias("dim")
@@ -284,15 +335,21 @@ class KeyBroker:
                 )
             else:
                 selected.append(_placeholder(field).alias(name))
-        skeletons = skeletons.select(*selected)
+        return skeletons.select(*selected)
 
+    def _merge_skeleton_rows(
+        self, fk: ForeignKeyConfig, skeletons: DataFrame, dimension_columns: list[str]
+    ) -> None:
+        """Insert-only merge keyed on identity + valid_from (idempotent)."""
         condition = (
             " AND ".join(
                 f"target.`{name}` = source.`{name}`" for name in dimension_columns
             )
             + " AND target.__valid_from = source.__valid_from"
         )
-        DeltaTable.forName(self.spark, fk.references).alias("target").merge(
+        references = fk.references
+        assert references is not None  # guaranteed by _validate_type7_contract
+        DeltaTable.forName(self.spark, references).alias("target").merge(
             skeletons.alias("source"), condition
         ).whenNotMatchedInsertAll().execute()
 
@@ -308,26 +365,69 @@ class KeyBroker:
         batch_id: str,
         source_version: int,
     ) -> DataFrame:
+        """Resolve one FK via its lookup against the referenced dimension.
+
+        Phases (ADR-004 grade-A pass): project the dimension to broker
+        columns, join + classify each fact row into a sentinel or real SK,
+        enforce resolution policy (error / skeleton / registry), then strip
+        internal broker columns.
+        """
         lookup = fk.lookup
         assert lookup is not None and fk.references is not None
         dimension = self.spark.table(fk.references)
         source_columns = lookup.source_columns
         dimension_columns = lookup.dimension_columns or source_columns
-        required_dimension_columns = {
+        self._require_broker_columns(fk, dimension, dimension_columns)
+
+        joined = self._join_broker_columns(
+            fact_df, dimension, fk, lookup, source_columns, dimension_columns, index
+        )
+        joined = self._classify_sentinels(joined, fk, lookup, source_columns, index)
+        self._validate_resolution(fact_df, joined, fk)
+        self._enforce_resolution_policy(
+            joined,
+            fk,
+            lookup,
+            fact_table,
+            fact_grain,
+            batch_id,
+            source_version,
+            original_identity_columns,
+            index,
+        )
+        return self._strip_broker_columns(joined, index)
+
+    @staticmethod
+    def _require_broker_columns(
+        fk: ForeignKeyConfig,
+        dimension: DataFrame,
+        dimension_columns: list[str],
+    ) -> None:
+        required = {
             *dimension_columns,
             fk.dimension_key or fk.column,
         }
         if fk.durable_dimension_key:
-            required_dimension_columns.add(fk.durable_dimension_key)
+            required.add(fk.durable_dimension_key)
         if fk.relationship == "type7":
-            required_dimension_columns.update({"__valid_from", "__valid_to"})
-        if missing_dimension_columns := sorted(
-            required_dimension_columns - set(dimension.columns)
-        ):
+            required.update({"__valid_from", "__valid_to"})
+        if missing := sorted(required - set(dimension.columns)):
             raise DataQualityError(
                 f"Dimension {fk.references} is missing broker columns: "
-                + ", ".join(missing_dimension_columns)
+                + ", ".join(missing)
             )
+
+    @staticmethod
+    def _join_broker_columns(
+        fact_df: DataFrame,
+        dimension: DataFrame,
+        fk: ForeignKeyConfig,
+        lookup: ForeignKeyLookupConfig,
+        source_columns: list[str],
+        dimension_columns: list[str],
+        index: int,
+    ) -> DataFrame:
+        """Join fact to the projected dimension; type7 adds validity bounds."""
         prefix = f"__broker_{index}_"
         projected = [
             F.col(name).alias(f"{prefix}identity_{position}")
@@ -343,11 +443,11 @@ class KeyBroker:
                     F.col("__valid_to").alias(f"{prefix}valid_to"),
                 ]
             )
-        dimension = dimension.select(*projected)
+        projected_dimension = dimension.select(*projected)
         condition = reduce(
             lambda left, right: left & right,
             (
-                fact_df[source] == dimension[f"{prefix}identity_{position}"]
+                fact_df[source] == projected_dimension[f"{prefix}identity_{position}"]
                 for position, source in enumerate(source_columns)
             ),
         )
@@ -356,10 +456,25 @@ class KeyBroker:
             event_time_ts = F.col(lookup.event_time).cast("timestamp")
             condition = (
                 condition
-                & (event_time_ts >= dimension[f"{prefix}valid_from"])
-                & (event_time_ts < dimension[f"{prefix}valid_to"])
+                & (event_time_ts >= projected_dimension[f"{prefix}valid_from"])
+                & (event_time_ts < projected_dimension[f"{prefix}valid_to"])
             )
-        joined = fact_df.join(dimension, condition, "left")
+        return fact_df.join(projected_dimension, condition, "left")
+
+    @staticmethod
+    def _classify_sentinels(
+        joined: DataFrame,
+        fk: ForeignKeyConfig,
+        lookup: ForeignKeyLookupConfig,
+        source_columns: list[str],
+        index: int,
+    ) -> DataFrame:
+        """Write the sentinel-or-real SK (and durable key) onto each row.
+
+        Priority: NOT_APPLICABLE (-2) > MISSING (-1) > BAD VALUE (-4) >
+        unmatched NOT_YET_AVAILABLE (-3) > the real joined SK.
+        """
+        prefix = f"__broker_{index}_"
         not_applicable = (
             F.expr(lookup.not_applicable_when)
             if lookup.not_applicable_when
@@ -391,8 +506,42 @@ class KeyBroker:
                 .otherwise(F.col(f"{prefix}dk"))
             )
             joined = joined.withColumn(fk.durable_column, durable.cast("bigint"))
+        return joined
 
-        self._validate_resolution(fact_df, joined, fk)
+    def _enforce_resolution_policy(
+        self,
+        joined: DataFrame,
+        fk: ForeignKeyConfig,
+        lookup: ForeignKeyLookupConfig,
+        fact_table: str,
+        fact_grain: list[str],
+        batch_id: str,
+        source_version: int,
+        original_identity_columns: list[str],
+        index: int,
+    ) -> None:
+        """Apply the lookup's resolution policy for unresolvable rows.
+
+        ``error``/``skeleton`` raise on any row that cannot be classified;
+        ``default`` records unresolved rows (and resolutions) in the
+        registry when one is configured, keeping the batch observable.
+        """
+        source_columns = lookup.source_columns
+        prefix = f"__broker_{index}_"
+        not_applicable = (
+            F.expr(lookup.not_applicable_when)
+            if lookup.not_applicable_when
+            else F.lit(False)
+        )
+        missing_identity = _any_null(source_columns)
+        bad_value = F.lit(False)
+        for name in source_columns:
+            bad_value = bad_value | (
+                F.col(name).isNotNull() & (F.trim(F.col(name).cast("string")) == "")
+            )
+        if lookup.event_time:
+            bad_value = bad_value | F.col(lookup.event_time).isNull()
+        unmatched = F.col(f"{prefix}sk").isNull()
 
         if lookup.invalid_action == "error":
             invalid = joined.filter(
@@ -417,12 +566,12 @@ class KeyBroker:
             and self.unresolved_registry is not None
             and fact_table
             and fact_grain
+            and fk.references is not None
         ):
             dimension_version = self._table_version(fk.references)
-            unresolved_rows = joined.filter(unresolved_condition)
             identity_columns = original_identity_columns or source_columns
             self.unresolved_registry.record(
-                unresolved_rows,
+                joined.filter(unresolved_condition),
                 fact_table=fact_table,
                 relationship=fk.column,
                 fact_grain=fact_grain,
@@ -442,7 +591,11 @@ class KeyBroker:
                 batch_id=batch_id,
                 dimension_version=dimension_version,
             )
-        internal_prefixes = (prefix, f"__identity_{index}_")
+
+    @staticmethod
+    def _strip_broker_columns(joined: DataFrame, index: int) -> DataFrame:
+        """Drop every internal broker column (this FK and the legacy one)."""
+        internal_prefixes = (f"__broker_{index}_", f"__identity_{index}_")
         return joined.drop(
             *[
                 name

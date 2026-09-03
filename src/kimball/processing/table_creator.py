@@ -167,108 +167,12 @@ class TableCreator:
             return
 
         config = config or {}
-        cluster_by = config.get("cluster_by") or []
+        cluster_by = self._validated_cluster_columns(config.get("cluster_by") or [])
         if cluster_by:
             logger.info(f"Using Liquid Clustering from config: {cluster_by}")
 
-        # Validate clustering columns to prevent SQL injection
-        if cluster_by:
-            formatted_cluster_cols = []
-            for col_name in cluster_by:
-                if not _is_valid_identifier(col_name):
-                    raise ValueError(f"Invalid clustering column name: {col_name}")
-                formatted_cluster_cols.append(f"`{col_name}`")
-            cluster_by = formatted_cluster_cols
-
         policy = get_runtime_policy()
-
-        # Build the column list as typed ColumnSpecs (ADR-004 step 3) and
-        # let ddl.serialize_columns do the rendering. CDF metadata columns
-        # are internal to Delta Lake's CDF feature and never part of the
-        # table schema.
-
-        # Columns that should be NOT NULL based on config
-        not_null_cols: set[str] = set()
-        if config:
-            natural_keys = config.get("natural_keys") or []
-            if not natural_keys:
-                keys_config = config.get("keys") or {}
-                natural_keys = (
-                    keys_config.get("natural_keys", [])
-                    if isinstance(keys_config, dict)
-                    else []
-                )
-            not_null_cols.update(natural_keys)
-            null_policy = config.get("null_policy") or {}
-            if (
-                config.get("table_type") == "dimension"
-                and null_policy.get("mode", "kimball") == "kimball"
-            ):
-                not_null_cols.update(
-                    field.name
-                    for field in schema_df.schema.fields
-                    if field.name not in CDF_METADATA_COLUMNS
-                )
-            if config.get("table_type") == "fact" and config.get("foreign_keys"):
-                for fk in config.get("foreign_keys") or []:
-                    fk_col = (
-                        fk.get("column")
-                        if isinstance(fk, dict)
-                        else getattr(fk, "column", None)
-                    )
-                    if fk_col:
-                        not_null_cols.add(fk_col)
-                    durable_col = (
-                        fk.get("durable_column")
-                        if isinstance(fk, dict)
-                        else getattr(fk, "durable_column", None)
-                    )
-                    if durable_col:
-                        not_null_cols.add(durable_col)
-
-        column_specs = [
-            ColumnSpec(
-                name=field.name,
-                data_type=field.dataType.simpleString(),
-                not_null=not field.nullable or field.name in not_null_cols,
-            )
-            for field in schema_df.schema.fields
-            if field.name not in CDF_METADATA_COLUMNS
-        ]
-
-        # Generated columns: appended with GENERATED ALWAYS AS clauses.
-        # Must not collide with input schema columns; expression and type
-        # are validated (fail closed) by ColumnSpec.validate().
-        generated_cols = (config or {}).get("generated_columns") or {}
-        schema_columns = {field.name for field in schema_df.schema.fields}
-        for gen_col, definition in generated_cols.items():
-            if not is_valid_identifier(gen_col):
-                raise ValueError(f"Invalid generated column name: {gen_col}")
-            if gen_col in schema_columns:
-                raise ValueError(
-                    f"Generated column {gen_col} must not also be present in the input schema"
-                )
-            if isinstance(definition, dict):
-                gen_expr = definition.get("expression")
-                data_type = definition.get("data_type")
-            else:
-                gen_expr = getattr(definition, "expression", None)
-                data_type = getattr(definition, "data_type", None)
-            if not isinstance(gen_expr, str) or not isinstance(data_type, str):
-                raise ValueError(
-                    f"Generated column {gen_col} must define expression and data_type"
-                )
-            column_specs.append(
-                ColumnSpec(
-                    name=gen_col,
-                    data_type=data_type,
-                    generated_expression=gen_expr,
-                )
-            )
-
-        columns_sql = serialize_columns(column_specs)
-
-        # Properly quote multi-part table names for Unity Catalog compatibility
+        columns_sql = self._build_column_definitions(schema_df, config)
         quoted_table_name = quote_table_name(table_name)
 
         create_sql = f"""
@@ -288,13 +192,140 @@ class TableCreator:
         get_spark().sql(create_sql)
         logger.info(f"Table {table_name} created successfully.")
 
-        # Enable Delta optimizations after table creation (optional features, may fail on Free Edition)
-        # Phase 1 optimization: Batch TBLPROPERTIES into single ALTER TABLE
+        self._enable_delta_features_tolerant(table_name)
+
+        # Apply basic Delta constraints after table creation
+        self.apply_basic_constraints(table_name, surrogate_key_col, schema_df)
+
+        # Apply additional constraints and governance from config
+        if config:
+            self.apply_delta_constraints(table_name, config)
+            self._apply_governance(table_name, config)
+
+    @staticmethod
+    def _validated_cluster_columns(cluster_by: list[str]) -> list[str]:
+        """Validate and backtick-quote clustering columns (anti-injection)."""
+        formatted = []
+        for col_name in cluster_by:
+            if not _is_valid_identifier(col_name):
+                raise ValueError(f"Invalid clustering column name: {col_name}")
+            formatted.append(f"`{col_name}`")
+        return formatted
+
+    @staticmethod
+    def _build_column_definitions(schema_df: DataFrame, config: dict[str, Any]) -> str:
+        """Build the CREATE TABLE column list as typed ColumnSpecs.
+
+        CDF metadata columns are internal to Delta Lake's CDF feature and
+        never part of the table schema. NOT NULL comes from three sources:
+        non-nullable fields, natural keys, and (for dimensions under the
+        kimball null policy) every column. Generated columns are appended
+        and validated fail-closed by ``ColumnSpec.validate``.
+        """
+        not_null_cols = TableCreator._collect_not_null_columns(schema_df, config)
+        column_specs = [
+            ColumnSpec(
+                name=field.name,
+                data_type=field.dataType.simpleString(),
+                not_null=not field.nullable or field.name in not_null_cols,
+            )
+            for field in schema_df.schema.fields
+            if field.name not in CDF_METADATA_COLUMNS
+        ]
+        column_specs.extend(TableCreator._generated_column_specs(schema_df, config))
+        return serialize_columns(column_specs)
+
+    @staticmethod
+    def _collect_not_null_columns(
+        schema_df: DataFrame, config: dict[str, Any]
+    ) -> set[str]:
+        not_null_cols: set[str] = set()
+        if not config:
+            return not_null_cols
+        natural_keys = config.get("natural_keys") or []
+        if not natural_keys:
+            keys_config = config.get("keys") or {}
+            natural_keys = (
+                keys_config.get("natural_keys", [])
+                if isinstance(keys_config, dict)
+                else []
+            )
+        not_null_cols.update(natural_keys)
+        null_policy = config.get("null_policy") or {}
+        if (
+            config.get("table_type") == "dimension"
+            and null_policy.get("mode", "kimball") == "kimball"
+        ):
+            not_null_cols.update(
+                field.name
+                for field in schema_df.schema.fields
+                if field.name not in CDF_METADATA_COLUMNS
+            )
+        if config.get("table_type") == "fact" and config.get("foreign_keys"):
+            for fk in config.get("foreign_keys") or []:
+                fk_col = (
+                    fk.get("column")
+                    if isinstance(fk, dict)
+                    else getattr(fk, "column", None)
+                )
+                if fk_col:
+                    not_null_cols.add(fk_col)
+                durable_col = (
+                    fk.get("durable_column")
+                    if isinstance(fk, dict)
+                    else getattr(fk, "durable_column", None)
+                )
+                if durable_col:
+                    not_null_cols.add(durable_col)
+        return not_null_cols
+
+    @staticmethod
+    def _generated_column_specs(
+        schema_df: DataFrame, config: dict[str, Any]
+    ) -> list[ColumnSpec]:
+        """Typed specs for generated columns; must not shadow input columns."""
+        generated_cols = (config or {}).get("generated_columns") or {}
+        if not generated_cols:
+            return []
+        schema_columns = {field.name for field in schema_df.schema.fields}
+        specs: list[ColumnSpec] = []
+        for gen_col, definition in generated_cols.items():
+            if not is_valid_identifier(gen_col):
+                raise ValueError(f"Invalid generated column name: {gen_col}")
+            if gen_col in schema_columns:
+                raise ValueError(
+                    f"Generated column {gen_col} must not also be present in the input schema"
+                )
+            if isinstance(definition, dict):
+                gen_expr = definition.get("expression")
+                data_type = definition.get("data_type")
+            else:
+                gen_expr = getattr(definition, "expression", None)
+                data_type = getattr(definition, "data_type", None)
+            if not isinstance(gen_expr, str) or not isinstance(data_type, str):
+                raise ValueError(
+                    f"Generated column {gen_col} must define expression and data_type"
+                )
+            specs.append(
+                ColumnSpec(
+                    name=gen_col,
+                    data_type=data_type,
+                    generated_expression=gen_expr,
+                )
+            )
+        return specs
+
+    def _enable_delta_features_tolerant(self, table_name: str) -> None:
+        """Enable Delta optimizations, tolerating edition limitations.
+
+        Optional features may fail on Free/Serverless editions; recognized
+        limitation errors are suppressed, unknown errors log the first
+        line only (not the full JVM trace).
+        """
         try:
             self.enable_delta_features(table_name)
         except PySparkException as e:
             error_str = str(e).lower()
-            # Serverless/edition limitations - suppress verbose output
             if all(
                 x not in error_str
                 for x in [
@@ -306,17 +337,8 @@ class TableCreator:
                     "delta_unknown_configuration",
                 ]
             ):
-                # Unknown error - print first line only, not full JVM trace
                 first_line = str(e).split("\n")[0][:200]
                 logger.info(f"Warning: Delta features failed: {first_line}")
-
-        # Apply basic Delta constraints after table creation
-        self.apply_basic_constraints(table_name, surrogate_key_col, schema_df)
-
-        # Apply additional constraints and governance from config
-        if config:
-            self.apply_delta_constraints(table_name, config)
-            self._apply_governance(table_name, config)
 
     def apply_basic_constraints(
         self,

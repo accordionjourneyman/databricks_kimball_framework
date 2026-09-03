@@ -90,126 +90,40 @@ class StreamingMicroBatchProcessor:
     def process_microbatch(
         self, batch_df: DataFrame, source: Any, batch_id: int
     ) -> None:
-        source_name = source.name
-        rows_written = 0
+        """Process one streaming microbatch through the merge pipeline.
 
+        Orchestrates six ordered phases: prepare, contract gates, CDF
+        metadata re-attachment, key resolution/null policy, merge, and
+        commit (metrics + watermarks + temporal state). Each phase lives
+        in its own ``_batch_*`` method (ADR-004 grade-A pass).
+        """
+        source_name = source.name
         source_df = self._prepare_source_df(batch_df)
         self.ensure_target_table(source_df)
 
-        if self.config.table_type == "fact":
-            join_keys = self.config.merge_keys or []
-        else:
-            join_keys = self.config.natural_keys or []
+        join_keys = (
+            self.config.merge_keys or []
+            if self.config.table_type == "fact"
+            else self.config.natural_keys or []
+        )
 
-        pending_temporal_state: tuple[TemporalStateStore, DataFrame] | None = None
-        if isinstance(source.contract, SourceContractConfig):
-            obs = self.config.observability
-            writer = DataQualityEventSink(
-                self.spark,
-                self.etl_schema,
-                obs.event_table if obs else "etl_data_quality_events",
-                failure_mode=obs.write_failure if obs else "warn",
-                writer_type=DataQualityEventWriter,
-            )
-            validator = ContractValidator(self.spark)
-            findings = validator.validate_data(source_df, source)
-            if source.contract.temporal:
-                state_store = TemporalStateStore(
-                    self.spark,
-                    self.etl_schema,
-                    obs.temporal_state_table if obs else "etl_contract_temporal_state",
-                )
-                prior_state = state_store.existing(
-                    self.config.table_name, source.name, source.contract.id
-                )
-                findings.extend(
-                    validator.validate_temporal(
-                        batch_df, source, prior_state=prior_state
-                    )
-                )
-                pending_temporal_state = (
-                    state_store,
-                    state_store.prepare(
-                        batch_df,
-                        pipeline_table=self.config.table_name,
-                        source=source,
-                    ),
-                )
-            for finding in findings:
-                writer.write(
-                    pipeline_table=self.config.table_name,
-                    source=source,
-                    finding=finding,
-                    run_id=str(batch_id),
-                    action=(
-                        "blocked"
-                        if not finding.passed and finding.severity.value == "error"
-                        else "accepted_late"
-                        if finding.category == "temporal_contract"
-                        else "recorded"
-                    ),
-                )
-            ContractValidator.raise_for_errors(findings)
-
-        cdf_meta_cols = [
-            c for c in ("_commit_version", "_commit_timestamp") if c in batch_df.columns
-        ]
-        if (
-            cdf_meta_cols
-            and self.config.transformation_sql
-            and "_commit_version" not in source_df.columns
-        ):
-            common_cols = [c for c in source_df.columns if c in batch_df.columns]
-            meta_df = batch_df.select(*(common_cols + cdf_meta_cols))
-            source_df = source_df.join(meta_df, common_cols, "left")
-
-        if self.config.table_type == "fact" and any(
-            fk.lookup is not None for fk in self.config.foreign_keys or []
-        ):
-            from kimball.observability.unresolved_keys import UnresolvedKeyRegistry
-            from kimball.processing.key_broker import KeyBroker
-
-            obs = self.config.observability
-            unresolved = any(
-                fk.lookup and fk.lookup.early_arriving == "default"
-                for fk in self.config.foreign_keys or []
-            )
-            registry = (
-                UnresolvedKeyRegistry(
-                    self.spark,
-                    self.etl_schema,
-                    obs.unresolved_key_table
-                    if obs
-                    else "etl_unresolved_dimension_keys",
-                )
-                if unresolved
-                else None
-            )
-            source_version = self._get_max_version(batch_df)
-            source_df = KeyBroker(self.spark, registry).resolve_fact_keys(
-                source_df,
-                self.config.foreign_keys or [],
-                batch_id=str(batch_id),
-                null_policy=self.config.null_policy,
-                fact_table=self.config.table_name,
-                fact_grain=self.config.merge_keys or [],
-                source_version=source_version if source_version is not None else -1,
-            )
-        elif self.config.table_type == "dimension":
-            from kimball.processing.dimension_nulls import apply_dimension_null_policy
-
-            identity_columns = list(self.config.natural_keys)
-            if self.config.effective_at:
-                identity_columns.append(self.config.effective_at)
-            source_df = apply_dimension_null_policy(
-                source_df,
-                self.config.null_policy,
-                identity_columns=identity_columns,
-            )
-
+        pending_temporal_state = self._batch_run_contract_gates(
+            batch_df, source_df, source, batch_id
+        )
+        source_df = self._batch_reattach_cdf_metadata(batch_df, source_df)
+        source_df = self._batch_resolve_keys_or_nulls(batch_df, source_df, batch_id)
         self._validate_fks(source_df)
         self._validate_grain(source_df, join_keys)
 
+        rows_written = self._batch_merge(source_df, join_keys, batch_id)
+        self._save_fingerprints()
+        self._batch_commit_watermark(source_name, batch_df, batch_id, rows_written)
+        self._batch_commit_temporal_state(pending_temporal_state, batch_id)
+
+    def _batch_merge(
+        self, source_df: DataFrame, join_keys: list[str], batch_id: int
+    ) -> int:
+        """Run the merge; return rows written (0 if metrics unavailable)."""
         _merger.merge(
             target_table_name=self.config.table_name,
             source_df=source_df,
@@ -225,38 +139,184 @@ class StreamingMicroBatchProcessor:
             history_table=self.config.history_table,
             current_value_columns=self.config.current_value_columns,
         )
-
         try:
             metrics = _merger.get_last_merge_metrics(self.config.table_name)
-            rows_written = int(metrics.get("num_target_rows_inserted", 0)) + int(
+            return int(metrics.get("num_target_rows_inserted", 0)) + int(
                 metrics.get("num_target_rows_updated", 0)
             )
         except Exception:
-            rows_written = 0
+            return 0
 
-        self._save_fingerprints()
-
+    def _batch_commit_watermark(
+        self,
+        source_name: str,
+        batch_df: DataFrame,
+        batch_id: int,
+        rows_written: int,
+    ) -> None:
+        """Advance the source watermark to this batch's max CDF version."""
         new_version = self._get_max_version(batch_df)
-        if new_version is not None:
-            self.etl_control.batch_complete(
-                target_table=self.config.table_name,
-                source_table=source_name,
-                new_version=new_version,
-                rows_read=0,
-                rows_written=rows_written,
+        if new_version is None:
+            return
+        self.etl_control.batch_complete(
+            target_table=self.config.table_name,
+            source_table=source_name,
+            new_version=new_version,
+            rows_read=0,
+            rows_written=rows_written,
+        )
+
+    def _batch_commit_temporal_state(
+        self,
+        pending_temporal_state: tuple[TemporalStateStore, DataFrame] | None,
+        batch_id: int,
+    ) -> None:
+        """Commit prepared temporal-contract state after the merge succeeded."""
+        if pending_temporal_state is None:
+            return
+        state_store, state_df = pending_temporal_state
+        try:
+            state_store.commit(state_df, str(batch_id))
+        except Exception as exc:
+            obs = self.config.observability
+            if obs and obs.write_failure == "error":
+                raise
+            logger.warning(
+                "Temporal contract state append failed (%s); merge result retained",
+                type(exc).__name__,
             )
-        if pending_temporal_state is not None:
-            state_store, state_df = pending_temporal_state
-            try:
-                state_store.commit(state_df, str(batch_id))
-            except Exception as exc:
-                obs = self.config.observability
-                if obs and obs.write_failure == "error":
-                    raise
-                logger.warning(
-                    "Temporal contract state append failed (%s); merge result retained",
-                    type(exc).__name__,
-                )
+
+    def _batch_run_contract_gates(
+        self, batch_df: DataFrame, source_df: DataFrame, source: Any, batch_id: int
+    ) -> tuple[TemporalStateStore, DataFrame] | None:
+        """Run schema/temporal contract findings; return deferred state to commit.
+
+        The temporal state is *prepared* here but committed after the merge
+        (return value): a contract failure must not strand the prepared
+        state, and a state append failure must not undo a completed merge.
+        """
+        if not isinstance(source.contract, SourceContractConfig):
+            return None
+        obs = self.config.observability
+        writer = DataQualityEventSink(
+            self.spark,
+            self.etl_schema,
+            obs.event_table if obs else "etl_data_quality_events",
+            failure_mode=obs.write_failure if obs else "warn",
+            writer_type=DataQualityEventWriter,
+        )
+        validator = ContractValidator(self.spark)
+        findings = validator.validate_data(source_df, source)
+        pending_temporal_state: tuple[TemporalStateStore, DataFrame] | None = None
+        if source.contract.temporal:
+            state_store = TemporalStateStore(
+                self.spark,
+                self.etl_schema,
+                obs.temporal_state_table if obs else "etl_contract_temporal_state",
+            )
+            prior_state = state_store.existing(
+                self.config.table_name, source.name, source.contract.id
+            )
+            findings.extend(
+                validator.validate_temporal(batch_df, source, prior_state=prior_state)
+            )
+            pending_temporal_state = (
+                state_store,
+                state_store.prepare(
+                    batch_df,
+                    pipeline_table=self.config.table_name,
+                    source=source,
+                ),
+            )
+        for finding in findings:
+            writer.write(
+                pipeline_table=self.config.table_name,
+                source=source,
+                finding=finding,
+                run_id=str(batch_id),
+                action=(
+                    "blocked"
+                    if not finding.passed and finding.severity.value == "error"
+                    else "accepted_late"
+                    if finding.category == "temporal_contract"
+                    else "recorded"
+                ),
+            )
+        ContractValidator.raise_for_errors(findings)
+        return pending_temporal_state
+
+    def _batch_reattach_cdf_metadata(
+        self, batch_df: DataFrame, source_df: DataFrame
+    ) -> DataFrame:
+        """Re-join CDF metadata columns lost by transformation SQL.
+
+        The transformation output may drop ``_commit_version``/timestamp;
+        re-attaching them from the raw batch keeps the watermark resumable.
+        """
+        cdf_meta_cols = [
+            c for c in ("_commit_version", "_commit_timestamp") if c in batch_df.columns
+        ]
+        if not (
+            cdf_meta_cols
+            and self.config.transformation_sql
+            and "_commit_version" not in source_df.columns
+        ):
+            return source_df
+        common_cols = [c for c in source_df.columns if c in batch_df.columns]
+        meta_df = batch_df.select(*(common_cols + cdf_meta_cols))
+        return source_df.join(meta_df, common_cols, "left")
+
+    def _batch_resolve_keys_or_nulls(
+        self, batch_df: DataFrame, source_df: DataFrame, batch_id: int
+    ) -> DataFrame:
+        """Fact: set-based FK resolution. Dimension: governed null policy."""
+        if self.config.table_type == "fact" and any(
+            fk.lookup is not None for fk in self.config.foreign_keys or []
+        ):
+            return self._batch_resolve_fact_keys(batch_df, source_df, batch_id)
+        if self.config.table_type == "dimension":
+            from kimball.processing.dimension_nulls import apply_dimension_null_policy
+
+            identity_columns = list(self.config.natural_keys)
+            if self.config.effective_at:
+                identity_columns.append(self.config.effective_at)
+            return apply_dimension_null_policy(
+                source_df,
+                self.config.null_policy,
+                identity_columns=identity_columns,
+            )
+        return source_df
+
+    def _batch_resolve_fact_keys(
+        self, batch_df: DataFrame, source_df: DataFrame, batch_id: int
+    ) -> DataFrame:
+        from kimball.observability.unresolved_keys import UnresolvedKeyRegistry
+        from kimball.processing.key_broker import KeyBroker
+
+        obs = self.config.observability
+        unresolved = any(
+            fk.lookup and fk.lookup.early_arriving == "default"
+            for fk in self.config.foreign_keys or []
+        )
+        registry = (
+            UnresolvedKeyRegistry(
+                self.spark,
+                self.etl_schema,
+                obs.unresolved_key_table if obs else "etl_unresolved_dimension_keys",
+            )
+            if unresolved
+            else None
+        )
+        source_version = self._get_max_version(batch_df)
+        return KeyBroker(self.spark, registry).resolve_fact_keys(
+            source_df,
+            self.config.foreign_keys or [],
+            batch_id=str(batch_id),
+            null_policy=self.config.null_policy,
+            fact_table=self.config.table_name,
+            fact_grain=self.config.merge_keys or [],
+            source_version=source_version if source_version is not None else -1,
+        )
 
     def _validate_fks(self, source_df: DataFrame) -> None:
         if self.config.table_type != "fact" or not self.config.foreign_keys:

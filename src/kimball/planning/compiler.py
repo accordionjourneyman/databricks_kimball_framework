@@ -206,64 +206,22 @@ class ProjectCompiler:
             for rule in policy.rules:
                 rule_params[rule.code] = dict(rule.params)
         findings = check_project(configs, rule_params=rule_params)
-        error_profiles = ("test", "production")
         issues: list[ProjectIssue] = []
         for finding in findings:
             rule_policy = policy.policy_for(finding.code) if policy else None
             if rule_policy is not None and rule_policy.enabled is False:
-                # A disabled rule is not invisible (ADR-003 §Decision 8):
-                # emit a visible notice instead of the finding itself.
-                issues.append(
-                    ProjectIssue(
-                        "RULE_DISABLED",
-                        "warning",
-                        f"rule '{finding.code}' is disabled by target policy; "
-                        f"suppressed finding on {finding.pipeline}"
-                        + (f", column '{finding.column}'" if finding.column else ""),
-                        finding.pipeline,
-                    )
-                )
+                issues.append(self._rule_disabled_issue(finding))
                 continue
             waived_by = _waiving_table(configs, finding.code, finding.column)
             if waived_by is not None:
-                if finding.severity == "error" or self.profile in error_profiles:
-                    ref = next(
-                        (
-                            exception.decision_ref
-                            for exception in configs[waived_by].modeling_exceptions
-                            if exception.code == finding.code
-                            and (
-                                finding.column is None
-                                or finding.column in exception.columns
-                            )
-                        ),
-                        None,
-                    )
-                    suffix = f" via decision_ref={ref}" if ref else ""
-                    issues.append(
-                        ProjectIssue(
-                            "EXCEPTION_APPROVED",
-                            "warning",
-                            f"suppressed {finding.code}"
-                            f" for column '{finding.column}'{suffix}",
-                            waived_by,
-                        )
-                    )
+                issues.extend(
+                    self._exception_approved_issues(configs, finding, waived_by)
+                )
                 continue
-            # ADR-003 §Decision 8 resolution order: policy severity beats the
-            # profile promotion; --strict beats everything but suppression.
-            if self.strict:
-                severity: Severity = "error"
-            elif rule_policy is not None and rule_policy.severity is not None:
-                severity = rule_policy.severity
-            elif self.profile in error_profiles:
-                severity = "error"
-            else:
-                severity = "error" if finding.severity == "error" else "warning"
             issues.append(
                 ProjectIssue(
                     finding.code,
-                    severity,
+                    self._resolved_severity(finding, rule_policy),
                     finding.message,
                     finding.pipeline,
                     fixability=finding.fixability,
@@ -271,6 +229,55 @@ class ProjectCompiler:
                 )
             )
         return issues
+
+    def _rule_disabled_issue(self, finding) -> ProjectIssue:
+        """A disabled rule is not invisible (ADR-003 §Decision 8): notice."""
+        return ProjectIssue(
+            "RULE_DISABLED",
+            "warning",
+            f"rule '{finding.code}' is disabled by target policy; "
+            f"suppressed finding on {finding.pipeline}"
+            + (f", column '{finding.column}'" if finding.column else ""),
+            finding.pipeline,
+        )
+
+    def _exception_approved_issues(
+        self, configs: dict[str, TableConfig], finding, waived_by: str
+    ) -> list[ProjectIssue]:
+        """Suppressed-by-exception findings emit a notice in error contexts."""
+        error_profiles = ("test", "production")
+        if not (finding.severity == "error" or self.profile in error_profiles):
+            return []
+        ref = next(
+            (
+                exception.decision_ref
+                for exception in configs[waived_by].modeling_exceptions
+                if exception.code == finding.code
+                and (finding.column is None or finding.column in exception.columns)
+            ),
+            None,
+        )
+        suffix = f" via decision_ref={ref}" if ref else ""
+        return [
+            ProjectIssue(
+                "EXCEPTION_APPROVED",
+                "warning",
+                f"suppressed {finding.code} for column '{finding.column}'{suffix}",
+                waived_by,
+            )
+        ]
+
+    def _resolved_severity(self, finding, rule_policy) -> Severity:
+        """ADR-003 §Decision 8 order: policy severity, then profile, strict wins."""
+        error_profiles = ("test", "production")
+        if self.strict:
+            return "error"
+        if rule_policy is not None and rule_policy.severity is not None:
+            severity: Severity = rule_policy.severity
+            return severity
+        if self.profile in error_profiles:
+            return "error"
+        return "error" if finding.severity == "error" else "warning"
 
     @staticmethod
     def _infer_dependencies(config: TableConfig, known_targets: set[str]) -> set[str]:

@@ -301,102 +301,10 @@ class Orchestrator:
             with self.transaction_manager.table_transaction(
                 self.config.table_name, batch_id
             ):
-                source_versions, active_dfs = self._source_loader.load(ctx, work_plan)
-                ctx.source_versions = source_versions
-                ctx.active_dfs = active_dfs
-
-                transformed_df = self._transform_validator.transform_and_validate(
-                    ctx, active_dfs
+                result = self._execute_merge_phases(
+                    ctx, work_plan, batch_id, merge_start
                 )
-
-                table_created = self._merge_executor.ensure_target_table(
-                    ctx, transformed_df
-                )
-                self._merge_executor.seed_defaults(ctx, table_created)
-                source_df = self._merge_executor.prepare_source_df(ctx, transformed_df)
-                if self.config.table_type == "fact":
-                    join_keys = self.config.merge_keys or []
-                else:
-                    join_keys = self.config.natural_keys or []
-                self._merge_executor.generate_skeletons(ctx, source_df, join_keys)
-                self._merge_executor.validate_grain(ctx, source_df, join_keys)
-                self._merge_executor.execute_merge(ctx, source_df, join_keys)
-                merge_executed = True
-
-                metrics = self._merge_executor.get_merge_metrics(ctx)
-                total_rows_read = metrics["rows_read"]
-                total_rows_written = metrics["rows_written"]
-
-                if self.metrics_collector:
-                    self.metrics_collector.add_operation_metric(
-                        "merge_and_load",
-                        duration_ms=(time.time() - merge_start) * 1000,
-                        rows_read=total_rows_read,
-                        rows_written=total_rows_written,
-                    )
-
-                if merge_executed:
-                    batch_complete_start = time.time()
-                    config_fingerprint = ConfigLoader().compute_fingerprint(self.config)
-                    self.etl_control.batch_complete_all(
-                        self.config.table_name,
-                        [
-                            {
-                                "source_table": item.source_name,
-                                "new_version": source_versions[item.source_name],
-                                "rows_read": total_rows_read,
-                                "rows_written": total_rows_written,
-                                "config_fingerprint": config_fingerprint,
-                                "source_schema_fingerprint": (
-                                    compute_source_schema_fingerprint(
-                                        self.spark, item.source_name
-                                    )
-                                ),
-                            }
-                            for item in work_plan.active_items
-                        ],
-                    )
-                    if self.metrics_collector:
-                        self.metrics_collector.add_operation_metric(
-                            "etl_control_batch_complete",
-                            duration_ms=(time.time() - batch_complete_start) * 1000,
-                        )
-                    try:
-                        commit_temporal_state_updates(ctx)
-                    except Exception:
-                        observability = self.config.observability
-                        if observability and observability.write_failure == "error":
-                            raise
-                        logger.warning(
-                            "Temporal observability state could not be persisted; "
-                            "the target load remains successful",
-                            exc_info=True,
-                        )
-                else:
-                    logger.info(
-                        "Merge skipped: no rows after transformation. "
-                        "Watermarks will NOT be advanced."
-                    )
-
-            logger.info(
-                f"Pipeline completed. Read: {total_rows_read}, Written: {total_rows_written}"
-            )
-
-            metrics_summary = {}
-            if self.metrics_collector:
-                self.metrics_collector.stop_collection()
-                metrics_summary = self.metrics_collector.get_summary()
-
-            return {
-                "status": "SUCCESS",
-                "batch_id": batch_id,
-                "target_table": self.config.table_name,
-                "rows_read": total_rows_read,
-                "rows_written": total_rows_written,
-                "active_sources": len(active_names),
-                "metrics": metrics_summary,
-                "validation_metrics": ctx.validation_metrics,
-            }
+            return self._finalize_success(ctx, batch_id, active_names, result)
 
         except Exception as e:
             if self.metrics_collector:
@@ -441,3 +349,123 @@ class Orchestrator:
             except Exception:
                 raise
         raise RuntimeError("run_with_retry exhausted retries without a result")
+
+    def _execute_merge_phases(
+        self, ctx, work_plan, batch_id: str, merge_start: float
+    ) -> dict[str, Any]:
+        """Load, transform, merge, and complete control records for one run.
+
+        Runs inside the table transaction. Watermarks advance only on
+        success: ``batch_complete_all`` fires after the merge metrics are
+        read, inside the same transaction, guarded by ``merge_executed``.
+        """
+        source_versions, active_dfs = self._source_loader.load(ctx, work_plan)
+        ctx.source_versions = source_versions
+        ctx.active_dfs = active_dfs
+
+        transformed_df = self._transform_validator.transform_and_validate(
+            ctx, active_dfs
+        )
+
+        table_created = self._merge_executor.ensure_target_table(ctx, transformed_df)
+        self._merge_executor.seed_defaults(ctx, table_created)
+        source_df = self._merge_executor.prepare_source_df(ctx, transformed_df)
+        if self.config.table_type == "fact":
+            join_keys = self.config.merge_keys or []
+        else:
+            join_keys = self.config.natural_keys or []
+        self._merge_executor.generate_skeletons(ctx, source_df, join_keys)
+        self._merge_executor.validate_grain(ctx, source_df, join_keys)
+        self._merge_executor.execute_merge(ctx, source_df, join_keys)
+        merge_executed = True
+
+        metrics = self._merge_executor.get_merge_metrics(ctx)
+        total_rows_read = metrics["rows_read"]
+        total_rows_written = metrics["rows_written"]
+
+        if self.metrics_collector:
+            self.metrics_collector.add_operation_metric(
+                "merge_and_load",
+                duration_ms=(time.time() - merge_start) * 1000,
+                rows_read=total_rows_read,
+                rows_written=total_rows_written,
+            )
+
+        if not merge_executed:
+            logger.info(
+                "Merge skipped: no rows after transformation. "
+                "Watermarks will NOT be advanced."
+            )
+            return {
+                "rows_read": total_rows_read,
+                "rows_written": total_rows_written,
+            }
+        self._complete_batch(
+            ctx, work_plan, source_versions, total_rows_read, total_rows_written
+        )
+        return {
+            "rows_read": total_rows_read,
+            "rows_written": total_rows_written,
+        }
+
+    def _complete_batch(
+        self, ctx, work_plan, source_versions, total_rows_read, total_rows_written
+    ) -> None:
+        """Upsert SUCCESS control rows; tolerate observability-state failures."""
+        batch_complete_start = time.time()
+        config_fingerprint = ConfigLoader().compute_fingerprint(self.config)
+        self.etl_control.batch_complete_all(
+            self.config.table_name,
+            [
+                {
+                    "source_table": item.source_name,
+                    "new_version": source_versions[item.source_name],
+                    "rows_read": total_rows_read,
+                    "rows_written": total_rows_written,
+                    "config_fingerprint": config_fingerprint,
+                    "source_schema_fingerprint": (
+                        compute_source_schema_fingerprint(self.spark, item.source_name)
+                    ),
+                }
+                for item in work_plan.active_items
+            ],
+        )
+        if self.metrics_collector:
+            self.metrics_collector.add_operation_metric(
+                "etl_control_batch_complete",
+                duration_ms=(time.time() - batch_complete_start) * 1000,
+            )
+        try:
+            commit_temporal_state_updates(ctx)
+        except Exception:
+            observability = self.config.observability
+            if observability and observability.write_failure == "error":
+                raise
+            logger.warning(
+                "Temporal observability state could not be persisted; "
+                "the target load remains successful",
+                exc_info=True,
+            )
+
+    def _finalize_success(
+        self, ctx, batch_id: str, active_names: list[str], result: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Stop metrics collection and shape the SUCCESS summary."""
+        logger.info(
+            f"Pipeline completed. Read: {result['rows_read']}, "
+            f"Written: {result['rows_written']}"
+        )
+        metrics_summary = {}
+        if self.metrics_collector:
+            self.metrics_collector.stop_collection()
+            metrics_summary = self.metrics_collector.get_summary()
+        return {
+            "status": "SUCCESS",
+            "batch_id": batch_id,
+            "target_table": self.config.table_name,
+            "rows_read": result["rows_read"],
+            "rows_written": result["rows_written"],
+            "active_sources": len(active_names),
+            "metrics": metrics_summary,
+            "validation_metrics": ctx.validation_metrics,
+        }

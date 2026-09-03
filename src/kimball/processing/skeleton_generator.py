@@ -123,6 +123,34 @@ class SkeletonGenerator:
         if missing.limit(1).count() == 0:
             return
 
+        skeletons = self._build_skeleton_frame(
+            fact_df,
+            dim,
+            missing,
+            dim_join_key,
+            fact_join_key,
+            surrogate_key_col,
+            version_column,
+        )
+        skeletons = self._stamp_scd7_durable_keys(
+            skeletons, dim, dim_join_key, durable_key_col
+        )
+        skeletons = self._fill_attribute_columns(
+            skeletons, dim, dim_join_key, surrogate_key_col, batch_id
+        )
+        self._merge_skeletons(skeletons, dim_table_name, dim_join_key)
+
+    def _build_skeleton_frame(
+        self,
+        fact_df: DataFrame,
+        dim: DataFrame,
+        missing: DataFrame,
+        dim_join_key: str,
+        fact_join_key: str,
+        surrogate_key_col: str,
+        version_column: str | None,
+    ) -> DataFrame:
+        """Key the skeleton rows and attach a stable effective-time when present."""
         skeletons = missing.select(F.col(fact_join_key).alias(dim_join_key))
 
         # Deterministic SK from the natural key (and optional effective-time).
@@ -144,68 +172,79 @@ class SkeletonGenerator:
                 skeletons[dim_join_key] == min_effective[fact_join_key],
                 "left",
             ).drop(min_effective[fact_join_key])
-        skeletons = key_gen.generate_keys(skeletons, surrogate_key_col)
+        return key_gen.generate_keys(skeletons, surrogate_key_col)
 
-        # SCD7 dimensions carry a durable key and hash fingerprints. Their
-        # columns are NOT NULL (a Type 7 table is created under the kimball
-        # null policy), so the skeleton must carry a real durable key derived
-        # the same way the merge will derive it. Later hydration in scd2.py
-        # overwrites these with the real row's values.
+    @staticmethod
+    def _stamp_scd7_durable_keys(
+        skeletons: DataFrame,
+        dim: DataFrame,
+        dim_join_key: str,
+        durable_key_col: str | None,
+    ) -> DataFrame:
+        """SCD7 tables: stamp a real durable key + fingerprints on skeletons.
+
+        Their columns are NOT NULL (a Type 7 table is created under the
+        kimball null policy), so the skeleton must carry a real durable key
+        derived the same way the merge will derive it. Later hydration in
+        scd2.py overwrites these with the real row's values.
+        """
         dim_columns = {f.name for f in dim.schema.fields}
-        if durable_key_col and durable_key_col in dim_columns:
-            from kimball.processing.key_generator import stamp_type7_columns
+        if not (durable_key_col and durable_key_col in dim_columns):
+            return skeletons
+        from kimball.processing.key_generator import stamp_type7_columns
 
-            # __skeleton_valid_from is a stable effective-time input so the
-            # Type 7 key derivation has a version column; the derivation is
-            # dropped again after stamping (never projected to the target).
-            skeletons = stamp_type7_columns(
-                skeletons.withColumn(
-                    "__skeleton_valid_from",
-                    F.lit(DEFAULT_VALID_FROM).cast(TimestampType()),
-                ),
-                [dim_join_key],
+        # __skeleton_valid_from is a stable effective-time input so the
+        # Type 7 key derivation has a version column; the derivation is
+        # dropped again after stamping (never projected to the target).
+        return stamp_type7_columns(
+            skeletons.withColumn(
                 "__skeleton_valid_from",
-                durable_key_col,
-            ).drop("__skeleton_valid_from")
+                F.lit(DEFAULT_VALID_FROM).cast(TimestampType()),
+            ),
+            [dim_join_key],
+            "__skeleton_valid_from",
+            durable_key_col,
+        ).drop("__skeleton_valid_from")
 
-        # Lookup table: column name -> (needs_column, apply_fn(skeletons, field, batch_id)).
-        # Reduces 23 if/elif branches to a single dict lookup.
-        _COLUMN_HANDLERS: dict[str, tuple[bool, Any]] = {
-            "__is_skeleton": (False, lambda s, f, b: s.withColumn(f.name, F.lit(True))),
-            "__is_current": (False, lambda s, f, b: s.withColumn(f.name, F.lit(True))),
-            "__is_deleted": (False, lambda s, f, b: s.withColumn(f.name, F.lit(False))),
-            "__valid_from": (
-                False,
-                lambda s, f, b: s.withColumn(
-                    f.name, F.lit(DEFAULT_VALID_FROM).cast(TimestampType())
-                ),
+    @staticmethod
+    def _fill_attribute_columns(
+        skeletons: DataFrame,
+        dim: DataFrame,
+        dim_join_key: str,
+        surrogate_key_col: str,
+        batch_id: str | None,
+    ) -> DataFrame:
+        """Fill every dimension column the key projection does not already set.
+
+        Known system columns get skeleton semantics from the handler table;
+        nullable attributes get NULL; NOT NULL attributes (a dimension under
+        the "kimball" null policy stamps every attribute column NOT NULL)
+        get the type-appropriate substitute — inserting NULL would violate
+        DELTA_NOT_NULL_CONSTRAINT_VIOLATED.
+        """
+        _COLUMN_HANDLERS: dict[str, Any] = {
+            "__is_skeleton": lambda s, f, b: s.withColumn(f.name, F.lit(True)),
+            "__is_current": lambda s, f, b: s.withColumn(f.name, F.lit(True)),
+            "__is_deleted": lambda s, f, b: s.withColumn(f.name, F.lit(False)),
+            "__valid_from": lambda s, f, b: s.withColumn(
+                f.name, F.lit(DEFAULT_VALID_FROM).cast(TimestampType())
             ),
-            "__valid_to": (
-                False,
-                lambda s, f, b: s.withColumn(
-                    f.name, F.lit(DEFAULT_VALID_TO).cast(TimestampType())
-                ),
+            "__valid_to": lambda s, f, b: s.withColumn(
+                f.name, F.lit(DEFAULT_VALID_TO).cast(TimestampType())
             ),
-            "__etl_processed_at": (
-                False,
-                lambda s, f, b: s.withColumn(f.name, F.current_timestamp()),
+            "__etl_processed_at": lambda s, f, b: s.withColumn(
+                f.name, F.current_timestamp()
             ),
-            "__etl_batch_id": (
-                False,
-                lambda s, f, b: s.withColumn(f.name, F.lit(b or "skeleton")),
+            "__etl_batch_id": lambda s, f, b: s.withColumn(
+                f.name, F.lit(b or "skeleton")
             ),
-            "__skeleton_created_at": (
-                False,
-                lambda s, f, b: s.withColumn(f.name, F.current_timestamp()),
+            "__skeleton_created_at": lambda s, f, b: s.withColumn(
+                f.name, F.current_timestamp()
             ),
-            "__member_status": (
-                False,
-                lambda s, f, b: s.withColumn(f.name, F.lit("NOT_YET_AVAILABLE")),
+            "__member_status": lambda s, f, b: s.withColumn(
+                f.name, F.lit("NOT_YET_AVAILABLE")
             ),
-            "__key_origin": (
-                False,
-                lambda s, f, b: s.withColumn(f.name, F.lit("skeleton")),
-            ),
+            "__key_origin": lambda s, f, b: s.withColumn(f.name, F.lit("skeleton")),
         }
         _SKIP_COLUMNS = frozenset(
             {
@@ -215,37 +254,32 @@ class SkeletonGenerator:
                 "__scd2_total",
             }
         )
-
         for field in dim.schema.fields:
             name = field.name
             if (
                 name == dim_join_key
                 or name == surrogate_key_col
                 or name in _SKIP_COLUMNS
+                or name in skeletons.columns
             ):
-                continue
-            if name in skeletons.columns:
                 continue
             handler = _COLUMN_HANDLERS.get(name)
             if handler is not None:
-                _, apply_fn = handler
-                skeletons = apply_fn(skeletons, field, batch_id)
+                skeletons = handler(skeletons, field, batch_id)
             elif field.nullable:
                 skeletons = skeletons.withColumn(name, F.lit(None).cast(field.dataType))
             else:
-                # The target column carries a NOT NULL constraint (e.g. a
-                # dimension created under the "kimball" null policy stamps
-                # every attribute column NOT NULL).  Inserting NULL here
-                # would violate DELTA_NOT_NULL_CONSTRAINT_VIOLATED, so use
-                # the framework's type-appropriate substitute instead.
                 skeletons = skeletons.withColumn(
                     name,
                     F.lit(_replacement_for_type(field.dataType)).cast(field.dataType),
                 )
+        return skeletons
 
-        # Project to target column order; drop helper columns not in dim.
+    @staticmethod
+    def _project_to_target_order(skeletons: DataFrame, dim: DataFrame) -> DataFrame:
+        """Project to target column order; drop helper columns not in dim."""
         target_cols = [f.name for f in dim.schema.fields]
-        skeletons = skeletons.select(
+        return skeletons.select(
             *[
                 F.col(c).cast(dim.schema[c].dataType).alias(c)
                 if c in skeletons.columns
@@ -254,6 +288,10 @@ class SkeletonGenerator:
             ]
         )
 
+    def _merge_skeletons(
+        self, skeletons: DataFrame, dim_table_name: str, dim_join_key: str
+    ) -> None:
+        """Insert-only MERGE: skeletons never overwrite existing rows."""
         condition = f"target.`{dim_join_key}` = source.`{dim_join_key}`"
         DeltaTable.forName(self.spark, dim_table_name).alias("target").merge(
             skeletons.alias("source"), condition

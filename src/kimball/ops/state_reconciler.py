@@ -30,6 +30,7 @@ from kimball.ops.providers import (
     DeltaHistoryProvider,
     ETLControlStore,
     TargetControlState,
+    TargetDeltaState,
 )
 from kimball.ops.runtime_profile import RuntimeProfile
 
@@ -72,6 +73,15 @@ class StateReconciler:
         self._runtime = runtime
 
     def reconcile(self, target_table: str) -> ReconciliationReport:
+        """Reconcile etl_control watermarks against the target's Delta history.
+
+        Verdict ladder (first match wins, ADR-004 grade-A pass):
+        1. missing control table / missing target (pre-flight)
+        2. RUNNING zombies (three sub-cases: committed, tagging-off, clean)
+        3. post-rollback drift (RESTORE present, watermark not rewound)
+        4. orphan commits (target ahead of control table)
+        5. consistent
+        """
         if not self._control.control_table_exists():
             return _report(
                 target_table,
@@ -115,89 +125,16 @@ class StateReconciler:
             c.batch_id == last_success.batch_id for c in tagged
         )
 
-        # 1. Zombies take precedence.
         if zombies:
-            if self._runtime.supports_commit_tagging and zombie_commits:
-                return _report(
-                    target_table,
-                    ReconciliationVerdict.ZOMBIE_WITH_COMMITTED_DATA,
-                    _max_watermark(control_state),
-                    delta.current_version,
-                    zombies,
-                    zombie_commits,
-                    f"{len(zombie_commits)} commit(s) tagged with a RUNNING "
-                    "batch_id exist on the target",
-                    "Run `kimball recover --table <target>` (two-phase: RESTORE "
-                    "target, then rewind watermark + clear RUNNING).",
-                    f"{RUNBOOK}#zombie-with-committed-data",
-                )
-            if not self._runtime.supports_commit_tagging:
-                return _report(
-                    target_table,
-                    ReconciliationVerdict.ZOMBIE_NO_COMMIT,
-                    _max_watermark(control_state),
-                    delta.current_version,
-                    zombies,
-                    (),
-                    "RUNNING batch(es) present but commit tagging is "
-                    "unavailable (Serverless); committed data cannot be "
-                    "auto-attributed",
-                    "On Serverless run `kimball recover --table <target> "
-                    "--version <N>` with the pre-batch target version "
-                    "(inspect history manually).",
-                    f"{RUNBOOK}#serverless-no-tagging",
-                )
-            return _report(
-                target_table,
-                ReconciliationVerdict.ZOMBIE_NO_COMMIT,
-                _max_watermark(control_state),
-                delta.current_version,
-                zombies,
-                (),
-                "RUNNING batch(es) with no committed data attributed to them",
-                "Run `kimball recover --table <target>` to clear the stale "
-                "RUNNING rows; no RESTORE needed.",
-                f"{RUNBOOK}#zombie-no-commit",
+            return self._zombie_verdict(
+                target_table, control_state, delta, zombies, zombie_commits
             )
-
-        # 2. Post-rollback drift: a RESTORE happened and the last SUCCESS
-        #    batch's tagged commit is gone (or tagging is off so we cannot
-        #    confirm reconciliation).
-        if restore_present:
-            if self._runtime.supports_commit_tagging and last_success is not None:
-                if not last_success_present:
-                    return _report(
-                        target_table,
-                        ReconciliationVerdict.WATERMARK_AHEAD_OF_TARGET,
-                        _max_watermark(control_state),
-                        delta.current_version,
-                        (),
-                        (),
-                        "a RESTORE operation is present in target history and "
-                        "the last SUCCESS batch's tagged commit is absent - the "
-                        "target was rolled back but etl_control was not rewound",
-                        "Rewind the watermark via "
-                        "`kimball recover --table <target> --rewind-watermark`, "
-                        "or full reload.",
-                        f"{RUNBOOK}#watermark-ahead-of-target",
-                    )
-            else:
-                return _report(
-                    target_table,
-                    ReconciliationVerdict.WATERMARK_AHEAD_OF_TARGET,
-                    _max_watermark(control_state),
-                    delta.current_version,
-                    (),
-                    (),
-                    "a RESTORE operation is present in target history; "
-                    "commit tagging is off so reconciliation could not be "
-                    "confirmed",
-                    "Verify `DESCRIBE HISTORY` manually; rewind the watermark "
-                    "or full reload.",
-                    f"{RUNBOOK}#watermark-ahead-of-target",
-                )
-
-        # 3. Target has committed work the control table does not know about.
+        if restore_present and (
+            drift := self._restore_drift_verdict(
+                target_table, control_state, delta, last_success, last_success_present
+            )
+        ):
+            return drift
         if orphan_commits:
             return _report(
                 target_table,
@@ -213,8 +150,6 @@ class StateReconciler:
                 f"{RUNBOOK}#target-ahead-of-watermark",
                 orphan_commits=orphan_commits,
             )
-
-        # 4. Healthy.
         return _report(
             target_table,
             ReconciliationVerdict.CONSISTENT,
@@ -225,6 +160,118 @@ class StateReconciler:
             "watermark and target agree; no RUNNING batches; no RESTORE in history",
             "No action required.",
             None,
+        )
+
+    def _zombie_verdict(
+        self,
+        target_table: str,
+        control_state: TargetControlState,
+        delta: TargetDeltaState,
+        zombies: tuple[BatchInfo, ...],
+        zombie_commits: tuple[DeltaCommit, ...],
+    ) -> ReconciliationReport:
+        """RUNNING batches present: split on tagging support and commit evidence."""
+        if self._runtime.supports_commit_tagging and zombie_commits:
+            return _report(
+                target_table,
+                ReconciliationVerdict.ZOMBIE_WITH_COMMITTED_DATA,
+                _max_watermark(control_state),
+                delta.current_version,
+                zombies,
+                zombie_commits,
+                f"{len(zombie_commits)} commit(s) tagged with a RUNNING "
+                "batch_id exist on the target",
+                "Run `kimball recover --table <target>` (two-phase: RESTORE "
+                "target, then rewind watermark + clear RUNNING).",
+                f"{RUNBOOK}#zombie-with-committed-data",
+            )
+        if not self._runtime.supports_commit_tagging:
+            return _report(
+                target_table,
+                ReconciliationVerdict.ZOMBIE_NO_COMMIT,
+                _max_watermark(control_state),
+                delta.current_version,
+                zombies,
+                (),
+                "RUNNING batch(es) present but commit tagging is "
+                "unavailable (Serverless); committed data cannot be "
+                "auto-attributed",
+                "On Serverless run `kimball recover --table <target> "
+                "--version <N>` with the pre-batch target version "
+                "(inspect history manually).",
+                f"{RUNBOOK}#serverless-no-tagging",
+            )
+        return _report(
+            target_table,
+            ReconciliationVerdict.ZOMBIE_NO_COMMIT,
+            _max_watermark(control_state),
+            delta.current_version,
+            zombies,
+            (),
+            "RUNNING batch(es) with no committed data attributed to them",
+            "Run `kimball recover --table <target>` to clear the stale "
+            "RUNNING rows; no RESTORE needed.",
+            f"{RUNBOOK}#zombie-no-commit",
+        )
+
+    def _restore_drift_verdict(
+        self,
+        target_table: str,
+        control_state: TargetControlState,
+        delta: TargetDeltaState,
+        last_success: BatchInfo | None,
+        last_success_present: bool,
+    ) -> ReconciliationReport | None:
+        """A RESTORE happened: drift unless the last success is still there.
+
+        Returns the drift report, or ``None`` when reconciliation is
+        confirmed (tagging on, last SUCCESS commit re-present) and the
+        caller must continue to the orphan/consistent checks -- the
+        original control flow fell through in that case.
+        """
+        if self._runtime.supports_commit_tagging and last_success is not None:
+            if not last_success_present:
+                return _report(
+                    target_table,
+                    ReconciliationVerdict.WATERMARK_AHEAD_OF_TARGET,
+                    _max_watermark(control_state),
+                    delta.current_version,
+                    (),
+                    (),
+                    "a RESTORE operation is present in target history and "
+                    "the last SUCCESS batch's tagged commit is absent - the "
+                    "target was rolled back but etl_control was not rewound",
+                    "Rewind the watermark via "
+                    "`kimball recover --table <target> --rewind-watermark`, "
+                    "or full reload.",
+                    f"{RUNBOOK}#watermark-ahead-of-target",
+                )
+            return None
+        return _report(
+            target_table,
+            ReconciliationVerdict.WATERMARK_AHEAD_OF_TARGET,
+            _max_watermark(control_state),
+            delta.current_version,
+            (),
+            (),
+            "a RESTORE operation is present in target history; "
+            "commit tagging is off so reconciliation could not be "
+            "confirmed",
+            "Verify `DESCRIBE HISTORY` manually; rewind the watermark or full reload.",
+            f"{RUNBOOK}#watermark-ahead-of-target",
+        )
+        return _report(
+            target_table,
+            ReconciliationVerdict.WATERMARK_AHEAD_OF_TARGET,
+            _max_watermark(control_state),
+            delta.current_version,
+            (),
+            (),
+            "a RESTORE operation is present in target history; "
+            "commit tagging is off so reconciliation could not be "
+            "confirmed",
+            "Verify `DESCRIBE HISTORY` manually; rewind the watermark or full reload.",
+            f"{RUNBOOK}#watermark-ahead-of-target",
         )
 
 

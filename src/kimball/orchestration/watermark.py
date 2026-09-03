@@ -405,9 +405,25 @@ class ETLControlManager:
         return self._delta_table
 
     def _upsert_control_records(self, records: list[ETLControlRecord]) -> None:
+        """Upsert batch records into etl_control with concurrent-writer retries.
+
+        Phases (ADR-004 grade-A pass): normalize records against the update
+        schema, build the conditional update/insert sets, then execute with
+        bounded retries on Delta concurrency conflicts.
+        """
         if not records:
             return
         delta_table = self._get_delta_table()
+        normalized = self._normalize_records(records)
+        update_df = self.spark.createDataFrame(normalized, schema=self._UPDATE_SCHEMA)
+        update_set = self._build_update_set(update_df, records)
+        insert_values = {
+            field.name: f"u.{field.name}" for field in self._UPDATE_SCHEMA.fields
+        }
+        self._merge_with_retry(delta_table, update_df, update_set, insert_values)
+
+    def _normalize_records(self, records: list[ETLControlRecord]) -> list[dict]:
+        """Fill the update schema from each record; require identity columns."""
         normalized = []
         for record in records:
             target_table = record.get("target_table")
@@ -425,7 +441,16 @@ class ETLControlManager:
             if not item.get("updated_at"):
                 item["updated_at"] = datetime.now()
             normalized.append(item)
-        update_df = self.spark.createDataFrame(normalized, schema=self._UPDATE_SCHEMA)
+        return normalized
+
+    def _build_update_set(
+        self, update_df, records: list[ETLControlRecord]
+    ) -> dict[str, str]:
+        """Merge condition: identity keys only; every present column updates.
+
+        ``updated_at`` always updates; all other keys present on at least one
+        record (and in the schema) flow through from the staged frame.
+        """
         update_set = {"updated_at": "u.updated_at"}
         schema_field_names = {field.name for field in self._UPDATE_SCHEMA.fields}
         all_update_keys: set[str] = set()
@@ -438,9 +463,21 @@ class ETLControlManager:
                 and key in update_df.columns
             ):
                 update_set[key] = f"u.{key}"
-        insert_values = {
-            field.name: f"u.{field.name}" for field in self._UPDATE_SCHEMA.fields
-        }
+        return update_set
+
+    def _merge_with_retry(
+        self,
+        delta_table,
+        update_df,
+        update_set: dict[str, str],
+        insert_values: dict[str, str],
+    ) -> None:
+        """Execute the upsert MERGE, retrying Delta concurrency conflicts.
+
+        ConcurrentAppend / ProtocolChanged indicate another writer touched
+        etl_control mid-merge; refreshing the DeltaTable handle and backing
+        off linearly resolves both without losing either side's record.
+        """
         max_retries = 5
         for attempt in range(max_retries):
             try:
@@ -468,7 +505,6 @@ class ETLControlManager:
                     )
                     time.sleep(0.5 * (attempt + 1))
                     self._delta_table = DeltaTable.forName(self.spark, self.fq_table)
-                    delta_table = self._delta_table
-                    assert delta_table is not None
-                    continue
-                raise
+                    delta_table = self._get_delta_table()
+                else:
+                    raise
