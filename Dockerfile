@@ -85,13 +85,25 @@ RUN curl --proto '=https' --tlsv1.2 -sSfL \
 # package must be present for the test session to import. It does not hijack
 # SparkSession.builder (the reason databricks-connect is deliberately omitted).
 
-# Install the framework package itself (without remote/databricks extras)
-RUN pip install --no-cache-dir --no-deps -e .
-
+# Pre-bake the Delta Lake runtime JARs into the ivy cache so the first
+# SparkSession boot does not resolve them over the network (measured
+# ~35s per cold container otherwise). The resolution must run as the
+# image user with the same HOME the test session will use.
 # Tests do not need root. Keeping this image non-privileged also catches code
 # that accidentally assumes writable system directories.
 RUN useradd --create-home --uid 10001 kimball && chown -R kimball:kimball /app
 USER kimball
+
+# Install the framework package itself (without remote/databricks extras)
+RUN pip install --no-cache-dir --no-deps -e .
+
+# Pre-bake the Delta Lake runtime JARs into the ivy cache so the first
+# SparkSession boot does not resolve them over the network (measured
+# ~35s per cold container otherwise). The resolution must run as the
+# image user with the same HOME the test session will use.
+COPY --chown=kimball:kimball tools/prebake_ivy_cache.py /tmp/prebake_ivy_cache.py
+RUN SPARK_HOME=/usr/local/lib/python3.11/site-packages/pyspark \
+    python /tmp/prebake_ivy_cache.py && rm /tmp/prebake_ivy_cache.py
 
 # Default command runs all tests locally
 CMD ["python", "-m", "pytest", "tests/", "-v", "--tb=short"]
