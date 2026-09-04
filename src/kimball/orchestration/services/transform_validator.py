@@ -156,6 +156,7 @@ class TransformValidator:
         from kimball.observability.unresolved_keys import UnresolvedKeyRegistry
         from kimball.processing.key_broker import KeyBroker
 
+        spark = ctx.spark
         unresolved = any(
             fk.lookup and fk.lookup.early_arriving == "default"
             for fk in config.foreign_keys or []
@@ -164,7 +165,7 @@ class TransformValidator:
         obs = config.observability
         registry = (
             UnresolvedKeyRegistry(
-                spark := ctx.spark,
+                spark,
                 schema,
                 obs.unresolved_key_table if obs else "etl_unresolved_dimension_keys",
             )
