@@ -10,7 +10,12 @@ from kimball.common.config import JunkDimensionConfig
 
 
 def materialize_junk_dimensions(
-    spark: SparkSession, fact_df: DataFrame, definitions: list[JunkDimensionConfig]
+    spark: SparkSession,
+    fact_df: DataFrame,
+    definitions: list[JunkDimensionConfig],
+    *,
+    snapshot_versions: dict[str, int] | None = None,
+    full_rebuild: bool = False,
 ) -> DataFrame:
     """Upsert distinct low-cardinality combinations and add their keys to a fact."""
     result = fact_df
@@ -30,7 +35,15 @@ def materialize_junk_dimensions(
             definition.surrogate_key, *definition.source_columns
         ).dropDuplicates()
         if spark.catalog.tableExists(definition.dimension_table):
-            existing_table = spark.table(definition.dimension_table)
+            version = (snapshot_versions or {}).get(definition.dimension_table)
+            if version is None:
+                existing_table = spark.table(definition.dimension_table)
+            else:
+                existing_table = (
+                    spark.read.format("delta")
+                    .option("versionAsOf", version)
+                    .table(definition.dimension_table)
+                )
             required = {definition.surrogate_key, *definition.source_columns}
             if missing_target := required.difference(existing_table.columns):
                 raise ValueError(
@@ -54,6 +67,10 @@ def materialize_junk_dimensions(
                     f"Hash collision detected in junk dimension "
                     f"'{definition.dimension_table}'"
                 )
+            if full_rebuild:
+                from kimball.common.utils import quote_table_name
+
+                spark.sql(f"DELETE FROM {quote_table_name(definition.dimension_table)}")
             target = DeltaTable.forName(spark, definition.dimension_table)
             target.alias("target").merge(
                 combinations.alias("source"),

@@ -63,19 +63,21 @@ def apply_dimension_null_policy(
             "Dimension identity and effective-time columns must not contain NULL"
         )
 
-    result = df
     identity = set(identity_columns)
     substitutes = policy.attribute_substitutes
-    for field in result.schema.fields:
+    projection = []
+    for field in df.schema.fields:
         if field.name in identity or field.name.startswith("_"):
+            projection.append(F.col(field.name))
             continue
         replacement = (
             substitutes[field.name]
             if field.name in substitutes
             else replacement_for_type(field.dataType)
         )
-        result = result.withColumn(
-            field.name,
-            F.coalesce(F.col(field.name), F.lit(replacement).cast(field.dataType)),
+        projection.append(
+            F.coalesce(
+                F.col(field.name), F.lit(replacement).cast(field.dataType)
+            ).alias(field.name, metadata=field.metadata)
         )
-    return result
+    return df.select(*projection)

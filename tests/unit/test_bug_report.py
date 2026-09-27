@@ -66,7 +66,7 @@ def _setup_running_batches_mock(spark_mock, stale_rows):
 
 
 # ===================================================================
-# #1  SCD6 missing generate_keys â€” NULL surrogate keys
+# #1  SCD6 missing generate_keys: NULL surrogate keys
 # ===================================================================
 
 
@@ -449,7 +449,7 @@ class TestBugStreamingPerVersionMaterialization:
         orch.etl_control = MagicMock()
 
         batch_df = _make_df(["id", "val", "_commit_version", "_commit_timestamp"])
-        batch_df.select.return_value.distinct.return_value.collect.return_value = [
+        batch_df.select.return_value.distinct.return_value.orderBy.return_value.toLocalIterator.return_value = [
             MagicMock(_commit_version=1),
             MagicMock(_commit_version=2),
             MagicMock(_commit_version=3),

@@ -4,12 +4,15 @@ Default ``checkpointLocation`` resolver for the streaming module.
 The streaming orchestrator asks for a path when the YAML does not
 provide one. The rule is:
 
-1. If ``$KIMBALL_STREAMING_CHECKPOINT_ROOT`` is set, use
-   ``$KIMBALL_STREAMING_CHECKPOINT_ROOT/<sanitised_source_table>``.
-2. Otherwise, fall back to
+1. Use the source's explicit ``checkpoint_location`` (selected by the
+   streaming orchestrator before calling this helper).
+2. Otherwise, use the resolved target/runtime root supplied by the caller.
+3. For standalone helper calls, if ``$KIMBALL_STREAMING_CHECKPOINT_ROOT`` is
+   set, use that environment root.
+4. Otherwise, fall back to
    ``/tmp/kimball_streaming_checkpoints/<sanitised_source_table>``.
 
-In both cases the path is sanitised to be safe on every common
+In all cases the path is sanitised to be safe on every common
 filesystem (alphanumerics, ``-`` and ``_`` only; everything else is
 collapsed to ``_``).
 """
@@ -31,10 +34,18 @@ def default_checkpoint_path(
     source_table: str,
     etl_schema: str | None = None,
     root: str | None = None,
+    *,
+    use_environment: bool = True,
 ) -> str:
-    """Return a default checkpoint path for ``source_table``."""
-    if root is None:
-        root = os.environ.get("KIMBALL_STREAMING_CHECKPOINT_ROOT")
+    """Return a default checkpoint path for ``source_table``.
+
+    Pipeline entry points pass their already-resolved root with
+    ``use_environment=False`` so a run never re-reads policy settings.
+    """
+    if root is None and use_environment:
+        from kimball.common.runtime import RuntimeOptions
+
+        root = RuntimeOptions.from_environment().streaming_checkpoint_root
     if root is None:
         if os.environ.get("DATABRICKS_RUNTIME_VERSION"):
             root = "/Volumes/workspace/default/kimball_checkpoints"

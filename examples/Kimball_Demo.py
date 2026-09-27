@@ -389,9 +389,6 @@ print(f"Day 1 Data Ingested in {_day1_load_time:.2f}s")
 
 from kimball import PipelineExecutor
 
-# Set Environment Variable for Jinja
-os.environ["env"] = "demo"
-
 # Run Dimensions and Facts (PipelineExecutor handles dependency order automatically)
 _t_transform_start = time.perf_counter()
 

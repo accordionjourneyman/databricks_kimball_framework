@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import time
 import traceback
@@ -28,29 +27,15 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import col, current_timestamp, desc
 from pyspark.sql.types import StringType, StructField, StructType, TimestampType
 
+from kimball.common.runtime import RuntimeOptions
 from kimball.common.spark_session import get_spark
 
 logger = logging.getLogger(__name__)
 
 
 def _feature_enabled(feature: str) -> bool:
-    """Check if a feature is enabled via environment variable.
-
-    Args:
-        feature: Feature name (checkpoints, staging_cleanup, metrics, auto_cluster).
-
-    Returns:
-        True if feature is enabled, False otherwise.
-
-    Environment Variables:
-        KIMBALL_MODE: Set to "full" to enable all features.
-        KIMBALL_ENABLE_<FEATURE>: Set to "1" to enable specific feature.
-    """
-    # Full mode enables all features
-    if os.environ.get("KIMBALL_MODE", "").lower() == "full":
-        return True
-    # Otherwise check specific feature flag
-    return os.environ.get(f"KIMBALL_ENABLE_{feature.upper()}") == "1"
+    """Compatibility wrapper around the validated runtime feature policy."""
+    return RuntimeOptions.from_environment().feature_enabled(feature)
 
 
 def _ensure_delta_table(
@@ -157,12 +142,16 @@ class StagingCleanupManager:
     Provides ACID-compliant registry to prevent race conditions in multi-pipeline environments.
     """
 
-    def __init__(self, registry_table: str | None = None) -> None:
-        # Use Delta table for registry instead of JSON file to prevent race conditions
+    def __init__(
+        self,
+        registry_table: str | None = None,
+        *,
+        runtime_options: RuntimeOptions | None = None,
+    ) -> None:
+        # Use Delta table for registry instead of JSON file to prevent race conditions.
+        options = runtime_options or RuntimeOptions.from_environment()
         if registry_table is None:
-            registry_table = os.getenv(
-                "KIMBALL_CLEANUP_REGISTRY_TABLE", "default.kimball_staging_registry"
-            )
+            registry_table = options.cleanup_registry_table
 
         self.registry_table = registry_table
         self._ensure_registry_table()
@@ -266,12 +255,16 @@ class PipelineCheckpoint:
     Saves and restores pipeline state to enable resumability with atomic guarantees.
     """
 
-    def __init__(self, checkpoint_table: str | None = None) -> None:
-        # Use Delta table for atomic checkpoint storage
+    def __init__(
+        self,
+        checkpoint_table: str | None = None,
+        *,
+        runtime_options: RuntimeOptions | None = None,
+    ) -> None:
+        # Use Delta table for atomic checkpoint storage.
+        options = runtime_options or RuntimeOptions.from_environment()
         if checkpoint_table is None:
-            checkpoint_table = os.getenv(
-                "KIMBALL_CHECKPOINT_TABLE", "default.kimball_pipeline_checkpoints"
-            )
+            checkpoint_table = options.checkpoint_table
 
         self.checkpoint_table = checkpoint_table
         self._ensure_checkpoint_table()

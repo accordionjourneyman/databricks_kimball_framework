@@ -4,16 +4,22 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from pyspark.sql import SparkSession
 
-from kimball.common.config import ConfigLoader, ModelIntegrityPolicy
+from kimball.common.config import (
+    ConfigLoader,
+    ModelIntegrityPolicy,
+    TargetConfig,
+    resolve_template_context,
+)
 from kimball.common.errors import NonRetriableError
+from kimball.common.runtime import RuntimeOptions
 from kimball.orchestration.orchestrator import Orchestrator
 from kimball.orchestration.runtime import PipelineRuntime
-from kimball.orchestration.watermark import get_etl_schema
 from kimball.planning.compiler import Profile, ProjectCompiler, ProjectValidationError
 
 logger = logging.getLogger(__name__)
@@ -77,10 +83,22 @@ class PipelineExecutor:
         stop_on_failure: bool = True,
         profile: Profile = "dev",
         rule_policy: ModelIntegrityPolicy | None = None,
+        runtime_options: RuntimeOptions | None = None,
+        target: TargetConfig | None = None,
+        template_context: Mapping[str, Any] | None = None,
+        allow_implicit_environment: bool = True,
     ):
 
+        self.target = target
+        self.runtime_options = (
+            runtime_options or RuntimeOptions.from_environment()
+        ).resolved(
+            etl_schema=etl_schema,
+            target_etl_schema=target.etl_schema if target else None,
+            target_checkpoint_root=target.checkpoint_root if target else None,
+        )
         if etl_schema is None:
-            etl_schema = get_etl_schema()
+            etl_schema = self.runtime_options.etl_schema
         if etl_schema is None:
             raise ValueError(
                 "ETL schema must be specified via one of:\n"
@@ -94,14 +112,24 @@ class PipelineExecutor:
         self.stop_on_failure = stop_on_failure
         self.profile: Profile = profile
         self.rule_policy = rule_policy
-        self.config_loader = ConfigLoader()
+        self.config_loader = ConfigLoader(
+            template_context=resolve_template_context(target, template_context),
+            allow_implicit_environment=allow_implicit_environment,
+        )
         self.spark = spark
         self._categorize_pipelines()
 
     def _create_orchestrator(self, config_path: str) -> Orchestrator:
-        config = self.config_loader.load_config(config_path)
+        config = self.config_by_path.get(config_path)
+        if config is None:
+            # Keep the helper usable for paths added after executor construction.
+            config = self.config_loader.load_config(config_path)
         runtime = PipelineRuntime.for_config(
-            config, spark=self.spark, etl_schema=self.etl_schema
+            config,
+            spark=self.spark,
+            etl_schema=self.etl_schema,
+            runtime_options=self.runtime_options,
+            target=self.target,
         )
         return Orchestrator(config, runtime)
 
@@ -114,6 +142,7 @@ class PipelineExecutor:
                 logger.error("FATAL: Could not load config %s: %s", path, exc)
                 raise NonRetriableError(f"Invalid config file: {path}") from exc
 
+        self.config_by_path = dict(entries)
         try:
             self.project = ProjectCompiler(
                 profile=self.profile, rule_policy=self.rule_policy

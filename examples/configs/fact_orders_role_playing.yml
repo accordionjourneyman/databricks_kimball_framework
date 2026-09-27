@@ -45,4 +45,4 @@ transformation_sql: |
     is_gift,
     is_priority,
     channel_code
-  FROM silver.orders
+  FROM orders

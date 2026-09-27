@@ -24,7 +24,6 @@ Usage:
 from __future__ import annotations
 
 import logging
-import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -35,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 from pyspark.sql import functions as F
 
 from kimball.common.errors import DataQualityError
+from kimball.common.runtime import RuntimeOptions
 
 if TYPE_CHECKING:
     from pyspark.sql import DataFrame, SparkSession
@@ -141,8 +141,13 @@ class ValidationReport:
 class DataQualityValidator:
     """Run data quality tests on DataFrames."""
 
-    def __init__(self, spark: SparkSession | None = None):
+    def __init__(
+        self,
+        spark: SparkSession | None = None,
+        runtime_options: RuntimeOptions | None = None,
+    ):
         self._spark = spark
+        self.runtime_options = runtime_options or RuntimeOptions.from_environment()
 
     @property
     def spark(self) -> SparkSession:
@@ -153,11 +158,11 @@ class DataQualityValidator:
         return self._spark
 
     def _dev_total_rows(self, df: DataFrame) -> int | None:
-        is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
+        is_dev_mode = self.runtime_options.enable_dev_checks
         return df.count() if is_dev_mode else None
 
     def _count_bad_rows(self, bad_df: DataFrame) -> int | None:
-        is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
+        is_dev_mode = self.runtime_options.enable_dev_checks
         if is_dev_mode:
             return bad_df.count()
         return None if bad_df.limit(1).isEmpty() is False else 0
@@ -334,13 +339,21 @@ class DataQualityValidator:
         reference_column: str,
         severity: TestSeverity = TestSeverity.ERROR,
         sample_size: int = 5,
+        reference_version: int | None = None,
     ) -> TestResult:
         test_name = (
             f"relationships({fk_column} -> {reference_table}.{reference_column})"
         )
 
         def _relationships_check() -> TestResult:
-            dim_df = self.spark.table(reference_table)
+            if reference_version is None:
+                dim_df = self.spark.table(reference_table)
+            else:
+                dim_df = (
+                    self.spark.read.format("delta")
+                    .option("versionAsOf", reference_version)
+                    .table(reference_table)
+                )
             # SCD2 dimensions only resolve against their current rows.
             if "__is_current" in dim_df.columns:
                 dim_df = dim_df.filter(F.col("__is_current") == True)  # noqa: E712
@@ -484,6 +497,7 @@ class DataQualityValidator:
         config: TableConfig,
         df: DataFrame,
         use_approximate_unique: bool = False,
+        snapshot_versions: dict[str, int] | None = None,
     ) -> ValidationReport:
         results: list[TestResult] = []
         if (
@@ -521,14 +535,27 @@ class DataQualityValidator:
                             reference_table=fk.references,
                             reference_column=ref_column,
                             severity=TestSeverity.ERROR,
+                            reference_version=(snapshot_versions or {}).get(
+                                fk.references
+                            ),
                         )
                     )
         if hasattr(config, "tests") and config.tests:
             for test_def in config.tests:
-                results.extend(self._run_test_definition(df, test_def))
+                results.extend(
+                    self._run_test_definition(
+                        df, test_def, snapshot_versions=snapshot_versions
+                    )
+                )
         return ValidationReport(results=results)
 
-    def _run_test_definition(self, df: DataFrame, test_def: Any) -> list[TestResult]:
+    def _run_test_definition(
+        self,
+        df: DataFrame,
+        test_def: Any,
+        *,
+        snapshot_versions: dict[str, int] | None = None,
+    ) -> list[TestResult]:
         results: list[TestResult] = []
         column = getattr(test_def, "column", None)
         tests = getattr(test_def, "tests", [])
@@ -549,7 +576,11 @@ class DataQualityValidator:
                     results.append(
                         self.validate_not_null(df, [column], severity=severity)
                     )
-            elif isinstance(test, dict):
+            else:
+                if hasattr(test, "model_dump"):
+                    test = test.model_dump(mode="json", exclude_none=True)
+                if not isinstance(test, dict):
+                    continue
                 if "accepted_values" in test:
                     results.append(
                         self.validate_accepted_values(
@@ -565,6 +596,9 @@ class DataQualityValidator:
                             reference_table=rel.get("to", ""),
                             reference_column=rel.get("field", column),
                             severity=severity,
+                            reference_version=(snapshot_versions or {}).get(
+                                rel.get("to", "")
+                            ),
                         )
                     )
                 elif "expression" in test:
@@ -587,22 +621,13 @@ class DataQualityValidator:
             test_name = f"{table_name}: {test_name}"
 
         def _uniqueness_check() -> TestResult:
-            is_dev_mode = os.environ.get("KIMBALL_ENABLE_DEV_CHECKS") == "1"
+            is_dev_mode = self.runtime_options.enable_dev_checks
+            sample_failures: list[dict[str, Any]] = []
             if is_dev_mode:
                 total_rows: int | None = df.count()
                 distinct_keys: int | None = df.select(*natural_keys).distinct().count()
                 duplicate_count: int | None = (total_rows or 0) - (distinct_keys or 0)
             else:
-                duplicates_check = (
-                    df.groupBy(*natural_keys).count().filter(F.col("count") > 1)
-                )
-                duplicate_count = (
-                    None if duplicates_check.limit(1).isEmpty() is False else 0
-                )
-                total_rows = None
-            details = None
-            sample_failures: list[dict[str, Any]] = []
-            if duplicate_count != 0:
                 duplicates = (
                     df.groupBy(*natural_keys)
                     .agg(F.count("*").alias("_dup_count"))
@@ -611,6 +636,19 @@ class DataQualityValidator:
                     .limit(5)
                 )
                 sample_failures = [row.asDict() for row in duplicates.collect()]
+                duplicate_count = None if sample_failures else 0
+                total_rows = None
+            details = None
+            if duplicate_count != 0:
+                if is_dev_mode:
+                    duplicates = (
+                        df.groupBy(*natural_keys)
+                        .agg(F.count("*").alias("_dup_count"))
+                        .filter(F.col("_dup_count") > 1)
+                        .orderBy(F.col("_dup_count").desc())
+                        .limit(5)
+                    )
+                    sample_failures = [row.asDict() for row in duplicates.collect()]
                 details = f"CRITICAL: {duplicate_count if (duplicate_count and duplicate_count > 0) else 'Found'} duplicate natural keys found! Total rows: {total_rows if (total_rows and total_rows > 0) else 'Skipped'}, Distinct keys: {distinct_keys if is_dev_mode else 'Skipped'}. This will corrupt surrogate keys."
             return TestResult(
                 test_name=test_name,
@@ -648,7 +686,15 @@ class DataQualityValidator:
             if accepted_defaults:
                 defaults_literal = list(accepted_defaults)
                 fact_fks = fact_fks.filter(~F.col(fk_column).isin(defaults_literal))
-            dim_df = self.spark.table(dim_table)
+            version = fk.get("snapshot_version")
+            if version is None:
+                dim_df = self.spark.table(dim_table)
+            else:
+                dim_df = (
+                    self.spark.read.format("delta")
+                    .option("versionAsOf", version)
+                    .table(dim_table)
+                )
             if fk.get("current_only", True) and "__is_current" in dim_df.columns:
                 dim_df = dim_df.filter(F.col("__is_current") == True)  # noqa: E712
             valid_sks = dim_df.select(dim_key).distinct()

@@ -8,11 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `tools/inspect_etl_control.py` â€” read-only diagnostic CLI to query
+- `tools/inspect_etl_control.py` — read-only diagnostic CLI to query
   the `etl_control` Delta table. Supports `--table`, `--running`,
   `--failed`, `--older-than`, `--json`, `--limit` flags. Unit tests: 15.
-- `tests/unit/test_inspect_tool.py` â€” unit tests for inspect tool.
-- `kimball query-history` CLI subcommand â€” delegates to
+- `tests/unit/test_inspect_tool.py` — unit tests for inspect tool.
+- `kimball query-history` CLI subcommand — delegates to
   `tools/query_history.py` to analyze `system.query.history`. Handles
   access-denied and connectivity errors gracefully.
 
@@ -23,10 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PipelineExecutor` (use `etl_schema` instead)
 - **REMOVED:** PII strategy `"hash"` (non-cryptographic alias for
   `fast_hash`). Use `"fast_hash"` or `"tokenize"`.
-- **REMOVED:** `NullPolicyConfig.mode` â€” the `"legacy"` mode is gone.
+- **REMOVED:** `NullPolicyConfig.mode` — the `"legacy"` mode is gone.
   Null policy is always "kimball" (strict null substitution).
 - **REMOVED:** Cluster by parameter from
-  `table_creator.create_table_with_clustering()` â€” use config-based
+  `table_creator.create_table_with_clustering()` — use config-based
   cluster_by only.
 - **REMOVED:** Programmatic `partition_by` and the `partition_by` argument to
   `RuntimePolicy.cluster_clause()`; table layout is now config-driven.
@@ -34,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   specialized error aliases. Import validation types from
   `kimball.orchestration.validation`; use `StructuredError` for categorized
   operational failures.
-- **REMOVED:** `KIMBALL_TRUST_STORED_HASHDIFF` env var â€” hashdiff is
+- **REMOVED:** `KIMBALL_TRUST_STORED_HASHDIFF` env var — hashdiff is
   always recomputed.
 - **REMOVED:** `silver_schema`/`gold_schema` split in `TargetConfig`
   (consolidated into single `etl_schema` field).
@@ -60,7 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CODE_OF_CONDUCT.md` (Contributor Covenant v2.1)
 - GitHub issue templates (bug, feature, question)
 - Pull request template with production-readiness checklist
-- `docs/COMPATIBILITY.md` (Python Ã— PySpark Ã— Delta matrix)
+- `docs/COMPATIBILITY.md` (Python × PySpark × Delta matrix)
 - `kimball --version` CLI flag
 - CI-generated JSON Schema for pipeline YAML config
 - `validate_resolution` and `detect_fanout` config options on

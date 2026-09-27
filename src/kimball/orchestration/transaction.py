@@ -81,6 +81,7 @@ class TransactionManager:
             self.spark.sql(
                 f"RESTORE TABLE {quote_table_name(table_name)} TO VERSION AS OF {version}"
             )
+            self.invalidate_version(table_name)
             logger.info(f"ROLLBACK COMPLETE: {table_name} restored to {version}.")
         except PySparkException as e:
             logger.info(f"CRITICAL: Failed to rollback {table_name}: {e}")
@@ -146,7 +147,12 @@ class TransactionManager:
 
     @contextmanager
     def table_transaction(
-        self, table_name: str, batch_id: str
+        self,
+        table_name: str,
+        batch_id: str,
+        *,
+        user_metadata: str | None = None,
+        require_tagging: bool = False,
     ) -> Generator[None, None, None]:
         """
         Context manager implementing best-effort compensating rollback.
@@ -161,14 +167,24 @@ class TransactionManager:
         # Note: If start_version is -1 (table doesn't exist), we can't rollback to it easily.
         # But usually table creation is separate. If table exists, version >= 0.
 
-        # Set commit tagging - lenient on errors (e.g. Serverless limitations)
+        # Normal runs tolerate runtimes that cannot tag commits. Repairs require
+        # attribution so a crash can be reconciled without replaying a mutation.
+        metadata_key = "spark.databricks.delta.commitInfo.userMetadata"
+        previous_metadata = None
+        if user_metadata is not None:
+            try:
+                previous_metadata = self.spark.conf.get(metadata_key)
+            except Exception:
+                previous_metadata = None
         try:
-            self.spark.conf.set(
-                "spark.databricks.delta.commitInfo.userMetadata", batch_id
-            )
-        except PySparkException:
+            self.spark.conf.set(metadata_key, user_metadata or batch_id)
+        except Exception as exc:
+            if require_tagging:
+                raise RuntimeError(
+                    "repair requires Delta commit metadata tagging"
+                ) from exc
             logger.info(
-                "WARNING: Could not set commit info metadata (likely Serverless restriction). Proceeding without commit tagging."
+                "WARNING: Could not set commit metadata; proceeding without commit tagging."
             )
 
         try:
@@ -181,10 +197,20 @@ class TransactionManager:
             if current_version > start_version:
                 if start_version < 0:
                     # Table was just created (started as -1), cannot restore to pre-creation state
-                    logger.warning(
-                        f"TRANSACTION FAILED on first run: Table {table_name} was created but operation failed. "
-                        f"Manual DROP TABLE {table_name} or manual recovery required."
-                    )
+                    if require_tagging:
+                        logger.info(
+                            "Repair failed while creating %s; dropping its new table",
+                            table_name,
+                        )
+                        self.spark.sql(
+                            f"DROP TABLE IF EXISTS {quote_table_name(table_name)}"
+                        )
+                        self.invalidate_version(table_name)
+                    else:
+                        logger.warning(
+                            f"TRANSACTION FAILED on first run: Table {table_name} was created but operation failed. "
+                            f"Manual DROP TABLE {table_name} or manual recovery required."
+                        )
                 elif start_version == 0:
                     logger.info(
                         f"TRANSACTION FAILED on first run. Restoring table to empty state (version 0). "
@@ -204,6 +230,9 @@ class TransactionManager:
         finally:
             # Always clear metadata to avoid polluting future commits
             try:
-                self.spark.conf.unset("spark.databricks.delta.commitInfo.userMetadata")
+                if user_metadata is not None and previous_metadata is not None:
+                    self.spark.conf.set(metadata_key, previous_metadata)
+                else:
+                    self.spark.conf.unset(metadata_key)
             except PySparkException:
                 pass

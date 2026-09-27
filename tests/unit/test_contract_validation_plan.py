@@ -75,14 +75,20 @@ def test_validation_policy_has_bounded_failure_samples() -> None:
 @pytest.mark.parametrize(
     ("rule", "message"),
     [
-        ({"rule": "not_null"}, "not_null requires column"),
-        ({"rule": "null_rate", "column": "amount"}, "null_rate requires max_ratio"),
+        ({"rule": "not_null"}, r"(?s)quality.0.not_null.column.*Field required"),
+        (
+            {"rule": "null_rate", "column": "amount"},
+            r"(?s)quality.0.null_rate.max_ratio.*Field required",
+        ),
         (
             {"rule": "accepted_values", "column": "status"},
-            "accepted_values requires values",
+            r"(?s)quality.0.accepted_values.values.*Field required",
         ),
-        ({"rule": "expression"}, "expression requires expression"),
-        ({"rule": "unique"}, "unique requires column or columns"),
+        (
+            {"rule": "expression"},
+            r"(?s)quality.0.expression.expression.*Field required",
+        ),
+        ({"rule": "unique"}, "unique accepts either column or columns"),
         (
             {"rule": "unique", "column": "id", "columns": ["id"]},
             "unique accepts either column or columns",
@@ -92,3 +98,14 @@ def test_validation_policy_has_bounded_failure_samples() -> None:
 def test_quality_rule_shape_fails_during_configuration(rule, message) -> None:
     with pytest.raises(ValueError, match=message):
         _contract(quality=[rule])
+
+
+def test_approximate_unique_rules_keep_one_action_per_rule() -> None:
+    contract = _contract(validation={"mode": "approximate"})
+
+    plan = QualityValidationPlan.compile(contract.quality, contract.validation)
+
+    assert plan.minimum_actions == 3
+    limited = _contract(validation={"mode": "approximate", "max_actions": 2})
+    with pytest.raises(ValueError, match="requires at least 3 Spark actions"):
+        QualityValidationPlan.compile(limited.quality, limited.validation)

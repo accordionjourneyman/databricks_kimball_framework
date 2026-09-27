@@ -90,15 +90,18 @@ def test_explain_cdf_gap_recommends_full_reload():
 
 
 def test_explain_config_drift_dominates():
-    batches = (batch("b1", "silver.s", "SUCCESS", 5, config_fingerprint="old"),)
+    batches = (
+        batch("b1", "silver.s", "SUCCESS", 5, config_fingerprint="v2:" + "a" * 64),
+    )
     hist = FakeHistory(True, 3, (commit(3, "b1"),))
     report = explain(
         "gold.t",
         providers(FakeControl(True, batches), hist, _sources_healthy()),
         CLASSIC,
-        current_config_fingerprint="new",
+        current_config_fingerprint="v2:" + "b" * 64,
     )
     assert report.config_drift is True
+    assert report.config_fingerprint_comparison == "drift"
     assert report.category == "CONFIG"
     assert (
         report.recommended_recovery
@@ -187,3 +190,21 @@ def test_explain_target_ahead_orphan_recommends_recover_batch_id():
         "recover --table <target> --batch-id ghost --force"
         in report.recommended_recovery
     )
+
+
+def test_explain_legacy_config_fingerprint_is_not_comparable():
+    batches = (
+        batch("b1", "silver.s", "SUCCESS", 5, config_fingerprint="0123456789abcdef"),
+    )
+    hist = FakeHistory(True, 3, (commit(3, "b1"),))
+
+    report = explain(
+        "gold.t",
+        providers(FakeControl(True, batches), hist, _sources_healthy()),
+        CLASSIC,
+        current_config_fingerprint="v2:" + "a" * 64,
+    )
+
+    assert report.config_drift is False
+    assert report.config_fingerprint_comparison == "not_comparable"
+    assert report.to_dict()["config_fingerprint_comparison"] == "not_comparable"

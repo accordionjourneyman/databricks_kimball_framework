@@ -45,6 +45,7 @@ class TransformValidator:
         # dimension tables from the catalog, so it MUST use the pipeline's
         # own session to see the tables the pipeline created.
         self._validator._spark = spark
+        self._validator.runtime_options = ctx.runtime_options
 
         transformed_df = self._phase_execute_transformation(ctx, active_dfs)
         transformed_df = self._phase_apply_column_transforms(ctx, transformed_df)
@@ -137,7 +138,11 @@ class TransformValidator:
             from kimball.processing.junk_dimensions import materialize_junk_dimensions
 
             transformed_df = materialize_junk_dimensions(
-                spark, transformed_df, config.junk_dimensions
+                spark,
+                transformed_df,
+                config.junk_dimensions,
+                snapshot_versions=ctx.repair_snapshot_versions,
+                full_rebuild=ctx.repair_full_rebuild,
             )
         return transformed_df
 
@@ -175,7 +180,15 @@ class TransformValidator:
         numeric_versions = [
             int(value) for value in ctx.source_versions.values() if value is not None
         ]
-        return KeyBroker(spark, registry).resolve_fact_keys(
+        # SCD1 reaches one full-source Delta MERGE without an eager source probe.
+        # Other strategies may inspect only part of their source before writing.
+        broker = KeyBroker(
+            spark,
+            registry,
+            defer_resolution_metrics=config.scd_type == 1,
+            snapshot_versions=ctx.repair_snapshot_versions,
+        )
+        resolved = broker.resolve_fact_keys(
             transformed_df,
             config.foreign_keys or [],
             batch_id=ctx.batch_id,
@@ -184,6 +197,9 @@ class TransformValidator:
             fact_grain=config.merge_keys or [],
             source_version=max(numeric_versions, default=-1),
         )
+        if broker.has_pending_resolution_metrics:
+            ctx.pending_resolution_metrics.append(broker)
+        return resolved
 
     # ------------------------------------------------------------------
     # Phase 4: fact output-column contract (declared measures/degenerates).
@@ -285,6 +301,7 @@ class TransformValidator:
             ctx.config,
             df=df,
             use_approximate_unique=ctx.runtime_options.use_approximate_unique,
+            snapshot_versions=ctx.repair_snapshot_versions,
         )
         report.raise_on_failure()
 
@@ -328,6 +345,7 @@ class TransformValidator:
                 "dimension_table": fk.references,
                 "dimension_key": fk.dimension_key or fk.column,
                 "current_only": fk.relationship != "type7",
+                "snapshot_version": ctx.repair_snapshot_versions.get(fk.references),
             }
             for fk in config.foreign_keys or []
             if hasattr(fk, "references") and fk.references
@@ -337,6 +355,7 @@ class TransformValidator:
                 "column": junk.surrogate_key,
                 "dimension_table": junk.dimension_table,
                 "dimension_key": junk.surrogate_key,
+                "snapshot_version": None,
             }
             for junk in config.junk_dimensions
         )

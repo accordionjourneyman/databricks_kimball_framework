@@ -63,6 +63,9 @@ def orchestrator(
     orch.transaction_manager = transaction_manager_mock
     orch.metrics_collector = None
     orch.checkpoint_manager = None
+    orch._repair_snapshot_versions = None
+    orch._repair_id = None
+    orch._repair_operation_token = None
     return orch
 
 

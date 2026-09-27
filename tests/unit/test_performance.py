@@ -118,4 +118,5 @@ def test_config_fingerprint(benchmark, with_tests):
         tests=tests,
     )
     result = benchmark(lambda: ConfigLoader().compute_fingerprint(config))
-    assert len(result) == 16
+    assert result.startswith("v2:")
+    assert len(result.removeprefix("v2:")) == 64

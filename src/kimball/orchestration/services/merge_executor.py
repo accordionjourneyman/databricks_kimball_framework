@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import logging
-import os
 
 from pyspark.errors import PySparkException as PYSPARK_EXCEPTION_BASE
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import count as spark_count
 
 from kimball.common.utils import quote_table_name
-from kimball.observability.resilience import _feature_enabled
 from kimball.orchestration.services.context import PipelineContext
 from kimball.processing import merger as _merger
 from kimball.processing.defaults import sql_literal
@@ -62,7 +60,7 @@ class MergeExecutor:
         if (
             not cluster_cols
             and ctx.config.table_type == "dimension"
-            and _feature_enabled("auto_cluster")
+            and ctx.runtime_options.feature_enabled("auto_cluster")
         ):
             cluster_cols = ctx.config.natural_keys or []
             if cluster_cols:
@@ -143,18 +141,20 @@ class MergeExecutor:
                 if col_name in target_fields:
                     continue
                 try:
-                    src_type = (
-                        ctx.spark.table(f"{ctx.config.sources[0].name}")
-                        .schema[col_name]
-                        .dataType
-                    )
+                    source_df = ctx.active_dfs.get(ctx.config.sources[0].name)
+                    if source_df is None:
+                        source_df = ctx.spark.table(ctx.config.sources[0].name)
+                    src_type = source_df.schema[col_name].dataType
                     ctx.spark.sql(
                         f"ALTER TABLE {quote_table_name(ctx.config.table_name)} "
                         f"ADD COLUMNS ({col_name} {src_type.simpleString()})"
                     )
                     if ctx.config.table_type == "dimension":
-                        replacement = ctx.config.null_policy.attribute_substitutes.get(
-                            col_name, replacement_for_type(src_type)
+                        substitutes = ctx.config.null_policy.attribute_substitutes
+                        replacement = (
+                            substitutes[col_name]
+                            if col_name in substitutes
+                            else replacement_for_type(src_type)
                         )
                         quoted_table = quote_table_name(ctx.config.table_name)
                         ctx.spark.sql(
@@ -274,6 +274,7 @@ class MergeExecutor:
                 if ctx.work_plan is not None
                 else True
             ),
+            runtime_options=ctx.runtime_options,
         )
 
         from kimball.orchestration.services.descriptions import DescriptionManager
@@ -292,7 +293,7 @@ class MergeExecutor:
                 exc,
             )
         if ctx.config.optimize_after_merge:
-            if os.environ.get("KIMBALL_ENABLE_INLINE_OPTIMIZE") == "1":
+            if ctx.runtime_options.enable_inline_optimize:
                 _merger.optimize_table(
                     ctx.config.table_name, ctx.config.cluster_by or []
                 )
@@ -302,7 +303,7 @@ class MergeExecutor:
                     "Set KIMBALL_ENABLE_INLINE_OPTIMIZE=1 to enable."
                 )
         if getattr(ctx.config, "vacuum_after_merge", False) is True:
-            if os.environ.get("KIMBALL_ENABLE_VACUUM") == "1":
+            if ctx.runtime_options.enable_vacuum:
                 _merger.vacuum_table(
                     ctx.config.table_name, ctx.config.vacuum_retention_hours
                 )

@@ -18,10 +18,15 @@ from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
 from kimball.common.config import (
+    AcceptedValuesContractQualityRule,
     ContractQualityRule,
     ContractValidationPolicy,
+    ExpressionContractQualityRule,
+    NotNullContractQualityRule,
+    NullRateContractQualityRule,
     SourceConfig,
     SourceContractConfig,
+    UniqueContractQualityRule,
 )
 from kimball.observability.temporal_state import TemporalStateStore
 from kimball.orchestration.validation import TestSeverity
@@ -50,7 +55,7 @@ class QualityValidationPlan:
     """Physical action plan for a contract quality suite."""
 
     scalar_rules: tuple[ContractQualityRule, ...]
-    unique_rules: tuple[ContractQualityRule, ...]
+    unique_rules: tuple[UniqueContractQualityRule, ...]
     minimum_actions: int
     policy: ContractValidationPolicy
 
@@ -61,8 +66,12 @@ class QualityValidationPlan:
         policy: ContractValidationPolicy | None = None,
     ) -> QualityValidationPlan:
         execution = policy or ContractValidationPolicy()
-        scalar = tuple(rule for rule in rules if rule.rule != "unique")
-        unique = tuple(rule for rule in rules if rule.rule == "unique")
+        unique = tuple(
+            rule for rule in rules if isinstance(rule, UniqueContractQualityRule)
+        )
+        scalar = tuple(
+            rule for rule in rules if not isinstance(rule, UniqueContractQualityRule)
+        )
         actions = (1 if scalar else 0) + len(unique)
         if execution.max_actions is not None and actions > execution.max_actions:
             raise ValueError(
@@ -82,7 +91,9 @@ class ContractValidator:
         self.spark = spark
         self.last_metrics: dict[str, Any] = {}
 
-    def validate_source(self, source: SourceConfig) -> list[ContractFinding]:
+    def validate_source(
+        self, source: SourceConfig, dataframe: DataFrame | None = None
+    ) -> list[ContractFinding]:
         """Validate the live source shape and CDF requirements, without reading rows.
 
         Phases (ADR-004 grade-A pass): existence, per-column schema
@@ -102,7 +113,11 @@ class ContractValidator:
                     f"Contracted source table does not exist: {source.name}",
                 )
             ]
-        schema = self.spark.table(source.name).schema
+        schema = (
+            dataframe.schema
+            if dataframe is not None
+            else self.spark.table(source.name).schema
+        )
         fields = {f.name: f for f in schema.fields}
         findings: list[ContractFinding] = []
         for name, expected in contract.schema_.items():
@@ -285,11 +300,20 @@ class ContractValidator:
         for index, (rule, condition) in enumerate(zip(rules, conditions, strict=True)):
             failed = int(metrics[f"r{index}"] or 0)
             ratio = failed / total if total else 0.0
-            passed = (
-                ratio <= (rule.max_ratio or 0)
-                if rule.rule == "null_rate"
-                else failed == 0
-            )
+            if isinstance(rule, NullRateContractQualityRule):
+                passed = ratio <= rule.max_ratio
+                details = f"Null ratio for '{rule.column}' is {ratio:.6f}"
+                expected_value = str(rule.max_ratio)
+                observed_value = str(ratio)
+            else:
+                passed = failed == 0
+                details = (
+                    "Contract quality rule passed"
+                    if passed
+                    else f"Contract quality rule found {failed} invalid rows"
+                )
+                expected_value = None
+                observed_value = None
             samples = (
                 [
                     row.asDict()
@@ -298,24 +322,17 @@ class ContractValidator:
                 if failed and sample_limit
                 else []
             )
-            name = rule.name or f"contract_{rule.rule}_{rule.column}"
+            column = getattr(rule, "column", None)
+            name = rule.name or f"contract_{rule.rule}_{column or 'expression'}"
             findings.append(
                 ContractFinding(
                     "source_quality",
                     name,
                     TestSeverity(rule.severity),
                     passed,
-                    f"Null ratio for '{rule.column}' is {ratio:.6f}"
-                    if rule.rule == "null_rate"
-                    else (
-                        "Contract quality rule passed"
-                        if passed
-                        else f"Contract quality rule found {failed} invalid rows"
-                    ),
-                    observed_value=str(ratio) if rule.rule == "null_rate" else None,
-                    expected_value=str(rule.max_ratio)
-                    if rule.rule == "null_rate"
-                    else None,
+                    details,
+                    observed_value=observed_value,
+                    expected_value=expected_value,
                     failed_rows=failed,
                     total_rows=total,
                     samples=samples,
@@ -325,23 +342,18 @@ class ContractValidator:
 
     @staticmethod
     def _invalid_condition(rule: ContractQualityRule) -> Any:
-        column = rule.column
-        if rule.rule in {"not_null", "null_rate"}:
-            if column is None:
-                raise ValueError(f"{rule.rule} requires column")
-            return F.col(column).isNull()
-        if rule.rule == "accepted_values":
-            if column is None:
-                raise ValueError("accepted_values requires column")
-            return ~F.col(column).isin(rule.values or [])
-        if rule.rule == "expression":
+        if isinstance(rule, (NotNullContractQualityRule, NullRateContractQualityRule)):
+            return F.col(rule.column).isNull()
+        if isinstance(rule, AcceptedValuesContractQualityRule):
+            return ~F.col(rule.column).isin(rule.values)
+        if isinstance(rule, ExpressionContractQualityRule):
             return F.expr(f"NOT ({rule.expression})")
         raise ValueError(f"Rule '{rule.rule}' is not a scalar rule")
 
     def _run_unique_rule(
         self,
         df: DataFrame,
-        rule: ContractQualityRule,
+        rule: UniqueContractQualityRule,
         sample_limit: int,
         *,
         approximate: bool,

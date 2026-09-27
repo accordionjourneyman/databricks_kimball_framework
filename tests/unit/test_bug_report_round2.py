@@ -111,7 +111,7 @@ class TestBugStreamingPerVersionWrongCDFTable:
         orch.etl_control = MagicMock()
 
         batch_df = _make_df(["id", "val", "_commit_version", "_commit_timestamp"])
-        batch_df.select.return_value.distinct.return_value.collect.return_value = [
+        batch_df.select.return_value.distinct.return_value.orderBy.return_value.toLocalIterator.return_value = [
             MagicMock(_commit_version=1),
         ]
         batch_df.filter.return_value = batch_df

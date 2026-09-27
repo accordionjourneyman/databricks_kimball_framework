@@ -28,13 +28,15 @@ This builds a Python 3.11 image with OpenJDK 17, PySpark 4.0.1, and Delta Spark 
 
 > **Important:** The Docker image deliberately does **not** install `databricks-connect`. When `databricks-connect` is installed alongside `pyspark`, it hijacks `SparkSession.builder.getOrCreate()` and refuses to create local sessions. By keeping them separate, the Docker environment gets a clean PySpark + Delta setup.
 
-### 3. Run all unit tests (fast, no Spark needed)
+### 3. Run the fast unit lane (no JVM)
 
 ```bash
-docker-compose run --rm kimball-tests python -m pytest tests/unit/ -q
+docker compose run --rm kimball-tests python -m pytest tests/unit/ -m "not spark" \
+  --ignore=tests/benchmarks --ignore=tests/unit/test_performance.py -q
 ```
 
-Expected: 67 tests pass in ~1 second.
+This matches CI's fast-lane selection. Spark-marked unit tests run in a separate
+Docker lane and require the local Spark runtime in the image.
 
 ### 4. Run integration tests (real Delta tables, local Spark)
 
@@ -62,8 +64,8 @@ docker-compose run --rm kimball-tests python tools/run_tests.py -t local
 docker-compose run --rm kimball-tests python tools/run_tests.py -t local --integration
 docker-compose run --rm kimball-tests python tools/run_tests.py -t local -k test_scd2
 
-# Against a remote Databricks cluster (requires credentials in .env):
-docker-compose run --rm -e KIMBALL_TARGET=databricks kimball-tests python tools/run_tests.py -t databricks
+# Docker is configured for local Spark. For remote Databricks testing, use the
+# native setup in the "Databricks target" section below.
 ```
 
 ### Test runner flags
@@ -90,12 +92,12 @@ docker-compose run --rm -e KIMBALL_TARGET=databricks kimball-tests python tools/
 
 ## How local Spark works (target reconciliation)
 
-The framework detects whether it's running on Databricks or local Spark via `_is_databricks_runtime()` (checks for `DATABRICKS_HOST`, `DATABRICKS_RUNTIME_VERSION`, or `SPARK_REMOTE` env vars). The following features gracefully degrade on local Spark:
+Runtime selection uses `get_runtime_policy()` in `kimball.common.runtime_policy`, based on `DATABRICKS_RUNTIME_VERSION`, `DATABRICKS_HOST`, or `SPARK_REMOTE`. The following behavior applies on local Spark:
 
 | Feature | Databricks | Local Spark |
 |---------|------------|-------------|
 | **Surrogate keys** | `xxhash64(natural_keys)` / `xxhash64(natural_keys + __valid_from)` for SCD2 (deterministic, distributed-safe) | Same (hash strategy works everywhere) |
-| **Liquid Clustering** | `CLUSTER BY (columns)` | `PARTITIONED BY (columns)` |
+| **Liquid Clustering** | `CLUSTER BY (columns)` | No clustering clause |
 | **Schema evolution** | `delta.schema.autoMerge.enabled` | Manual `ALTER TABLE ADD COLUMN` before MERGE |
 | **Deletion Vectors** | Enabled via TBLPROPERTIES | Skipped (not supported) |
 | **Predictive Optimization** | Enabled via TBLPROPERTIES | Skipped (not supported) |
@@ -130,7 +132,7 @@ source .venv/bin/activate
 # 3. Install with dev dependencies
 # IMPORTANT: Do NOT install databricks-connect alongside pyspark
 # for local testing — it hijacks SparkSession.builder.
-pip install pyspark==4.0.1 delta-spark==4.2.0 pyyaml jinja2 pydantic pytest ruff
+pip install pyspark==4.0.1 delta-spark==4.2.0 pyyaml jinja2 pydantic jsonschema pytest ruff
 pip install --no-deps -e .
 
 # 4. Run unit tests
@@ -163,8 +165,8 @@ DATABRICKS_CLUSTER_ID=XXXX-XXXXXX-XXXXXXX
 pip install databricks-connect
 python tools/run_tests.py -t databricks --integration
 
-# Docker (mounts .env automatically):
-docker-compose run --rm -e KIMBALL_TARGET=databricks kimball-tests python tools/run_tests.py -t databricks
+# Docker does not include databricks-connect. Run remote tests natively after
+# installing the remote extra as shown above.
 ```
 
 ## Project structure
@@ -203,11 +205,11 @@ The `databricks-connect` package hijacks `SparkSession.builder`. Either:
 
 ### Integration tests fail with "PARSE_SYNTAX_ERROR at 'BY'"
 
-This means `CLUSTER BY` (Liquid Clustering) is being used on local Spark, which doesn't support it. The framework should automatically fall back to `PARTITIONED BY`. If you see this error, ensure the `_is_databricks_runtime()` function in `table_creator.py` is returning `False` on local Spark.
+Local Spark does not support Liquid Clustering. `get_runtime_policy()` omits the `CLUSTER BY` clause on local runtimes; it does not substitute `PARTITIONED BY`. Check that the runtime environment is not setting `DATABRICKS_RUNTIME_VERSION`, `DATABRICKS_HOST`, or `SPARK_REMOTE` unexpectedly.
 
 ### Integration tests fail with "DELTA_VIOLATE_CONSTRAINT_WITH_VALUES"
 
-The SK NOT NULL constraint is being enforced on local Spark where IDENTITY columns aren't available. The framework should skip this constraint on local Spark. Check that `_is_databricks_runtime()` returns `False` and the `apply_basic_constraints` method skips the constraint.
+`TableCreator.apply_basic_constraints()` attempts the surrogate-key NOT NULL check on local Spark and logs a warning if the runtime rejects it. The framework uses hash surrogate keys; it does not depend on IDENTITY columns for this constraint.
 
 ### "Multiple source rows matched" in SCD2 merge
 

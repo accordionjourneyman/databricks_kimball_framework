@@ -8,6 +8,7 @@ from pyspark.errors import PySparkException as PYSPARK_EXCEPTION_BASE
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import current_timestamp, lit
 
+from kimball.common.runtime import RuntimeOptions
 from kimball.processing.scd1 import merge_scd1
 from kimball.processing.scd2 import merge_scd2
 from kimball.processing.scd4 import merge_scd4
@@ -47,6 +48,7 @@ def _build_merge_fn(
     durable_key_col: str | None,
     history_table: str | None,
     current_value_columns: list[str] | None,
+    runtime_options: RuntimeOptions | None = None,
 ) -> Any:
     if scd_type == 1:
         return lambda df: merge_scd1(
@@ -74,6 +76,7 @@ def _build_merge_fn(
             full_snapshot_reconciliation=full_snapshot_reconciliation,
             durable_key_col=durable_key_col,
             scd_type=scd_type,
+            runtime_options=runtime_options,
         )
     if scd_type == 4:
         if surrogate_key_col is None:
@@ -126,6 +129,7 @@ def merge(
     append_only: bool = False,
     full_snapshot_reconciliation: bool = True,
     max_retries: int = 0,
+    runtime_options: RuntimeOptions | None = None,
 ) -> None:
 
     enriched_df = source_df.withColumn("__etl_processed_at", current_timestamp())
@@ -146,6 +150,7 @@ def merge(
         durable_key_col,
         history_table,
         current_value_columns,
+        runtime_options,
     )
 
     for attempt in range(max_retries + 1):

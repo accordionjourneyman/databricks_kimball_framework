@@ -468,7 +468,7 @@ class TableCreator:
     ) -> None:
         """Issue PRIMARY KEY / FOREIGN KEY DDL on Databricks (Unity Catalog).
 
-        These constraints are informational only ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â UC does not enforce
+        These constraints are informational only; Unity Catalog does not enforce
         uniqueness at write time, but the cost-based optimizer can use
         them to skip redundant deduplication aggregations.
 

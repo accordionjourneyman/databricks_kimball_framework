@@ -1,14 +1,6 @@
 bundle:
   name: kimball-framework
 
-variables:
-  catalog:
-    description: "Unity Catalog name for test schemas"
-    default: "workspace"
-  schema:
-    description: "Default schema for ETL control tables"
-    default: "kimball"
-
 artifacts:
   python_wheel:
     type: whl

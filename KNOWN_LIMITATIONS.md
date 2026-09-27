@@ -33,6 +33,31 @@ delete.
   - **Impact:** Crashed batches cannot be tagged, so zombie recovery cannot identify their commits automatically. The pipeline continues without compensating rollback protection.
   - **Status:** This is a separate issue from the `checkpoint_location` / UC volumes fix (the streaming layer now writes to `/Volumes/<catalog>/<schema>/<volume>` on Databricks). The `userMetadata` restriction has no current mitigation; if you need crash-recovery tagging, run on a classic cluster.
 
+### Semantic source repair
+
+`kimball repair` handles a completed run whose data is later found to be wrong;
+it is separate from zombie-batch recovery above. The initial repair strategy is
+limited to full snapshot rebuilds of SCD1 targets from batch Delta catalog
+tables. It rejects SCD2/SCD4 and separate history-table rebuilds, streaming,
+temporal contracts, `preserve_all_changes`, and non-read-only or undeclared SQL
+inputs. See the [repair procedure](docs/RUNBOOK.md#source-repair).
+
+Repair metadata is stored in normalized `etl_repair_*` Delta tables. It records
+source corrections, planned and actual per-step reads, pre-repair output
+versions, attempts, tagged commits, elapsed times, and lifecycle events. The
+version vector is stored at the repair read boundary; the framework does not
+write a source-version list into every business row. Delta history supplies
+individual table snapshots; the repair ledger supplies the cross-table plan
+and audit.
+
+Apply and rollback mutate outputs in place, one step at a time. The required
+`--writers-stopped` flag is an operator acknowledgement, not an enforced lock,
+and the operation is not an atomic multi-table publication. Rollback requires
+the original table generation and retained history, and it refuses to discard
+unrelated later writes or restore an output that did not exist before planning.
+Keep the maintenance window and required Delta history until apply and any
+needed rollback are complete.
+
 ## 3. Concurrency & Locking
 
 - **Single Writer Per Target Table:** The framework assumes a single active pipeline writer per target table. Concurrent pipelines writing to the _same_ target table are not supported and may result in partial rollbacks or conflicts.

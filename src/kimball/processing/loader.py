@@ -23,10 +23,17 @@ class DataLoader:
         table_name: str,
         format: str = "delta",
         options: dict[str, str] | None = None,
+        version_as_of: int | None = None,
     ) -> DataFrame:
         reader = self.spark.read.format(format)
         if options:
             reader = reader.options(**options)
+        if version_as_of is not None:
+            if format != "delta" or "/" in table_name:
+                raise ValueError(
+                    "version-pinned snapshots require a Delta catalog table"
+                )
+            reader = reader.option("versionAsOf", version_as_of)
         return cast(
             DataFrame,
             reader.table(table_name)

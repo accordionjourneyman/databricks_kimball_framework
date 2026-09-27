@@ -7,6 +7,7 @@ from pyspark.sql import DataFrame
 from pyspark.sql.functions import count as spark_count
 
 from kimball.common.config import ConfigLoader, SourceContractConfig
+from kimball.common.runtime import RuntimeOptions
 from kimball.observability.data_quality import (
     DataQualityEventSink,
     DataQualityEventWriter,
@@ -25,11 +26,20 @@ logger = logging.getLogger(__name__)
 class StreamingMicroBatchProcessor:
     """Handles a single streaming micro-batch: transform, validate, merge."""
 
-    def __init__(self, spark, config, etl_schema: str, etl_control):
+    def __init__(
+        self,
+        spark,
+        config,
+        etl_schema: str,
+        etl_control,
+        runtime_options: RuntimeOptions | None = None,
+    ):
         self.spark = spark
+        self.runtime_options = runtime_options or RuntimeOptions.from_environment()
         self.config = config
         self.etl_schema = etl_schema
         self.etl_control = etl_control
+        self._pending_resolution_metrics: list[Any] = []
         self._table_creator = TableCreator()
 
     def _prepare_source_df(self, batch_df: DataFrame) -> DataFrame:
@@ -88,7 +98,11 @@ class StreamingMicroBatchProcessor:
                 )
 
     def process_microbatch(
-        self, batch_df: DataFrame, source: Any, batch_id: int
+        self,
+        batch_df: DataFrame,
+        source: Any,
+        batch_id: int,
+        source_version: int | None = None,
     ) -> None:
         """Process one streaming microbatch through the merge pipeline.
 
@@ -98,6 +112,7 @@ class StreamingMicroBatchProcessor:
         in its own ``_batch_*`` method (ADR-004 grade-A pass).
         """
         source_name = source.name
+        self._pending_resolution_metrics = []
         source_df = self._prepare_source_df(batch_df)
         self.ensure_target_table(source_df)
 
@@ -111,13 +126,32 @@ class StreamingMicroBatchProcessor:
             batch_df, source_df, source, batch_id
         )
         source_df = self._batch_reattach_cdf_metadata(batch_df, source_df)
-        source_df = self._batch_resolve_keys_or_nulls(batch_df, source_df, batch_id)
+        version_is_known = source_version is not None
+        if (
+            not version_is_known
+            and self.config.table_type == "fact"
+            and any(fk.lookup is not None for fk in self.config.foreign_keys or [])
+        ):
+            source_version = self._get_max_version(batch_df)
+            version_is_known = True
+        source_df = self._batch_resolve_keys_or_nulls(
+            batch_df, source_df, batch_id, source_version
+        )
         self._validate_fks(source_df)
         self._validate_grain(source_df, join_keys)
+        for broker in self._pending_resolution_metrics:
+            source_df = broker.observe_resolution_metrics(source_df)
 
         rows_written = self._batch_merge(source_df, join_keys, batch_id)
+        for broker in self._pending_resolution_metrics:
+            broker.log_resolution_metrics()
+        self._pending_resolution_metrics.clear()
         self._save_fingerprints()
-        self._batch_commit_watermark(source_name, batch_df, batch_id, rows_written)
+        if not version_is_known:
+            source_version = self._get_max_version(batch_df)
+        self._batch_commit_watermark(
+            source_name, source_version, batch_id, rows_written
+        )
         self._batch_commit_temporal_state(pending_temporal_state, batch_id)
 
     def _batch_merge(
@@ -150,12 +184,11 @@ class StreamingMicroBatchProcessor:
     def _batch_commit_watermark(
         self,
         source_name: str,
-        batch_df: DataFrame,
+        new_version: int | None,
         batch_id: int,
         rows_written: int,
     ) -> None:
         """Advance the source watermark to this batch's max CDF version."""
-        new_version = self._get_max_version(batch_df)
         if new_version is None:
             return
         self.etl_control.batch_complete(
@@ -267,13 +300,19 @@ class StreamingMicroBatchProcessor:
         return source_df.join(meta_df, common_cols, "left")
 
     def _batch_resolve_keys_or_nulls(
-        self, batch_df: DataFrame, source_df: DataFrame, batch_id: int
+        self,
+        batch_df: DataFrame,
+        source_df: DataFrame,
+        batch_id: int,
+        source_version: int | None,
     ) -> DataFrame:
         """Fact: set-based FK resolution. Dimension: governed null policy."""
         if self.config.table_type == "fact" and any(
             fk.lookup is not None for fk in self.config.foreign_keys or []
         ):
-            return self._batch_resolve_fact_keys(batch_df, source_df, batch_id)
+            return self._batch_resolve_fact_keys(
+                batch_df, source_df, batch_id, source_version
+            )
         if self.config.table_type == "dimension":
             from kimball.processing.dimension_nulls import apply_dimension_null_policy
 
@@ -288,7 +327,11 @@ class StreamingMicroBatchProcessor:
         return source_df
 
     def _batch_resolve_fact_keys(
-        self, batch_df: DataFrame, source_df: DataFrame, batch_id: int
+        self,
+        batch_df: DataFrame,
+        source_df: DataFrame,
+        batch_id: int,
+        source_version: int | None,
     ) -> DataFrame:
         from kimball.observability.unresolved_keys import UnresolvedKeyRegistry
         from kimball.processing.key_broker import KeyBroker
@@ -307,8 +350,14 @@ class StreamingMicroBatchProcessor:
             if unresolved
             else None
         )
-        source_version = self._get_max_version(batch_df)
-        return KeyBroker(self.spark, registry).resolve_fact_keys(
+        # SCD1 reaches one full-source Delta MERGE without an eager source probe.
+        # Other strategies may inspect only part of their source before writing.
+        broker = KeyBroker(
+            self.spark,
+            registry,
+            defer_resolution_metrics=self.config.scd_type == 1,
+        )
+        resolved = broker.resolve_fact_keys(
             source_df,
             self.config.foreign_keys or [],
             batch_id=str(batch_id),
@@ -317,6 +366,9 @@ class StreamingMicroBatchProcessor:
             fact_grain=self.config.merge_keys or [],
             source_version=source_version if source_version is not None else -1,
         )
+        if broker.has_pending_resolution_metrics:
+            self._pending_resolution_metrics.append(broker)
+        return resolved
 
     def _validate_fks(self, source_df: DataFrame) -> None:
         if self.config.table_type != "fact" or not self.config.foreign_keys:
@@ -330,7 +382,9 @@ class StreamingMicroBatchProcessor:
             for fk in self.config.foreign_keys
             if hasattr(fk, "references") and fk.references
         ]:
-            validator = DataQualityValidator()
+            validator = DataQualityValidator(
+                spark=self.spark, runtime_options=self.runtime_options
+            )
             fk_report = validator.validate_fact_fk_integrity(source_df, fk_defs)
             for result in fk_report.results:
                 logger.info(str(result))
@@ -343,7 +397,7 @@ class StreamingMicroBatchProcessor:
         if grain_mode == "skip":
             return
         # CDF streaming batches legitimately carry multiple versions of the same
-        # natural key (one per Delta commit) Ã¢â‚¬â€ that is the input to multi-version
+        # natural key (one per Delta commit). That is the input to multi-version
         # SCD2, not a grain violation. Scope the grain to (key, commit_version)
         # when CDF metadata is present so per-version batches are not false-flagged.
         grain_keys = list(join_keys)
@@ -354,8 +408,8 @@ class StreamingMicroBatchProcessor:
             .agg(spark_count("*").alias("__grain_count"))
             .filter("__grain_count > 1")
         )
-        if len(grain_violations.limit(1).head(1)) > 0:
-            sample = grain_violations.limit(5).collect()
+        sample = grain_violations.limit(5).collect()
+        if sample:
             keys_str = "; ".join(
                 ", ".join(f"{k}={row[k]}" for k in grain_keys) for row in sample
             )

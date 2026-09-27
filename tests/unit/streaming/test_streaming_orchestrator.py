@@ -12,7 +12,9 @@ from kimball.common.config import (
     SourceContractConfig,
     StreamingSourceConfig,
     TableConfig,
+    TargetConfig,
 )
+from kimball.common.runtime import RuntimeOptions
 from kimball.streaming.orchestrator import StreamingOrchestrator
 
 
@@ -30,6 +32,10 @@ def _patch_spark_fns():
         ),
     ):
         yield
+
+
+def _mock_no_grain_violations(source_df: MagicMock) -> None:
+    source_df.groupBy.return_value.agg.return_value.filter.return_value.limit.return_value.collect.return_value = []
 
 
 def _make_config(streaming_enabled: bool) -> TableConfig:
@@ -231,26 +237,44 @@ class TestPerVersionForeachBatch:
 
         batch_df = MagicMock()
         batch_df.columns = ["customer_id", "_commit_version"]
-        batch_df.select.return_value.distinct.return_value.collect.return_value = [
-            MagicMock(_commit_version=1),
-            MagicMock(_commit_version=3),
-            MagicMock(_commit_version=2),
-        ]
+        distinct_versions = batch_df.select.return_value.distinct.return_value
+        ordered_versions = distinct_versions.orderBy.return_value
+        input_versions = (1, 3, 2, 3, 2)
+        expected_versions = sorted(set(input_versions))
+        yielded_versions = []
+
+        def version_iterator():
+            for version in expected_versions:
+                yielded_versions.append(version)
+                yield MagicMock(_commit_version=version)
+
+        ordered_versions.toLocalIterator.return_value = version_iterator()
 
         calls = []
 
-        def fake_execute_one(version_df, source, batch_id):
+        def fake_execute_one(version_df, source, batch_id, *, source_version):
             calls.append(source.name)
+            assert source_version == expected_versions[len(calls) - 1]
+            assert len(calls) == len(yielded_versions)
 
         with patch.object(
             orch, "_execute_one_microbatch", side_effect=fake_execute_one
         ):
             orch._execute_microbatch_per_version(batch_df, cfg.sources[0], 7)
 
-        assert calls == ["silver.customers"] * 3
-        # Per-version filtering uses the persisted micro-batch directly.
+        assert calls == ["silver.customers"] * len(expected_versions)
+        assert yielded_versions == expected_versions
+        # Spark orders distinct versions and streams them without collecting K rows.
+        batch_df.select.assert_called_once_with("_commit_version")
+        batch_df.select.return_value.distinct.assert_called_once_with()
+        distinct_versions.orderBy.assert_called_once_with("_commit_version")
+        ordered_versions.toLocalIterator.assert_called_once_with()
+        distinct_versions.collect.assert_not_called()
+        # Each version is still filtered and processed sequentially.
+        assert batch_df.filter.call_args_list == [
+            ((f"_commit_version = {version}",), {}) for version in expected_versions
+        ]
         assert spark.table.call_count == 0
-        assert batch_df.filter.call_count == 3
 
     def test_per_version_falls_back_when_no_commit_version(self) -> None:
         spark = MagicMock()
@@ -274,7 +298,7 @@ class TestPerVersionForeachBatch:
         batch_df = MagicMock()
         batch_df.columns = ["customer_id", "_change_type", "_commit_version"]
         batch_df.filter.return_value.isEmpty.return_value = False
-        batch_df.select.return_value.distinct.return_value.collect.return_value = [
+        batch_df.select.return_value.distinct.return_value.orderBy.return_value.toLocalIterator.return_value = [
             MagicMock(_commit_version=5),
         ]
 
@@ -362,9 +386,9 @@ class TestStreamingFKValidation:
                         mock_report = MagicMock()
                         mock_report.results = []
                         mock_val.validate_fact_fk_integrity.return_value = mock_report
-                        orch._execute_one_microbatch(
-                            MagicMock(columns=["order_id"]), cfg.sources[0], 1
-                        )
+                        batch_df = MagicMock(columns=["order_id"])
+                        _mock_no_grain_violations(batch_df)
+                        orch._execute_one_microbatch(batch_df, cfg.sources[0], 1)
         mock_val.validate_fact_fk_integrity.assert_called_once()
 
 
@@ -383,12 +407,11 @@ class TestStreamingGrainValidation:
         agg_result = MagicMock()
         filter_result = MagicMock()
         limit_result = MagicMock()
-        limit_result.head.return_value = [{"__grain_count": 2}]
-        limit_result.__len__ = lambda self: 1
         filter_result.limit.return_value = limit_result
         agg_result.filter.return_value = filter_result
         groupby_result.agg.return_value = agg_result
         source_df.groupBy.return_value = groupby_result
+        limit_result.collect.return_value = [{"customer_id": 7, "__grain_count": 2}]
 
         with patch.object(spark, "sql", return_value=source_df):
             with patch("kimball.processing.merger.merge"):
@@ -399,6 +422,54 @@ class TestStreamingGrainValidation:
                         orch._execute_one_microbatch(
                             MagicMock(columns=["customer_id"]), cfg.sources[0], 1
                         )
+        limit_result.collect.assert_called_once_with()
+        limit_result.head.assert_not_called()
+
+    def test_grain_violation_warns_after_one_sample_action(self):
+        cfg = _make_config(True)
+        cfg.grain_validation = "warn"
+        spark = MagicMock()
+        orch = StreamingOrchestrator.from_config(cfg, spark=spark)
+        source_df = MagicMock()
+        source_df.columns = ["customer_id"]
+        groupby_result = MagicMock()
+        violations = groupby_result.agg.return_value.filter.return_value
+        violations.limit.return_value.collect.return_value = [
+            {"customer_id": 7, "__grain_count": 2}
+        ]
+        source_df.groupBy.return_value = groupby_result
+
+        processor = orch._get_processor()
+        with patch("kimball.streaming.services.microbatch.logger") as logger:
+            processor._validate_grain(source_df, ["customer_id"])
+
+        violations.limit.assert_called_once_with(5)
+        violations.limit.return_value.collect.assert_called_once_with()
+        logger.warning.assert_called_once()
+        assert "Grain violation" in str(logger.warning.call_args)
+
+    def test_grain_validation_pass_uses_one_sample_action(self):
+        cfg = _make_config(True)
+        orch = StreamingOrchestrator.from_config(cfg, spark=MagicMock())
+        source_df = MagicMock()
+        source_df.columns = ["customer_id"]
+        violations = source_df.groupBy.return_value.agg.return_value.filter.return_value
+        violations.limit.return_value.collect.return_value = []
+
+        orch._get_processor()._validate_grain(source_df, ["customer_id"])
+
+        violations.limit.assert_called_once_with(5)
+        violations.limit.return_value.collect.assert_called_once_with()
+
+    def test_grain_validation_skip_avoids_dataframe_actions(self):
+        cfg = _make_config(True)
+        cfg.grain_validation = "skip"
+        orch = StreamingOrchestrator.from_config(cfg, spark=MagicMock())
+        source_df = MagicMock()
+
+        orch._get_processor()._validate_grain(source_df, ["customer_id"])
+
+        source_df.groupBy.assert_not_called()
 
 
 class TestStreamingTargetCreation:
@@ -431,6 +502,7 @@ class TestStreamingBatchMetadata:
         spark.catalog.tableExists.return_value = True
         orch = StreamingOrchestrator.from_config(cfg, spark=spark)
         source_df = MagicMock(columns=["customer_id"])
+        _mock_no_grain_violations(source_df)
 
         with patch("kimball.streaming.services.microbatch._merger.merge") as merge:
             with patch(
@@ -471,6 +543,7 @@ class TestStreamingTemporalContracts:
         batch_df = MagicMock()
         batch_df.columns = ["customer_id", "updated_at", "_commit_version"]
         batch_df.agg.return_value.first.return_value = [9]
+        _mock_no_grain_violations(batch_df)
 
         order: list[str] = []
         orchestrator.etl_control.batch_complete.side_effect = lambda **_kwargs: (
@@ -510,6 +583,7 @@ class TestStreamingTemporalContracts:
         orchestrator.etl_control = MagicMock()
         batch_df = MagicMock()
         batch_df.columns = ["customer_id", "updated_at", "_commit_version"]
+        _mock_no_grain_violations(batch_df)
 
         with (
             patch(
@@ -526,3 +600,46 @@ class TestStreamingTemporalContracts:
                 orchestrator._execute_one_microbatch(batch_df, cfg.sources[0], 3)
 
         store_type.return_value.commit.assert_not_called()
+
+
+def test_streaming_query_uses_target_checkpoint_root_over_environment():
+    target = TargetConfig(
+        name="test",
+        catalog="workspace",
+        silver_schema="test_silver",
+        gold_schema="test_gold",
+        etl_schema="test_ops",
+        checkpoint_root="/target/checkpoints",
+    )
+    options = RuntimeOptions.from_environment(
+        {"KIMBALL_STREAMING_CHECKPOINT_ROOT": "/environment/checkpoints"}
+    )
+    spark = MagicMock()
+    stream_df = MagicMock()
+    stream_df.writeStream = MagicMock()
+    writer = stream_df.writeStream
+    writer.queryName.return_value = writer
+    writer.foreachBatch.return_value = writer
+    writer.option.return_value = writer
+    writer.trigger.return_value = writer
+    writer.start.return_value = MagicMock()
+    orch = StreamingOrchestrator.from_config(
+        _make_config(True), spark=spark, target=target, runtime_options=options
+    )
+
+    with (
+        patch.object(type(orch.etl_control), "get_watermark", return_value=None),
+        patch.object(type(orch.stream_loader), "get_latest_version", return_value=1),
+        patch.object(type(orch.stream_loader), "stream_cdf", return_value=stream_df),
+        patch(
+            "kimball.streaming.orchestrator.default_checkpoint_path",
+            return_value="/target/checkpoints/test_ops__silver.customers",
+        ) as make_path,
+    ):
+        orch._start_queries({"queries": {}})
+
+    assert make_path.call_args.kwargs["root"] == "/target/checkpoints"
+    assert make_path.call_args.kwargs["use_environment"] is False
+    writer.option.assert_called_once_with(
+        "checkpointLocation", "/target/checkpoints/test_ops__silver.customers"
+    )

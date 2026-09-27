@@ -256,3 +256,223 @@ def test_inspect_limit_truncates_batch_list(capsys):
     out = json.loads(capsys.readouterr().out)
     assert result == 0
     assert len(out["batches"]) == 5
+
+
+def test_validate_aggregates_config_errors_across_files(tmp_path, capsys):
+    from kimball.cli import main
+
+    target_path = tmp_path / "targets.yml"
+    target_path.write_text(
+        """
+version: 1
+targets:
+  dev:
+    catalog: workspace
+    silver_schema: dev_silver
+    gold_schema: dev_gold
+    etl_schema: dev_ops
+""",
+        encoding="utf-8",
+    )
+    paths = []
+    for index in range(2):
+        path = tmp_path / f"invalid_{index}.yml"
+        path.write_text(
+            f"""
+table_name: gold.dim_invalid_{index}
+table_type: invalid
+sources:
+  - name: silver.input_{index}
+""",
+            encoding="utf-8",
+        )
+        paths.append(path)
+
+    result = main(
+        [
+            "validate",
+            "--config",
+            str(paths[0]),
+            str(paths[1]),
+            "--target",
+            "dev",
+            "--targets",
+            str(target_path),
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert str(paths[0]) in captured.err
+    assert str(paths[1]) in captured.err
+    assert "table_type" in captured.err
+
+
+def test_validate_runs_structural_sql_checks_without_spark(
+    tmp_path, capsys, monkeypatch
+):
+    from kimball.cli import main
+
+    target_path = tmp_path / "targets.yml"
+    target_path.write_text(
+        """
+version: 1
+targets:
+  dev:
+    catalog: workspace
+    silver_schema: dev_silver
+    gold_schema: dev_gold
+    etl_schema: dev_ops
+""",
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "pipeline.yml"
+    config_path.write_text(
+        """
+table_name: gold.dim_customer
+table_type: dimension
+keys:
+  surrogate_key: customer_sk
+  natural_keys: [customer_id]
+sources:
+  - name: silver.customers
+    alias: src
+transformation_sql: SELECT * FROM src
+""",
+        encoding="utf-8",
+    )
+
+    def fail_if_spark(_self, _config, spark=None):
+        assert spark is None
+        return []
+
+    monkeypatch.setattr(
+        "kimball.common.config.ConfigLoader.validate_transformation_sql",
+        fail_if_spark,
+    )
+    result = main(
+        [
+            "validate",
+            "--config",
+            str(config_path),
+            "--target",
+            "dev",
+            "--targets",
+            str(target_path),
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert "structural checks only" in captured.out
+    assert "Spark EXPLAIN not run" in captured.out
+
+
+def test_validate_sql_explain_passes_spark_and_reports_the_validation_level(capsys):
+    from types import SimpleNamespace
+
+    from kimball.cli import main
+
+    target = _target()
+    config = object()
+    project = SimpleNamespace(
+        nodes={"gold.dim": SimpleNamespace(config_path="dim.yml", config=config)},
+        levels=(("gold.dim",),),
+        warnings=(),
+    )
+    spark = object()
+    with (
+        patch("kimball.cli.load_target", return_value=target),
+        patch("kimball.cli.load_compiled_project", return_value=project),
+        patch("kimball.cli.ConfigLoader") as loader_class,
+        patch(
+            "kimball.common.spark_session.get_spark", return_value=spark
+        ) as get_spark,
+    ):
+        result = main(
+            ["validate", "--config", "dim.yml", "--target", "prod", "--sql-explain"]
+        )
+
+    assert result == 0
+    get_spark.assert_called_once_with()
+    loader_class.return_value.validate_transformation_sql.assert_called_once_with(
+        config, spark=spark
+    )
+    assert "SQL validation: Spark EXPLAIN completed" in capsys.readouterr().out
+
+
+def test_repair_plan_cli_parses_source_versions_and_prints_frozen_plan(capsys):
+    from types import SimpleNamespace
+
+    target = _target()
+    spark, runtime, providers, ledger, project = (
+        object(),
+        object(),
+        object(),
+        object(),
+        object(),
+    )
+    preview = SimpleNamespace(
+        to_dict=lambda: {"repair_id": "patch-1", "targets": ["gold.dim_customer"]}
+    )
+    with (
+        patch(
+            "kimball.cli._repair_context",
+            return_value=(spark, target, runtime, providers, ledger),
+        ),
+        patch("kimball.cli.load_compiled_project", return_value=project),
+        patch(
+            "kimball.ops.repair_execution.plan_source_reprocess", return_value=preview
+        ) as plan,
+    ):
+        result = main(
+            [
+                "repair",
+                "plan",
+                "--config",
+                "configs",
+                "--target",
+                "prod",
+                "--repair-id",
+                "patch-1",
+                "--reason",
+                "corrected source",
+                "--bad-version",
+                "silver.customers=8",
+                "--read-version",
+                "silver.customers=10",
+            ]
+        )
+
+    assert result == 0
+    plan.assert_called_once()
+    assert plan.call_args.kwargs["bad_versions"] == {"silver.customers": 8}
+    assert plan.call_args.kwargs["replacement_versions"] == {"silver.customers": 10}
+    assert json.loads(capsys.readouterr().out)["repair_id"] == "patch-1"
+
+
+def test_repair_plan_cli_rejects_malformed_source_version(capsys):
+    target = _target()
+    with patch(
+        "kimball.cli._repair_context",
+        return_value=(object(), target, object(), object(), object()),
+    ):
+        result = main(
+            [
+                "repair",
+                "plan",
+                "--config",
+                "configs",
+                "--target",
+                "prod",
+                "--repair-id",
+                "patch-1",
+                "--reason",
+                "corrected source",
+                "--bad-version",
+                "silver.customers=latest",
+            ]
+        )
+
+    assert result == 1
+    assert "version must be an integer" in capsys.readouterr().err

@@ -6,12 +6,12 @@ from dataclasses import dataclass
 
 from pyspark.sql import SparkSession
 
-from kimball.common.config import TableConfig
+from kimball.common.config import TableConfig, TargetConfig
 from kimball.common.runtime import RuntimeOptions
 from kimball.common.spark_session import get_spark
-from kimball.observability.resilience import QueryMetricsCollector, _feature_enabled
+from kimball.observability.resilience import QueryMetricsCollector
 from kimball.orchestration.transaction import TransactionManager
-from kimball.orchestration.watermark import ETLControlManager, get_etl_schema
+from kimball.orchestration.watermark import ETLControlManager
 from kimball.processing.loader import DataLoader
 from kimball.processing.table_creator import TableCreator
 
@@ -37,12 +37,19 @@ class PipelineRuntime:
         spark: SparkSession | None = None,
         etl_schema: str | None = None,
         checkpoint_root: str | None = None,
-        enable_metrics: bool = True,
+        enable_metrics: bool | None = None,
+        runtime_options: RuntimeOptions | None = None,
+        target: TargetConfig | None = None,
     ) -> PipelineRuntime:
         """Build the complete runtime once for a validated table configuration."""
-        options = RuntimeOptions.from_environment()
+        options = (runtime_options or RuntimeOptions.from_environment()).resolved(
+            etl_schema=etl_schema,
+            target_etl_schema=target.etl_schema if target else None,
+            checkpoint_root=checkpoint_root,
+            target_checkpoint_root=target.checkpoint_root if target else None,
+        )
         active_spark = spark or get_spark()
-        resolved_schema = etl_schema or options.etl_schema or get_etl_schema()
+        resolved_schema = options.etl_schema
         if resolved_schema is None and "." in config.table_name:
             resolved_schema = config.table_name.split(".")[0]
         if resolved_schema is None:
@@ -51,7 +58,7 @@ class PipelineRuntime:
                 "or a fully-qualified target table name"
             )
 
-        if checkpoint_dir := checkpoint_root or options.checkpoint_root:
+        if checkpoint_dir := options.checkpoint_root:
             active_spark.sparkContext.setCheckpointDir(checkpoint_dir)
 
         return cls(
@@ -66,7 +73,11 @@ class PipelineRuntime:
             table_creator=TableCreator(),
             metrics_collector=(
                 QueryMetricsCollector()
-                if enable_metrics and _feature_enabled("metrics")
+                if (
+                    options.feature_enabled("metrics")
+                    if enable_metrics is None
+                    else enable_metrics
+                )
                 else None
             ),
         )

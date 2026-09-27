@@ -42,6 +42,7 @@ class DeltaCommit:
     operation: str | None
     batch_id: str | None  # from commitInfo.userMetadata; None when untagged
     timestamp: datetime | None = None
+    operation_token: str | None = None
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,7 @@ class TargetDeltaState:
     table_exists: bool
     current_version: int | None  # None when table missing
     commits: tuple[DeltaCommit, ...] = ()
+    generation_id: str | None = None  # Delta table UUID; detects drop/recreate
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,9 @@ class SourceHealthReport:
 
 @runtime_checkable
 class ETLControlStore(Protocol):
+    @property
+    def control_table_name(self) -> str: ...
+
     def control_table_exists(self) -> bool: ...
 
     def get_target_state(self, target_table: str) -> TargetControlState: ...
@@ -77,6 +82,14 @@ class ETLControlStore(Protocol):
         self, target_table: str, source_table: str, version: int | None
     ) -> None: ...
 
+    def rewind_watermark_tagged(
+        self,
+        target_table: str,
+        source_table: str,
+        version: int | None,
+        user_metadata: str,
+    ) -> None: ...
+
 
 @runtime_checkable
 class DeltaHistoryProvider(Protocol):
@@ -85,6 +98,9 @@ class DeltaHistoryProvider(Protocol):
     ) -> TargetDeltaState: ...
 
     def restore_to_version(self, target_table: str, version: int) -> None: ...
+    def restore_to_version_tagged(
+        self, target_table: str, version: int, user_metadata: str
+    ) -> None: ...
     def restore_to_timestamp(self, target_table: str, ts: datetime) -> None: ...
 
 

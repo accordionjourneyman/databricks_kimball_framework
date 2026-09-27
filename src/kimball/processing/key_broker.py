@@ -5,7 +5,7 @@ from functools import reduce
 from typing import Any, cast
 
 from delta.tables import DeltaTable
-from pyspark.sql import Column, DataFrame, SparkSession
+from pyspark.sql import Column, DataFrame, Observation, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
     BooleanType,
@@ -75,10 +75,80 @@ class KeyBroker:
         self,
         spark: SparkSession,
         unresolved_registry: UnresolvedKeyRegistry | None = None,
+        *,
+        defer_resolution_metrics: bool = False,
+        snapshot_versions: dict[str, int] | None = None,
     ):
         self.spark = spark
+        self.snapshot_versions = dict(snapshot_versions or {})
         self.unresolved_registry = unresolved_registry
+        self.defer_resolution_metrics = defer_resolution_metrics
         self._identity_maps: dict[str, DataFrame] = {}
+        self._pending_resolution_columns: list[str] = []
+        self._resolution_observations: list[tuple[str, Observation]] = []
+
+    def _read_table(self, table_name: str) -> DataFrame:
+        version = self.snapshot_versions.get(table_name)
+        if version is None:
+            return self.spark.table(table_name)
+        return (
+            self.spark.read.format("delta")
+            .option("versionAsOf", version)
+            .table(table_name)
+        )
+
+    @property
+    def has_pending_resolution_metrics(self) -> bool:
+        return bool(self._pending_resolution_columns or self._resolution_observations)
+
+    def observe_resolution_metrics(self, df: DataFrame) -> DataFrame:
+        """Attach metrics at the final merge boundary, after validation actions."""
+        columns, self._pending_resolution_columns = (
+            self._pending_resolution_columns,
+            [],
+        )
+        for index, column in enumerate(columns):
+            observation = Observation(f"key_resolution_{id(self)}_{index}")
+            df = df.observe(
+                observation,
+                F.count("*").alias("total"),
+                F.sum(F.when(F.col(column) >= 0, F.lit(1)).otherwise(F.lit(0))).alias(
+                    "resolved"
+                ),
+            )
+            self._resolution_observations.append((column, observation))
+        return df
+
+    def log_resolution_metrics(self) -> None:
+        """Log deferred metrics after a downstream action fully consumes the frame."""
+        observations, self._resolution_observations = (
+            self._resolution_observations,
+            [],
+        )
+        for column, observation in observations:
+            try:
+                stats = observation.get
+            except Exception as exc:
+                # A successful caller-side merge should materialize observations;
+                # missing metrics must not turn a completed write into a retry.
+                logger.debug(
+                    "Resolution metrics for %s were not observed (%s)",
+                    column,
+                    type(exc).__name__,
+                )
+                continue
+            total = int(stats["total"] or 0)
+            resolved = int(stats["resolved"] or 0)
+            sentinel = total - resolved
+            rate = (resolved / total * 100) if total > 0 else 100.0
+            logger.info(
+                "Key resolution for %s: %d/%d resolved (%.1f%%), %d sentinels",
+                column,
+                resolved,
+                total,
+                rate,
+                sentinel,
+            )
 
     def resolve_fact_keys(
         self,
@@ -140,7 +210,9 @@ class KeyBroker:
         assert event_time is not None
         if lookup.identity_map not in self._identity_maps:
             self._identity_maps[lookup.identity_map] = load_validated_identity_map(
-                self.spark, lookup.identity_map
+                self.spark,
+                lookup.identity_map,
+                version_as_of=self.snapshot_versions.get(lookup.identity_map),
             )
         mapping = self._identity_maps[lookup.identity_map].select(
             F.col("source_identity").alias(f"__identity_{index}_source"),
@@ -191,7 +263,7 @@ class KeyBroker:
         self._validate_type7_contract(fk)
         # _validate_type7_contract raises unless both are set.
         assert fk.lookup is not None and fk.references is not None
-        dimension = self.spark.table(fk.references)
+        dimension = self._read_table(fk.references)
         lookup = fk.lookup
         source_columns = lookup.source_columns
         dimension_columns = lookup.dimension_columns or source_columns
@@ -216,7 +288,7 @@ class KeyBroker:
             raise DataQualityError(
                 f"Dimension {fk.references} must exist before brokered fact loading"
             )
-        dimension = self.spark.table(fk.references)
+        dimension = self._read_table(fk.references)
         required = {
             fk.column,
             fk.durable_column,
@@ -374,7 +446,7 @@ class KeyBroker:
         """
         lookup = fk.lookup
         assert lookup is not None and fk.references is not None
-        dimension = self.spark.table(fk.references)
+        dimension = self._read_table(fk.references)
         source_columns = lookup.source_columns
         dimension_columns = lookup.dimension_columns or source_columns
         self._require_broker_columns(fk, dimension, dimension_columns)
@@ -383,7 +455,7 @@ class KeyBroker:
             fact_df, dimension, fk, lookup, source_columns, dimension_columns, index
         )
         joined = self._classify_sentinels(joined, fk, lookup, source_columns, index)
-        self._validate_resolution(fact_df, joined, fk)
+        joined = self._validate_resolution(fact_df, joined, fk, index)
         self._enforce_resolution_policy(
             joined,
             fk,
@@ -609,35 +681,39 @@ class KeyBroker:
         fact_df: DataFrame,
         joined: DataFrame,
         fk: ForeignKeyConfig,
-    ) -> None:
+        index: int = 0,
+    ) -> DataFrame:
         lookup = fk.lookup
         assert lookup is not None and fk.references is not None
 
-        stats = joined.agg(
-            F.count("*").alias("total"),
-            F.sum(F.when(F.col(fk.column) >= 0, F.lit(1)).otherwise(F.lit(0))).alias(
-                "resolved"
-            ),
-        ).collect()[0]
-        total = int(stats["total"] or 0)
-        # F.sum returns NULL on an empty frame (e.g. an incremental run with
-        # an inactive source); treat it as zero, not arithmetic on None.
-        resolved = int(stats["resolved"] or 0)
-        sentinel = total - resolved
-        rate = (resolved / total * 100) if total > 0 else 100.0
-
-        logger.info(
-            "Key resolution for %s: %d/%d resolved (%.1f%%), %d sentinels",
-            fk.column,
-            resolved,
-            total,
-            rate,
-            sentinel,
-        )
+        if logger.isEnabledFor(logging.INFO):
+            expressions = [
+                F.count("*").alias("total"),
+                F.sum(
+                    F.when(F.col(fk.column) >= 0, F.lit(1)).otherwise(F.lit(0))
+                ).alias("resolved"),
+            ]
+            if self.defer_resolution_metrics:
+                self._pending_resolution_columns.append(fk.column)
+            else:
+                stats = joined.agg(*expressions).collect()[0]
+                total = int(stats["total"] or 0)
+                # F.sum returns NULL on an empty frame; treat it as zero.
+                resolved = int(stats["resolved"] or 0)
+                sentinel = total - resolved
+                rate = (resolved / total * 100) if total > 0 else 100.0
+                logger.info(
+                    "Key resolution for %s: %d/%d resolved (%.1f%%), %d sentinels",
+                    fk.column,
+                    resolved,
+                    total,
+                    rate,
+                    sentinel,
+                )
 
         if lookup.detect_fanout and fk.relationship != "type7":
             dimension_columns = lookup.dimension_columns or lookup.source_columns
-            dimension = self.spark.table(fk.references)
+            dimension = self._read_table(fk.references)
             if dim_dupes := (
                 dimension.groupBy(*dimension_columns)
                 .agg(F.count("*").alias("__cnt"))
@@ -652,13 +728,19 @@ class KeyBroker:
                 )
 
         if lookup.validate_resolution:
-            fact_nk_distinct = fact_df.select(*lookup.source_columns).distinct().count()
-            resolved_nk_distinct = (
-                joined.filter(F.col(fk.column) >= 0)
-                .select(*lookup.source_columns)
-                .distinct()
-                .count()
+            per_key_resolution = joined.groupBy(*lookup.source_columns).agg(
+                F.max(
+                    F.when(F.col(fk.column) >= 0, F.lit(1)).otherwise(F.lit(0))
+                ).alias("__resolved")
             )
+            resolution_stats = per_key_resolution.agg(
+                F.count("*").alias("fact_nk_distinct"),
+                F.coalesce(F.sum("__resolved"), F.lit(0)).alias("resolved_nk_distinct"),
+            ).first()
+            if resolution_stats is None:
+                raise RuntimeError("Resolution aggregation did not return metrics")
+            fact_nk_distinct = int(resolution_stats["fact_nk_distinct"] or 0)
+            resolved_nk_distinct = int(resolution_stats["resolved_nk_distinct"] or 0)
             if fact_nk_distinct != resolved_nk_distinct:
                 raise DataQualityError(
                     f"Resolution count mismatch for {fk.column}: "
@@ -666,6 +748,7 @@ class KeyBroker:
                     f"{resolved_nk_distinct} resolved. "
                     f"{fact_nk_distinct - resolved_nk_distinct} unresolved."
                 )
+        return joined
 
     def _table_version(self, table_name: str) -> int:
         try:

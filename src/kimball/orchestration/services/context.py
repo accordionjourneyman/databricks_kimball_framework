@@ -36,6 +36,8 @@ class PipelineContext:
     loader: DataLoader
     runtime_options: RuntimeOptions
     batch_id: str = ""
+    repair_full_rebuild: bool = False
+    repair_snapshot_versions: dict[str, int] = field(default_factory=dict)
     source_versions: dict[str, Any] = field(default_factory=dict)
     active_dfs: dict[str, Any] = field(default_factory=dict)
     table_created: bool = False
@@ -44,6 +46,7 @@ class PipelineContext:
     total_rows_written: int = 0
     pending_temporal_state: list[Any] = field(default_factory=list)
     validation_metrics: list[dict[str, Any]] = field(default_factory=list)
+    pending_resolution_metrics: list[Any] = field(default_factory=list)
     work_plan: Any | None = None
     validated_grains: set[tuple[str, ...]] = field(default_factory=set)
 

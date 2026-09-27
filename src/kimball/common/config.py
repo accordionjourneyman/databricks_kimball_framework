@@ -1,17 +1,21 @@
-import hashlib
 import os
 import re
-from collections.abc import Mapping
+import warnings
+from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 import yaml
-from jinja2 import StrictUndefined, TemplateError
+from jinja2 import StrictUndefined, TemplateError, meta
 from jinja2.sandbox import SandboxedEnvironment
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Discriminator,
     Field,
+    StringConstraints,
+    Tag,
     ValidationError,
     field_validator,
     model_validator,
@@ -22,6 +26,23 @@ class StrictConfigModel(BaseModel):
     """Base for configuration objects where typos must fail closed."""
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+NonBlankName = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, pattern=r"\S"),
+]
+
+_DURATION_UNITS = (
+    r"[sS]|[mM]|[hH]|[dD]|"
+    r"[sS][eE][cC][oO][nN][dD][sS]?|"
+    r"[mM][iI][nN][uU][tT][eE][sS]?|"
+    r"[hH][oO][uU][rR][sS]?|"
+    r"[dD][aA][yY][sS]?"
+)
+DurationString = Annotated[
+    str, StringConstraints(pattern=rf"^\d+\s*(?:{_DURATION_UNITS})$")
+]
 
 
 MODEL_INTEGRITY_CODES = (
@@ -90,24 +111,54 @@ class ModelIntegrityPolicy(StrictConfigModel):
         return None
 
 
-class TargetConfig(StrictConfigModel):
+class TargetSettings(StrictConfigModel):
+    """Validated fields shared by each named target in a target file."""
+
+    catalog: NonBlankName
+    silver_schema: NonBlankName
+    gold_schema: NonBlankName
+    etl_schema: NonBlankName
+    checkpoint_root: NonBlankName | None = None
+    model_integrity: ModelIntegrityPolicy = Field(default_factory=ModelIntegrityPolicy)
+
+
+class TargetConfig(TargetSettings):
     """Non-secret data-plane settings for one deployable environment."""
 
-    name: str
-    catalog: str
-    silver_schema: str
-    gold_schema: str
-    etl_schema: str
-    checkpoint_root: str | None = None
-    model_integrity: ModelIntegrityPolicy = Field(default_factory=ModelIntegrityPolicy)
+    name: NonBlankName
 
     def template_context(self) -> dict[str, Any]:
         return {"target": self.model_dump(exclude={"name"}), "target_name": self.name}
 
 
+def resolve_template_context(
+    target: TargetConfig | None,
+    explicit_context: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Merge explicit template variables with authoritative target values.
+
+    Callers may supply arbitrary non-secret variables. The target and
+    target_name entries always come from the selected target, so an explicit
+    context cannot redirect a deployment to another schema or catalog.
+    """
+    context = dict(explicit_context or {})
+    if target is not None:
+        context.update(target.template_context())
+    return context or None
+
+
 class TargetFile(StrictConfigModel):
     version: Literal[1]
-    targets: dict[str, dict[str, Any]]
+    targets: dict[str, TargetSettings]
+
+    @field_validator("targets")
+    @classmethod
+    def validate_target_names(
+        cls, value: dict[str, TargetSettings]
+    ) -> dict[str, TargetSettings]:
+        if any(not name.strip() for name in value):
+            raise ValueError("target names must not be blank")
+        return value
 
 
 class TargetLoader:
@@ -117,21 +168,41 @@ class TargetLoader:
         self.path = Path(path)
 
     def load(self, name: str) -> TargetConfig:
+        from kimball.common.errors import (
+            ConfigIssue,
+            ConfigurationValidationError,
+            config_issues_from_validation_error,
+        )
+
         try:
             payload = yaml.safe_load(self.path.read_text(encoding="utf-8"))
-            target_file = TargetFile(**(payload or {}))
-        except (OSError, ValidationError, yaml.YAMLError) as exc:
-            raise ValueError(f"Invalid target descriptor {self.path}: {exc}") from exc
+            target_file = TargetFile.model_validate(payload or {})
+        except OSError as exc:
+            raise ConfigurationValidationError(
+                [
+                    ConfigIssue(
+                        str(self.path),
+                        None,
+                        f"could not read target file ({type(exc).__name__})",
+                        "target_io",
+                    )
+                ]
+            ) from exc
+        except yaml.YAMLError as exc:
+            raise ConfigurationValidationError(
+                [ConfigIssue(str(self.path), None, "invalid target YAML", "yaml_error")]
+            ) from exc
+        except ValidationError as exc:
+            raise ConfigurationValidationError(
+                config_issues_from_validation_error(str(self.path), exc)
+            ) from exc
         target_data = target_file.targets.get(name)
         if target_data is None:
             available = ", ".join(sorted(target_file.targets)) or "(none)"
             raise ValueError(
                 f"Unknown target '{name}' in {self.path}. Available targets: {available}"
             )
-        try:
-            return TargetConfig(name=name, **target_data)
-        except ValidationError as exc:
-            raise ValueError(f"Invalid target '{name}' in {self.path}: {exc}") from exc
+        return TargetConfig(name=name, **target_data.model_dump())
 
 
 class StreamingSourceConfig(StrictConfigModel):
@@ -159,7 +230,7 @@ class StreamingSourceConfig(StrictConfigModel):
 
     enabled: bool = False
     trigger: Literal["available_now", "processing_time"] = "available_now"
-    trigger_interval: str = "30 seconds"
+    trigger_interval: DurationString = "30 seconds"
     checkpoint_location: str | None = None
     starting_version: int | None = None
     starting_timestamp: str | None = None
@@ -194,65 +265,63 @@ class ContractCDCConfig(StrictConfigModel):
 
 
 class ContractFreshnessConfig(StrictConfigModel):
-    max_age: str
-
-    @model_validator(mode="after")
-    def validate_duration(self) -> "ContractFreshnessConfig":
-        if not re.match(
-            r"^\d+\s*(s|m|h|d|seconds?|minutes?|hours?|days?)$", self.max_age, re.I
-        ):
-            raise ValueError("freshness.max_age must be a duration such as '2 hours'")
-        return self
+    max_age: DurationString
 
 
-class ContractQualityRule(StrictConfigModel):
+class ContractQualityRuleBase(StrictConfigModel):
     name: str | None = None
-    rule: Literal["not_null", "unique", "null_rate", "accepted_values", "expression"]
-    column: str | None = None
-    columns: list[str] | None = None
-    max_ratio: float | None = Field(default=None, ge=0, le=1)
-    values: list[Any] | None = None
-    expression: str | None = None
     severity: Literal["warn", "error"] = "error"
 
+
+class NotNullContractQualityRule(ContractQualityRuleBase):
+    rule: Literal["not_null"]
+    column: NonBlankName
+
+
+class UniqueContractQualityRule(ContractQualityRuleBase):
+    rule: Literal["unique"]
+    column: NonBlankName | None = None
+    columns: list[NonBlankName] | None = None
+
     @model_validator(mode="after")
-    def validate_rule_shape(self) -> "ContractQualityRule":
-        if (
-            self.rule in {"not_null", "null_rate", "accepted_values"}
-            and not self.column
-        ):
-            raise ValueError(f"{self.rule} requires column")
-        if self.rule == "null_rate" and self.max_ratio is None:
-            raise ValueError("null_rate requires max_ratio")
-        if self.rule == "accepted_values" and self.values is None:
-            raise ValueError("accepted_values requires values")
-        if self.rule == "expression" and not (self.expression or "").strip():
-            raise ValueError("expression requires expression")
-        if self.rule == "unique":
-            if self.column and self.columns:
-                raise ValueError("unique accepts either column or columns")
-            if not self.column and not self.columns:
-                raise ValueError("unique requires column or columns")
+    def validate_unique_columns(self) -> "UniqueContractQualityRule":
+        if bool(self.column) == bool(self.columns):
+            raise ValueError("unique accepts either column or columns")
         return self
+
+
+class NullRateContractQualityRule(ContractQualityRuleBase):
+    rule: Literal["null_rate"]
+    column: NonBlankName
+    max_ratio: float = Field(ge=0, le=1)
+
+
+class AcceptedValuesContractQualityRule(ContractQualityRuleBase):
+    rule: Literal["accepted_values"]
+    column: NonBlankName
+    values: list[Any]
+
+
+class ExpressionContractQualityRule(ContractQualityRuleBase):
+    rule: Literal["expression"]
+    expression: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+ContractQualityRule = Annotated[
+    NotNullContractQualityRule
+    | UniqueContractQualityRule
+    | NullRateContractQualityRule
+    | AcceptedValuesContractQualityRule
+    | ExpressionContractQualityRule,
+    Field(discriminator="rule"),
+]
 
 
 class ContractTemporalConfig(StrictConfigModel):
     event_time_column: str
-    allowed_lateness: str = "0 hours"
+    allowed_lateness: DurationString = "0 hours"
     late_event_severity: Literal["warn", "error"] = "warn"
     out_of_order_severity: Literal["warn", "error"] = "warn"
-
-    @model_validator(mode="after")
-    def validate_duration(self) -> "ContractTemporalConfig":
-        if not re.match(
-            r"^\d+\s*(s|m|h|d|seconds?|minutes?|hours?|days?)$",
-            self.allowed_lateness,
-            re.I,
-        ):
-            raise ValueError(
-                "temporal.allowed_lateness must be a duration such as '24 hours'"
-            )
-        return self
 
 
 class ContractValidationPolicy(StrictConfigModel):
@@ -290,12 +359,12 @@ class SourceContractConfig(StrictConfigModel):
 
 
 class SourceConfig(StrictConfigModel):
-    name: str
-    alias: str
+    name: NonBlankName
+    alias: NonBlankName = ""
     format: str = "delta"
     options: dict[str, str] = Field(default_factory=dict)
     join_on: str | None = None
-    cdc_strategy: Literal["cdf", "full", "timestamp", "append"] = "cdf"
+    cdc_strategy: Literal["cdf", "full", "append"] = "cdf"
     primary_keys: list[str] | None = Field(default=None)
     starting_version: int = Field(default=0, ge=0)
     streaming: StreamingSourceConfig | None = Field(default=None)
@@ -305,16 +374,29 @@ class SourceConfig(StrictConfigModel):
     @model_validator(mode="before")
     @classmethod
     def set_defaults(cls, data: Any) -> Any:
-        if isinstance(data, dict) and "alias" not in data:
-            data["alias"] = data.get("name", "").split(".")[-1]
+        if isinstance(data, dict):
+            data = data.copy()
+            if not data.get("alias"):
+                data["alias"] = str(data.get("name", "")).split(".")[-1]
         return data
 
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core_schema: Any, handler: Any
+    ) -> dict[str, Any]:
+        schema = cast(dict[str, Any], handler(core_schema))
+        schema["required"] = [
+            field for field in schema.get("required", []) if field != "alias"
+        ]
+        alias_schema = schema.get("properties", {}).get("alias", {})
+        alias_schema.pop("default", None)
+        alias_schema["description"] = (
+            "Optional source alias. When omitted, the final component of name is used."
+        )
+        return schema
+
     @model_validator(mode="after")
-    def reject_unsupported_cdc_strategy(self) -> "SourceConfig":
-        if self.cdc_strategy == "timestamp":
-            raise ValueError(
-                "cdc_strategy='timestamp' is not implemented; use 'cdf' or 'full'"
-            )
+    def validate_source_contract_selection(self) -> "SourceConfig":
         if self.contract and self.contract_ref:
             raise ValueError("contract and contract_ref are mutually exclusive")
         return self
@@ -486,9 +568,55 @@ class ABACPolicyConfig(StrictConfigModel):
     scope: Literal["catalog", "schema", "table"] = "schema"
 
 
+class AcceptedValuesTest(StrictConfigModel):
+    accepted_values: list[Any]
+
+
+class RelationshipTestTarget(StrictConfigModel):
+    to: NonBlankName
+    field: NonBlankName | None = None
+
+
+class RelationshipsTest(StrictConfigModel):
+    relationships: RelationshipTestTarget
+
+
+class ExpressionTest(StrictConfigModel):
+    expression: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+def _structured_test_tag(value: Any) -> str | None:
+    if isinstance(value, dict):
+        return next(
+            (
+                key
+                for key in ("accepted_values", "relationships", "expression")
+                if key in value
+            ),
+            None,
+        )
+    if isinstance(value, AcceptedValuesTest):
+        return "accepted_values"
+    if isinstance(value, RelationshipsTest):
+        return "relationships"
+    if isinstance(value, ExpressionTest):
+        return "expression"
+    return None
+
+
+StructuredTest = Annotated[
+    Annotated[AcceptedValuesTest, Tag("accepted_values")]
+    | Annotated[RelationshipsTest, Tag("relationships")]
+    | Annotated[ExpressionTest, Tag("expression")],
+    Discriminator(_structured_test_tag),
+]
+
+
 class TestDefinition(StrictConfigModel):
-    column: str
-    tests: list[str | dict[str, Any]] = Field(default_factory=list)
+    column: NonBlankName
+    tests: list[Literal["unique", "not_null"] | StructuredTest] = Field(
+        default_factory=list
+    )
     severity: Literal["error", "warn"] = "error"
 
 
@@ -577,7 +705,7 @@ class ObservabilityConfig(StrictConfigModel):
 
 
 class TableConfig(StrictConfigModel):
-    table_name: str
+    table_name: NonBlankName
     table_type: Literal["dimension", "fact"]
     depends_on: list[str] = Field(default_factory=list)
     surrogate_key: str | None = None
@@ -629,24 +757,52 @@ class TableConfig(StrictConfigModel):
     @model_validator(mode="before")
     @classmethod
     def flatten_keys(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            keys = data.get("keys", {})
-            if isinstance(keys, dict):
-                for field_name in ("surrogate_key", "durable_key", "natural_keys"):
-                    if field_name in keys:
-                        data[field_name] = keys[field_name]
-                data.pop("keys", None)
+        if not isinstance(data, dict):
+            return data
+        data = data.copy()
+        keys = data.get("keys", {})
+        if keys is None:
+            raise ValueError("keys must be a mapping")
+        if not isinstance(keys, dict):
+            raise ValueError("keys must be a mapping")
+        allowed = {"surrogate_key", "durable_key", "natural_keys"}
+        unknown = sorted(set(keys) - allowed)
+        if unknown:
+            raise ValueError(f"keys contains unknown field(s): {unknown}")
+        for field_name in allowed:
+            if field_name in keys:
+                data[field_name] = keys[field_name]
+        data.pop("keys", None)
         return data
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core_schema: Any, handler: Any
+    ) -> dict[str, Any]:
+        schema = cast(dict[str, Any], handler(core_schema))
+        properties = schema.setdefault("properties", {})
+        properties["keys"] = {
+            "type": "object",
+            "description": "Legacy grouped form of the table key fields.",
+            "properties": {
+                field_name: deepcopy(properties[field_name])
+                for field_name in ("surrogate_key", "durable_key", "natural_keys")
+            },
+            "additionalProperties": False,
+        }
+        return schema
 
     @model_validator(mode="after")
     def validate_kimball_rules(self) -> "TableConfig":
-        # Kimball invariants live in config_rules.py as named, pure
-        # predicates (ADR-004 step 5): one home per invariant, enumerable
-        # rule set, fail-closed ValueError surface unchanged.
-        from kimball.common.config_rules import first_config_violation
+        # Collect independent invariant violations in stable rule order so a
+        # single config load can surface every fixable issue.
+        from kimball.common.config_rules import (
+            ConfigRuleValidationError,
+            collect_config_violations,
+        )
 
-        if violation := first_config_violation(self):
-            raise ValueError(violation)
+        if violations := collect_config_violations(self):
+            raise ConfigRuleValidationError(violations)
         return self
 
 
@@ -656,35 +812,145 @@ class ConfigLoader:
         env_vars: Mapping[str, str] | None = None,
         *,
         template_context: Mapping[str, Any] | None = None,
+        allow_implicit_environment: bool = True,
     ):
-        # Windows normalizes environment keys to uppercase when copying them.
-        # Keep original keys and lowercase aliases so legacy templates remain
-        # portable while new configurations use explicit ``target.*`` values.
+        # Explicit env_vars are a portable allowlist. The implicit process
+        # environment remains temporarily supported for existing templates.
         raw = dict(env_vars) if env_vars is not None else dict(os.environ)
+        self._uses_implicit_environment = env_vars is None
+        self.allow_implicit_environment = allow_implicit_environment
         self.env_vars: dict[str, Any] = dict(raw)
         for key, value in raw.items():
             self.env_vars.setdefault(str(key).lower(), value)
         self.template_context = dict(template_context or {})
+        self._environment_names = set(self.env_vars)
 
     def load_config(self, file_path: str) -> TableConfig:
+        from kimball.common.errors import (
+            ConfigIssue,
+            ConfigurationValidationError,
+            config_issues_from_validation_error,
+        )
+
         try:
             with open(file_path, encoding="utf-8") as file_handle:
-                rendered = (
-                    SandboxedEnvironment(undefined=StrictUndefined)
-                    .from_string(file_handle.read())
-                    .render({**self.env_vars, **self.template_context})
+                template_source = file_handle.read()
+            environment = SandboxedEnvironment(undefined=StrictUndefined)
+            template = environment.from_string(template_source)
+            referenced_names = meta.find_undeclared_variables(
+                environment.parse(template_source)
+            )
+            secret_like_names = self._environment_names | set(self.template_context)
+            secret_names = sorted(
+                name
+                for name in referenced_names & secret_like_names
+                if re.search(
+                    r"(?:secret|password|token|credential|private[_-]?key)",
+                    name,
+                    re.I,
                 )
-        except (OSError, TemplateError) as exc:
-            raise ValueError(
-                f"Configuration template error in {file_path}: {exc}"
+            )
+            if secret_names:
+                raise ConfigurationValidationError(
+                    [
+                        ConfigIssue(
+                            file_path,
+                            None,
+                            "templates cannot interpolate secret environment "
+                            "values; use a secret reference instead",
+                            "secret_template_value",
+                        )
+                    ]
+                )
+            explicit_names = set(self.template_context)
+            env_references = sorted(
+                (referenced_names & self._environment_names) - explicit_names
+            )
+            if (
+                self._uses_implicit_environment
+                and env_references
+                and not self.allow_implicit_environment
+            ):
+                raise ConfigurationValidationError(
+                    [
+                        ConfigIssue(
+                            file_path,
+                            None,
+                            "implicit process-environment template access is "
+                            "disabled; pass explicit template_context/env_vars",
+                            "implicit_environment_disabled",
+                        )
+                    ]
+                )
+            if self._uses_implicit_environment and env_references:
+                warnings.warn(
+                    f"{file_path} uses implicit process environment template "
+                    f"variables {env_references}; pass them explicitly. This "
+                    "compatibility path is deprecated.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            rendered = template.render({**self.env_vars, **self.template_context})
+        except ConfigurationValidationError:
+            raise
+        except OSError as exc:
+            raise ConfigurationValidationError(
+                [
+                    ConfigIssue(
+                        file_path,
+                        None,
+                        f"could not read configuration ({type(exc).__name__})",
+                        "config_io",
+                    )
+                ]
+            ) from exc
+        except TemplateError as exc:
+            raise ConfigurationValidationError(
+                [ConfigIssue(file_path, None, str(exc), "template_error")]
+            ) from exc
+
+        try:
+            payload = yaml.safe_load(rendered)
+        except yaml.YAMLError as exc:
+            mark = getattr(exc, "problem_mark", None)
+            location = (
+                f"line {mark.line + 1}, column {mark.column + 1}"
+                if mark is not None
+                else None
+            )
+            raise ConfigurationValidationError(
+                [ConfigIssue(file_path, location, "invalid YAML", "yaml_error")]
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ConfigurationValidationError(
+                [
+                    ConfigIssue(
+                        file_path,
+                        None,
+                        "configuration root must be a mapping",
+                        "invalid_root",
+                    )
+                ]
+            )
+        try:
+            config = TableConfig.model_validate(payload)
+        except ValidationError as exc:
+            raise ConfigurationValidationError(
+                config_issues_from_validation_error(file_path, exc)
             ) from exc
         try:
-            config = TableConfig(**yaml.safe_load(rendered))
             return self.resolve_contract_refs(config, file_path)
-        except (ValidationError, yaml.YAMLError) as e:
-            raise ValueError(
-                f"Configuration validation error in {file_path}: {e}"
-            ) from e
+        except Exception as exc:
+            raise ConfigurationValidationError(
+                [
+                    ConfigIssue(
+                        file_path,
+                        "sources.contract_ref",
+                        f"could not resolve referenced contract ({type(exc).__name__})",
+                        "contract_reference_error",
+                    )
+                ]
+            ) from exc
 
     def resolve_contract_refs(
         self, config: TableConfig, config_path: str | Path
@@ -741,23 +1007,34 @@ class ConfigLoader:
                 issues.append(f"SQL dry-run failed: {e}")
                 return issues
 
-        sql_stripped = sql.strip().upper()
+        sql_code = re.sub(
+            r"--[^\r\n]*|/\*.*?\*/|'(?:''|[^'])*'",
+            " ",
+            sql,
+            flags=re.DOTALL,
+        )
+        sql_stripped = sql_code.strip().upper()
         if not (sql_stripped.startswith("SELECT") or sql_stripped.startswith("WITH")):
             issues.append(
                 f"transformation_sql must be a SELECT or WITH statement. "
                 f"Got: {sql[:50]}..."
             )
         aliases = {s.alias for s in config.sources}
-        sql_upper = sql.upper()
+        sql_upper = sql_code.upper()
         for alias in aliases:
-            if alias.upper() not in sql_upper:
+            relation = (
+                rf'(?:`{re.escape(alias)}`|"{re.escape(alias)}"|{re.escape(alias)})'
+            )
+            if not re.search(
+                rf"\b(?:FROM|JOIN)\s+{relation}(?![\w$])", sql_code, re.IGNORECASE
+            ):
                 issues.append(
                     f"transformation_sql does not reference source alias '{alias}'"
                 )
-        for forbidden in ("DROP ", "DELETE ", "TRUNCATE ", "UPDATE "):
-            if forbidden in sql_upper:
+        for forbidden in ("DROP", "DELETE", "TRUNCATE", "UPDATE"):
+            if re.search(rf"(?:^|;)\s*{forbidden}\b", sql_upper):
                 issues.append(
-                    f"transformation_sql contains forbidden statement: {forbidden.strip()}"
+                    f"transformation_sql contains forbidden statement: {forbidden}"
                 )
         return issues
 
@@ -800,53 +1077,39 @@ class ConfigLoader:
     def compute_fingerprint(
         self, config: TableConfig, sql_text: str | None = None
     ) -> str:
-        """
-        Compute a deterministic fingerprint of the config + transformation SQL.
+        """Compute a full, versioned digest of normalized behavior config."""
+        from kimball.common.canonical import (
+            CONFIG_FINGERPRINT_VERSION,
+            canonical_config_payload,
+            canonical_digest,
+        )
 
-        Used for state-aware validation skipping: if the fingerprint matches
-        the last successful run for this table, validation can be skipped.
-        """
-        fingerprint_input = {
-            "table_name": config.table_name,
-            "table_type": config.table_type,
-            "scd_type": config.scd_type,
-            "natural_keys": sorted(config.natural_keys),
-            "track_history_columns": sorted(config.track_history_columns or []),
-            "surrogate_key": config.surrogate_key,
-            "durable_key": config.durable_key,
-            "transformation_sql": sql_text or config.transformation_sql or "",
-            "tests": [
-                {"column": t.column, "tests": t.tests, "severity": t.severity}
-                for t in (config.tests or [])
-            ],
-            "foreign_keys": sorted(
-                [
-                    {
-                        "column": fk.column,
-                        "references": fk.references,
-                        "dimension_key": fk.dimension_key,
-                        "relationship": fk.relationship,
-                        "durable_column": fk.durable_column,
-                        "durable_dimension_key": fk.durable_dimension_key,
-                        "lookup": fk.lookup.model_dump() if fk.lookup else None,
-                    }
-                    for fk in (config.foreign_keys or [])
-                ],
-                key=lambda x: str(x["column"]),
-            ),
-            "delete_strategy": config.delete_strategy,
-            "schema_evolution": config.schema_evolution,
-            "effective_at": config.effective_at,
-            "merge_keys": sorted(config.merge_keys or []),
-            "current_value_columns": sorted(config.current_value_columns or []),
-            "null_policy": config.null_policy.model_dump(),
-            "pii": sorted(
-                [
-                    {"column": p.column, "strategy": p.strategy}
-                    for p in (config.pii.columns if config.pii else [])
-                ],
-                key=lambda x: x["column"],
-            ),
-        }
-        encoded = yaml.safe_dump(fingerprint_input, sort_keys=True).encode("utf-8")
-        return hashlib.sha256(encoded).hexdigest()[:16]
+        payload = canonical_config_payload(config, sql_text=sql_text)
+        return CONFIG_FINGERPRINT_VERSION + canonical_digest(payload)
+
+
+def load_config_entries(
+    loader: ConfigLoader, paths: Sequence[str | Path]
+) -> list[tuple[str, TableConfig]]:
+    """Load every config path and report all independent file errors together."""
+    from kimball.common.errors import ConfigIssue, ConfigurationValidationError
+
+    entries: list[tuple[str, TableConfig]] = []
+    issues: list[ConfigIssue] = []
+    for path_value in paths:
+        path = str(path_value)
+        try:
+            entries.append((path, loader.load_config(path)))
+        except ConfigurationValidationError as exc:
+            issues.extend(exc.issues)
+        except (OSError, ValueError) as exc:
+            issues.append(
+                ConfigIssue(
+                    path,
+                    None,
+                    f"configuration could not be loaded ({type(exc).__name__})",
+                )
+            )
+    if issues:
+        raise ConfigurationValidationError(issues)
+    return entries

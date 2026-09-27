@@ -223,28 +223,18 @@ class SkeletonGenerator:
         DELTA_NOT_NULL_CONSTRAINT_VIOLATED.
         """
         _COLUMN_HANDLERS: dict[str, Any] = {
-            "__is_skeleton": lambda s, f, b: s.withColumn(f.name, F.lit(True)),
-            "__is_current": lambda s, f, b: s.withColumn(f.name, F.lit(True)),
-            "__is_deleted": lambda s, f, b: s.withColumn(f.name, F.lit(False)),
-            "__valid_from": lambda s, f, b: s.withColumn(
-                f.name, F.lit(DEFAULT_VALID_FROM).cast(TimestampType())
+            "__is_skeleton": lambda f, b: F.lit(True),
+            "__is_current": lambda f, b: F.lit(True),
+            "__is_deleted": lambda f, b: F.lit(False),
+            "__valid_from": lambda f, b: F.lit(DEFAULT_VALID_FROM).cast(
+                TimestampType()
             ),
-            "__valid_to": lambda s, f, b: s.withColumn(
-                f.name, F.lit(DEFAULT_VALID_TO).cast(TimestampType())
-            ),
-            "__etl_processed_at": lambda s, f, b: s.withColumn(
-                f.name, F.current_timestamp()
-            ),
-            "__etl_batch_id": lambda s, f, b: s.withColumn(
-                f.name, F.lit(b or "skeleton")
-            ),
-            "__skeleton_created_at": lambda s, f, b: s.withColumn(
-                f.name, F.current_timestamp()
-            ),
-            "__member_status": lambda s, f, b: s.withColumn(
-                f.name, F.lit("NOT_YET_AVAILABLE")
-            ),
-            "__key_origin": lambda s, f, b: s.withColumn(f.name, F.lit("skeleton")),
+            "__valid_to": lambda f, b: F.lit(DEFAULT_VALID_TO).cast(TimestampType()),
+            "__etl_processed_at": lambda f, b: F.current_timestamp(),
+            "__etl_batch_id": lambda f, b: F.lit(b or "skeleton"),
+            "__skeleton_created_at": lambda f, b: F.current_timestamp(),
+            "__member_status": lambda f, b: F.lit("NOT_YET_AVAILABLE"),
+            "__key_origin": lambda f, b: F.lit("skeleton"),
         }
         _SKIP_COLUMNS = frozenset(
             {
@@ -254,26 +244,28 @@ class SkeletonGenerator:
                 "__scd2_total",
             }
         )
+        existing_columns = set(skeletons.columns)
+        additions = []
         for field in dim.schema.fields:
             name = field.name
             if (
                 name == dim_join_key
                 or name == surrogate_key_col
                 or name in _SKIP_COLUMNS
-                or name in skeletons.columns
+                or name in existing_columns
             ):
                 continue
             handler = _COLUMN_HANDLERS.get(name)
             if handler is not None:
-                skeletons = handler(skeletons, field, batch_id)
+                expression = handler(field, batch_id)
             elif field.nullable:
-                skeletons = skeletons.withColumn(name, F.lit(None).cast(field.dataType))
+                expression = F.lit(None).cast(field.dataType)
             else:
-                skeletons = skeletons.withColumn(
-                    name,
-                    F.lit(_replacement_for_type(field.dataType)).cast(field.dataType),
+                expression = F.lit(_replacement_for_type(field.dataType)).cast(
+                    field.dataType
                 )
-        return skeletons
+            additions.append(expression.alias(name))
+        return skeletons.select("*", *additions) if additions else skeletons
 
     @staticmethod
     def _project_to_target_order(skeletons: DataFrame, dim: DataFrame) -> DataFrame:

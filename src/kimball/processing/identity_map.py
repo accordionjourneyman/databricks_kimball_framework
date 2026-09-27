@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -78,14 +79,58 @@ def validate_identity_rows(
                 )
 
 
+def _has_unflattened_chain(rows: Sequence[Mapping[str, Any]]) -> bool:
+    """Return whether an overlapping mapping points at another nonterminal edge.
+
+    Call after ``validate_identity_rows``: source timelines then have positive,
+    non-overlapping intervals, which lets each target timeline answer overlap
+    queries with two binary searches and a prefix count.
+    """
+    by_source: dict[Any, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_source[row["source_identity"]].append(row)
+
+    indexes: dict[Any, tuple[list[Any], list[Any], list[int]]] = {}
+    for source, versions in by_source.items():
+        ordered = sorted(versions, key=lambda row: row["valid_from"])
+        starts = [row["valid_from"] for row in ordered]
+        ends = [row["valid_to"] for row in ordered]
+        nonterminal_prefix = [0]
+        for row in ordered:
+            nonterminal_prefix.append(
+                nonterminal_prefix[-1] + int(row["canonical_identity"] != source)
+            )
+        indexes[source] = starts, ends, nonterminal_prefix
+
+    for row in rows:
+        source = row["source_identity"]
+        target = row["canonical_identity"]
+        if source == target or target not in indexes:
+            continue
+        starts, ends, nonterminal_prefix = indexes[target]
+        first_overlap = bisect_right(ends, row["valid_from"])
+        end_overlap = bisect_left(starts, row["valid_to"])
+        if nonterminal_prefix[end_overlap] > nonterminal_prefix[first_overlap]:
+            return True
+    return False
+
+
 def load_validated_identity_map(
     spark: SparkSession,
     table_name: str,
     *,
     max_control_rows: int = 100_000,
+    version_as_of: int | None = None,
 ) -> DataFrame:
     """Load a governed temporal identity map and fail closed before joining it."""
-    frame = spark.table(table_name)
+    if version_as_of is None:
+        frame = spark.table(table_name)
+    else:
+        frame = (
+            spark.read.format("delta")
+            .option("versionAsOf", version_as_of)
+            .table(table_name)
+        )
     if missing := sorted(set(IDENTITY_MAP_COLUMNS) - set(frame.columns)):
         raise IdentityMapError(
             f"identity map {table_name} is missing: {', '.join(missing)}"
@@ -102,19 +147,8 @@ def load_validated_identity_map(
 
     # Runtime resolution intentionally supports direct survivor mappings. A
     # producer must flatten chains so every source points at its final survivor.
-    for left in payload:
-        for right in payload:
-            overlaps = (
-                left["valid_from"] < right["valid_to"]
-                and right["valid_from"] < left["valid_to"]
-            )
-            if (
-                overlaps
-                and left["source_identity"] != left["canonical_identity"]
-                and left["canonical_identity"] == right["source_identity"]
-                and right["canonical_identity"] != right["source_identity"]
-            ):
-                raise IdentityMapError(
-                    "identity map chains must be flattened to the final survivor"
-                )
+    if _has_unflattened_chain(payload):
+        raise IdentityMapError(
+            "identity map chains must be flattened to the final survivor"
+        )
     return selected

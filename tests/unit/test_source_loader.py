@@ -6,7 +6,11 @@ import pytest
 
 from kimball.common.config import SourceConfig
 from kimball.orchestration.services.source_loader import SourceLoader
-from kimball.orchestration.services.work_plan import SourceWorkItem, SourceWorkPlan
+from kimball.orchestration.services.work_plan import (
+    SourceWorkItem,
+    SourceWorkPlan,
+)
+from kimball.processing.loader import DataLoader
 
 
 def _plan(source, start=0, end=0, active=True):
@@ -35,6 +39,22 @@ def ctx():
     mock.loader = MagicMock()
     mock.etl_control = MagicMock()
     return mock
+
+
+def test_data_loader_passes_version_as_of_to_delta_snapshot_reader():
+    spark = MagicMock()
+    reader = MagicMock()
+    reader.option.return_value = reader
+    expected = MagicMock()
+    reader.table.return_value = expected
+    spark.read.format.return_value = reader
+
+    result = DataLoader(spark).load_full_snapshot("silver.customers", version_as_of=42)
+
+    assert result is expected
+    spark.read.format.assert_called_once_with("delta")
+    reader.option.assert_called_once_with("versionAsOf", 42)
+    reader.table.assert_called_once_with("silver.customers")
 
 
 class TestAppendStrategy:
@@ -67,6 +87,47 @@ class TestAppendStrategy:
         df.drop.assert_called_once_with("_change_type", "_commit_version")
         assert versions["silver.events"] == 10
         assert active["silver.events"] is dropped_df
+
+    def test_pinned_repair_snapshot_reads_exact_delta_version(self, ctx):
+        source = SourceConfig(
+            name="silver.customers",
+            alias="customers",
+            cdc_strategy="cdf",
+            primary_keys=["customer_id"],
+        )
+        ctx.config.sources = [source]
+        frame = MagicMock()
+        frame.columns = ["customer_id", "name"]
+        frame.withColumn.side_effect = lambda *_: frame
+        ctx.loader.load_full_snapshot.return_value = frame
+        plan = SourceWorkPlan(
+            (
+                SourceWorkItem(
+                    source=source,
+                    prior_watermark=None,
+                    latest_version=42,
+                    starting_version=None,
+                    ending_version=None,
+                    active=True,
+                    delete_mode="full_snapshot",
+                    snapshot_version=42,
+                ),
+            )
+        )
+
+        with patch("pyspark.sql.functions.lit", return_value=MagicMock()):
+            versions, active = SourceLoader().load(ctx, plan)
+
+        ctx.loader.load_full_snapshot.assert_called_once_with(
+            "silver.customers",
+            format="delta",
+            options={},
+            version_as_of=42,
+        )
+        assert versions["silver.customers"] == 42
+        assert active["silver.customers"] is frame
+        assert frame.withColumn.call_count == 3
+        frame.createOrReplaceTempView.assert_called_once_with("customers")
 
     def test_temporal_contract_stages_state_without_committing_it(self) -> None:
         source = SourceConfig.model_validate(

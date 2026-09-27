@@ -74,7 +74,12 @@ def test_odcs_loader_validates_pinned_schema_and_adapts_runtime_contract():
     assert runtime.schema_["email"].nullable is True
     assert runtime.cdc.primary_key == ["customer_id"]
     assert {
-        (rule.rule, tuple(rule.columns or []), rule.column) for rule in runtime.quality
+        (
+            rule.rule,
+            tuple(getattr(rule, "columns", None) or []),
+            getattr(rule, "column", None),
+        )
+        for rule in runtime.quality
     } == {
         ("not_null", (), "customer_id"),
         ("unique", ("customer_id",), None),

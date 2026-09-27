@@ -50,6 +50,8 @@ Databricks Asset Bundle target or CI secrets.
 - YAML-managed table and column descriptions
 - Keyed HMAC-SHA-256 tokenization, masking, nulling, and dropping PII controls
 - Structured Streaming and single-writer compensating rollback (see limitations)
+- Version-pinned batch source repair for SCD1 targets, with a normalized audit
+  ledger and guarded rollback ([operational procedure](docs/RUNBOOK.md#source-repair))
 
 ## Project structure
 
@@ -67,6 +69,8 @@ docs/         operational and design documentation
 - [Type 7, Key Brokering, Identity Maps, and Null Semantics](docs/SCD7_KEYS_AND_NULLS.md)
 - [Data Supplier Contracts](docs/DATA_CONTRACTS.md)
 - [Production Readiness](docs/PRODUCTION_READINESS.md)
+- [Operational Runbook](docs/RUNBOOK.md) - recovery and semantic source repair
+- [Repair Ledger Assessment](docs/REPAIR_LEDGER_ASSESSMENT.md) - evidence, design, and implementation boundary
 - [Framework Features vs SQL Patterns](docs/SQL_PATTERNS.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Streaming CDF](docs/STREAMING.md)

@@ -78,7 +78,7 @@ transformation_sql: |
             .collect()
         )
         assert len(rows) == 1, "SCD1 should overwrite, not version"
-        # Exact equality â€” a substring match would pass even if SCD1 appended
+        # Exact equality: a substring match would pass even if SCD1 appended
         # to the old value instead of replacing it.
         assert rows[0]["description"] == "WHITE HANGING HEART T-LIGHT HOLDER", (
             f"Expected exact overwrite, got: {rows[0]['description']!r}"

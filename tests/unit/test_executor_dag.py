@@ -6,6 +6,7 @@ import pytest
 
 from kimball.common.config import SourceConfig, TableConfig
 from kimball.common.errors import NonRetriableError
+from kimball.common.runtime import RuntimeOptions
 from kimball.orchestration.executor import PipelineExecutor, PipelineResult
 
 
@@ -35,7 +36,10 @@ def _fact(name: str, depends_on: list[str]) -> TableConfig:
 def _executor(configs: list[TableConfig]) -> PipelineExecutor:
     with (
         patch("kimball.orchestration.executor.ConfigLoader") as loader_cls,
-        patch("kimball.orchestration.executor.get_etl_schema", return_value="etl"),
+        patch(
+            "kimball.orchestration.executor.RuntimeOptions.from_environment",
+            return_value=RuntimeOptions(etl_schema="etl"),
+        ),
     ):
         loader_cls.return_value.load_config.side_effect = configs
         return PipelineExecutor(

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import hashlib
 import json
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Literal
 
+from kimball.common.canonical import canonical_config_payload, canonical_digest
 from kimball.planning.compiler import CompiledProject
 
 ChangeKind = Literal["added", "removed", "modified"]
@@ -46,10 +47,7 @@ _BREAKING_FIELDS = {
 
 
 def _digest(value: Any) -> str:
-    encoded = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return canonical_digest(value)
 
 
 def _framework_version() -> str:
@@ -67,8 +65,9 @@ def build_manifest(
     pipelines: list[dict[str, Any]] = []
     for table_name in sorted(project.nodes):
         node = project.nodes[table_name]
-        config = node.config.model_dump(by_alias=True, mode="json")
-        metadata = {field: config.pop(field, None) for field in _METADATA_FIELDS}
+        normalized = node.config.model_dump(by_alias=True, mode="json")
+        metadata = {field: normalized.pop(field, None) for field in _METADATA_FIELDS}
+        config = canonical_config_payload(node.config)
         pipelines.append(
             {
                 "table_name": node.table_name,
@@ -86,7 +85,7 @@ def build_manifest(
         )
 
     body = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "framework_version": framework_version or _framework_version(),
         "levels": [list(level) for level in project.levels],
         "pipelines": pipelines,
@@ -120,9 +119,6 @@ class ProjectPlan:
 def _classify_modified(
     previous: dict[str, Any], current: dict[str, Any]
 ) -> tuple[Classification, tuple[str, ...]]:
-    if previous.get("semantic_digest") == current.get("semantic_digest"):
-        return "metadata_only", tuple(sorted(_METADATA_FIELDS))
-
     previous_config = previous.get("semantic_config", {})
     current_config = current.get("semantic_config", {})
     fields = tuple(
@@ -132,11 +128,16 @@ def _classify_modified(
             if previous_config.get(key) != current_config.get(key)
         )
     )
-    if (
-        previous.get("dependencies") != current.get("dependencies")
-        or previous.get("writes") != current.get("writes")
-        or _BREAKING_FIELDS.intersection(fields)
-    ):
+    graph_fields = tuple(
+        field
+        for field in ("dependencies", "writes")
+        if previous.get(field) != current.get(field)
+    )
+    if graph_fields:
+        return "breaking", tuple(sorted(set(fields) | set(graph_fields)))
+    if previous.get("semantic_digest") == current.get("semantic_digest"):
+        return "metadata_only", tuple(sorted(_METADATA_FIELDS))
+    if _BREAKING_FIELDS.intersection(fields):
         return "breaking", fields
     if _BACKFILL_FIELDS.intersection(fields):
         return "requires_backfill", fields
@@ -170,14 +171,17 @@ def diff_manifests(previous: dict[str, Any], current: dict[str, Any]) -> Project
 
     affected = {change.table_name for change in changes}
     combined_nodes = previous_nodes | current_nodes
-    changed = True
-    while changed:
-        changed = False
-        for table_name, node in combined_nodes.items():
-            if table_name not in affected and affected.intersection(
-                node.get("dependencies", [])
-            ):
-                affected.add(table_name)
-                changed = True
+    dependents: dict[str, set[str]] = defaultdict(set)
+    for table_name, node in combined_nodes.items():
+        for dependency in set(node.get("dependencies", [])):
+            dependents[dependency].add(table_name)
+
+    pending = deque(affected)
+    while pending:
+        upstream = pending.popleft()
+        for dependent in dependents.get(upstream, ()):
+            if dependent not in affected:
+                affected.add(dependent)
+                pending.append(dependent)
 
     return ProjectPlan(tuple(changes), tuple(sorted(affected)))

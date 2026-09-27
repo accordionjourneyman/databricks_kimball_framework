@@ -132,7 +132,7 @@ transformation_sql: |
 
         # SKs are deterministic hash surrogate keys (xxhash64), so they have no
         # ordering relationship to customer_id. Verify they are present and unique
-        # instead â€” the real invariant for a surrogate key column.
+        # instead; uniqueness is the relevant invariant for a surrogate key column.
         sk_values = [r["customer_sk"] for r in final_rows]
         assert all(sk is not None for sk in sk_values), (
             f"Expected non-null surrogate keys, got: {sk_values}"

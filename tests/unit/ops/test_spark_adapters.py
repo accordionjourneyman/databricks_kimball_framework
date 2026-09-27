@@ -2,7 +2,11 @@
 
 from unittest.mock import MagicMock
 
-from kimball.ops.spark_adapters import _earliest_cdf_version, _extract_batch_id
+from kimball.ops.spark_adapters import (
+    SparkETLControlStore,
+    _earliest_cdf_version,
+    _extract_batch_id,
+)
 
 
 def test_earliest_cdf_version_uses_catalog_reader_and_skips_expired_versions():
@@ -31,3 +35,29 @@ def test_extract_batch_id_normalizes_exact_and_compound_metadata():
     assert _extract_batch_id("batch-1") == "batch-1"
     assert _extract_batch_id("workflow=gold; batch_id=batch-1 ") == "batch-1"
     assert _extract_batch_id(None) is None
+
+
+def test_control_cursor_rewind_is_tagged_and_restores_spark_metadata():
+    spark = MagicMock()
+    spark.conf.get.return_value = "outer-metadata"
+    control = MagicMock()
+    control.fq_table = "ops.etl_control"
+    control.spark = spark
+    store = SparkETLControlStore(control)
+
+    store.rewind_watermark_tagged(
+        "gold.fact",
+        "silver.orders",
+        42,
+        "repair_id=r1; operation_token=cursor-1",
+    )
+
+    control.rewind_to_version.assert_called_once_with("gold.fact", "silver.orders", 42)
+    assert spark.conf.set.call_args_list[0].args == (
+        "spark.databricks.delta.commitInfo.userMetadata",
+        "repair_id=r1; operation_token=cursor-1",
+    )
+    assert spark.conf.set.call_args_list[-1].args == (
+        "spark.databricks.delta.commitInfo.userMetadata",
+        "outer-metadata",
+    )

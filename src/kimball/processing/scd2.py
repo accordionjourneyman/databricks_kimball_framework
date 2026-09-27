@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from functools import reduce
 from typing import Any, cast
 
@@ -15,6 +14,7 @@ from pyspark.sql.functions import (
     when,
 )
 
+from kimball.common.runtime import RuntimeOptions
 from kimball.common.spark_session import get_spark
 from kimball.processing.hashing import compute_hashdiff
 from kimball.processing.key_integrity import validate_type7_keys
@@ -49,6 +49,7 @@ def _merge_single_pass(
     full_snapshot_reconciliation: bool,
     durable_key_col: str | None,
     scd_type: int,
+    runtime_options: RuntimeOptions | None = None,
 ) -> None:
     """Single-pass SCD2 MERGE using SK-based matching.
 
@@ -65,7 +66,8 @@ def _merge_single_pass(
     if not track_history_columns:
         raise ValueError("track_history_columns must be provided for SCD Type 2")
 
-    lazy_eval = os.environ.get("KIMBALL_OPTIMIZE_SCD2_LAZY_EVAL") == "1"
+    options = runtime_options or RuntimeOptions.from_environment()
+    lazy_eval = options.optimize_scd2_lazy_eval
 
     upserts, deletes = filter_cdf_deletes(source_df)
 
@@ -104,6 +106,7 @@ def _merge_single_pass(
         join_keys,
         full_snapshot_reconciliation,
         lazy_eval,
+        options.skip_delete_detection,
     )
 
     if source_is_empty:
@@ -129,6 +132,7 @@ def _merge_single_pass(
         target_table_name,
         target_has_skeleton_col,
         lazy_eval,
+        options.single_window_scd2,
     )
     staged = staged_changes.buckets["*"]
     has_changed = staged_changes.has_changed
@@ -217,9 +221,9 @@ def _apply_cdf_deletes(
         if effective_at_column and effective_at_column in source_df.columns
         else "current_timestamp()"
     )
-    deletes = deletes.dropDuplicates(join_keys)
+    deduplicated_deletes = deletes.dropDuplicates(join_keys)
     delta_table.alias("target").merge(
-        deletes.alias("source"),
+        deduplicated_deletes.alias("source"),
         build_merge_condition(join_keys, current_only=True),
     ).whenMatchedUpdate(
         set={
@@ -244,6 +248,7 @@ def _apply_full_snapshot_deletes(
     join_keys: list[str],
     full_snapshot_reconciliation: bool,
     lazy_eval: bool,
+    skip_delete_detection: bool = False,
 ) -> None:
     """Expire target rows absent from a full-snapshot source.
 
@@ -252,7 +257,6 @@ def _apply_full_snapshot_deletes(
     incremental commit simply had no deletes. Disabled by
     ``KIMBALL_SKIP_DELETE_DETECTION=1``.
     """
-    skip_delete_detection = os.environ.get("KIMBALL_SKIP_DELETE_DETECTION") == "1"
     if (
         not deletes_is_none
         or not full_snapshot_reconciliation
@@ -559,6 +563,7 @@ def _stage_against_target(
     target_table_name: str,
     target_has_skeleton_col: bool,
     lazy_eval: bool,
+    single_window_scd2: bool = False,
 ) -> StagedChanges:
     """Rank incoming versions, join target state, and stage all buckets.
 
@@ -576,7 +581,11 @@ def _stage_against_target(
         "__etl_processed_at",
     )
     latest, older = rank_source_versions(
-        upserts, join_keys, _validity_col_name, order_col
+        upserts,
+        join_keys,
+        _validity_col_name,
+        order_col,
+        single_window_scd2=single_window_scd2,
     )
 
     # Join latest to target to get target_sk and target_hashdiff. Recompute
@@ -632,6 +641,7 @@ def merge_scd2(
     full_snapshot_reconciliation: bool = False,
     durable_key_col: str | None = None,
     scd_type: int = 2,
+    runtime_options: RuntimeOptions | None = None,
 ) -> None:
     if not track_history_columns:
         raise ValueError("track_history_columns must be provided for SCD Type 2")
@@ -646,4 +656,5 @@ def merge_scd2(
         full_snapshot_reconciliation=full_snapshot_reconciliation,
         durable_key_col=durable_key_col,
         scd_type=scd_type,
+        runtime_options=runtime_options,
     )

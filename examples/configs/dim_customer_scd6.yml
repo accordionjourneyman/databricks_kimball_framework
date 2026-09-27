@@ -51,7 +51,7 @@ transformation_sql: |
     state,
     status,
     updated_at
-  FROM silver_customers
+  FROM customers
 
 table_description: >
   SCD Type 6 customer dimension: full history rows plus backfilled

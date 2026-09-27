@@ -32,6 +32,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install ".[dev]"
 
+      - name: Validate shipped configs for every target
+        run: |
+          for target in dev test prod; do
+            echo "Validating example configs for $target"
+            kimball validate --config examples/configs --target "$target" --targets kimball.targets.yml
+          done
+
       - name: Compile Python sources
         run: |
           python -m compileall src tests tools

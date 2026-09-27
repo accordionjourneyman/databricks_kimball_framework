@@ -21,12 +21,18 @@ import sys as _sys
 import time
 import types as _types
 import uuid
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.streaming.query import StreamingQuery
 
-from kimball.common.config import ConfigLoader
+from kimball.common.config import (
+    ConfigLoader,
+    TargetConfig,
+    resolve_template_context,
+)
+from kimball.common.runtime import RuntimeOptions
 from kimball.orchestration.runtime import PipelineRuntime
 from kimball.streaming.checkpoint import default_checkpoint_path
 from kimball.streaming.loader import StreamCdfLoader
@@ -62,16 +68,27 @@ class StreamingOrchestrator:
         etl_schema: str | None = None,
         checkpoint_root: str | None = None,
         max_workers: int = 1,
+        target: TargetConfig | None = None,
+        runtime_options: RuntimeOptions | None = None,
+        template_context: Mapping[str, Any] | None = None,
+        allow_implicit_environment: bool = True,
     ) -> StreamingOrchestrator:
         """Load a configuration and build its runtime convenience bundle."""
         table_config = (
-            ConfigLoader().load_config(config) if isinstance(config, str) else config
+            ConfigLoader(
+                template_context=resolve_template_context(target, template_context),
+                allow_implicit_environment=allow_implicit_environment,
+            ).load_config(config)
+            if isinstance(config, str)
+            else config
         )
         runtime = PipelineRuntime.for_config(
             table_config,
             spark=spark,
             etl_schema=etl_schema,
             checkpoint_root=checkpoint_root,
+            runtime_options=runtime_options,
+            target=target,
         )
         return cls(table_config, runtime, max_workers=max_workers)
 
@@ -115,7 +132,10 @@ class StreamingOrchestrator:
             streaming = source.streaming
             if streaming and streaming.enabled:
                 cp = streaming.checkpoint_location or default_checkpoint_path(
-                    source.name, self.etl_schema
+                    source.name,
+                    self.etl_schema,
+                    root=self.runtime.options.streaming_checkpoint_root,
+                    use_environment=False,
                 )
                 if os.path.exists(cp):
                     shutil.rmtree(cp, ignore_errors=True)
@@ -167,7 +187,12 @@ class StreamingOrchestrator:
             )
             checkpoint = (
                 source.streaming.checkpoint_location
-                or default_checkpoint_path(source.name, self.etl_schema)
+                or default_checkpoint_path(
+                    source.name,
+                    self.etl_schema,
+                    root=self.runtime.options.streaming_checkpoint_root,
+                    use_environment=False,
+                )
             )
             trigger_kwargs = self._build_trigger_kwargs(source.streaming)
             query_name = f"kimball__{self.config.table_name}__{source.alias}__{uuid.uuid4().hex[:8]}"
@@ -234,14 +259,24 @@ class StreamingOrchestrator:
 
     def _get_processor(self, spark: Any | None = None) -> StreamingMicroBatchProcessor:
         return StreamingMicroBatchProcessor(
-            spark or self.spark, self.config, self.etl_schema, self.etl_control
+            spark or self.spark,
+            self.config,
+            self.etl_schema,
+            self.etl_control,
+            runtime_options=(getattr(getattr(self, "runtime", None), "options", None)),
         )
 
     def _execute_one_microbatch(
-        self, batch_df: DataFrame, source: Any, batch_id: int
+        self,
+        batch_df: DataFrame,
+        source: Any,
+        batch_id: int,
+        source_version: int | None = None,
     ) -> None:
         batch_spark = batch_df.sparkSession if isinstance(batch_df, DataFrame) else None
-        self._get_processor(batch_spark).process_microbatch(batch_df, source, batch_id)
+        self._get_processor(batch_spark).process_microbatch(
+            batch_df, source, batch_id, source_version=source_version
+        )
 
     def _execute_microbatch_per_version(
         self, batch_df: DataFrame, source: Any, batch_id: int
@@ -250,16 +285,27 @@ class StreamingOrchestrator:
             self._execute_one_microbatch(batch_df, source, batch_id)
             return
 
-        versions = sorted(
-            int(r._commit_version)
-            for r in batch_df.select("_commit_version").distinct().collect()
+        # CDF commit versions are integral. Spark's global orderBy preserves
+        # chronological processing while toLocalIterator avoids collecting all
+        # distinct versions into one driver-side list.
+        version_rows = (
+            batch_df.select("_commit_version")
+            .distinct()
+            .orderBy("_commit_version")
+            .toLocalIterator()
         )
-        logger.info(
-            f"Processing {len(versions)} version(s) for {source.name} in micro-batch {batch_id}"
-        )
-        for version in versions:
+        processed_versions = 0
+        for row in version_rows:
+            version = int(row._commit_version)
             version_df = batch_df.filter(f"_commit_version = {version}")
             version_df.createOrReplaceTempView(source.alias)
-            self._execute_one_microbatch(version_df, source, batch_id)
+            self._execute_one_microbatch(
+                version_df, source, batch_id, source_version=version
+            )
+            processed_versions += 1
             logger.info(f"Processed version {version} for {source.name}")
+        logger.info(
+            f"Processed {processed_versions} version(s) for {source.name} "
+            f"in micro-batch {batch_id}"
+        )
         self.spark.catalog.dropTempView(source.alias)

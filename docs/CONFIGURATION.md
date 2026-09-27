@@ -105,7 +105,7 @@ Slowly Changing Dimension type (dimensions only).
 
 **Required for fact tables.** List of "degenerate dimension" columns that
 uniquely identify a fact row and serve as the MERGE condition. Facts do not
-have surrogate keys (per Kimball design) â€” `merge_keys` is the equivalent of
+have surrogate keys (per Kimball design); `merge_keys` is the equivalent of
 `keys.natural_keys` for dimensions.
 
 ```yaml
@@ -500,14 +500,66 @@ quality validation, grain sampling, debug logging). `prod`
 (`production`) is the lean profile intended for production
 workloads.
 
-## Performance Features (Feature Flags)
+## Runtime settings and performance controls
 
-The following environment variables control performance optimizations and validation levels:
+The runtime reads and validates `KIMBALL_*` settings once when a pipeline
+starts. Explicit API arguments take precedence over the selected target, which
+takes precedence over environment values. A fully qualified target table can
+supply the ETL schema only when neither an explicit value, a target, nor the
+environment supplies one.
 
-| Environment Variable                | Default        | Description                                                                                                                                                   |
-| ----------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `KIMBALL_ENABLE_DEV_CHECKS`         | `0` (Disabled) | **Strict Mode**. Enables expensive data quality counts (validation) and pre-merge grain checks (merger). Recommended for Dev/Test only.                       |
-| `KIMBALL_ENABLE_INLINE_OPTIMIZE`    | `0` (Disabled) | Enables `OPTIMIZE` command immediately after every merge. Not recommended for high-frequency or streaming jobs (adds latency). Use async maintenance instead. |
+For streaming checkpoints, a source's `streaming.checkpoint_location` wins.
+Otherwise the runtime uses an explicit checkpoint root, then the selected
+target's `checkpoint_root`, then `KIMBALL_STREAMING_CHECKPOINT_ROOT`. With no
+root configured, it uses the platform default. The batch Spark checkpoint root
+uses the explicit argument, target root, then `KIMBALL_CHECKPOINT_ROOT`.
+
+| Environment variable | Default | Effect |
+| --- | --- | --- |
+| `KIMBALL_MODE` | `lite` | `full` enables checkpoints, staging cleanup, metrics, and auto-clustering unless an individual flag overrides it. |
+| `KIMBALL_ENABLE_CHECKPOINTS` | Mode-derived | Enables pipeline checkpointing. Accepts `0` or `1`. |
+| `KIMBALL_ENABLE_STAGING_CLEANUP` | Mode-derived | Enables registered staging cleanup. Accepts `0` or `1`. |
+| `KIMBALL_ENABLE_METRICS` | Mode-derived | Enables query metrics collection. Accepts `0` or `1`. |
+| `KIMBALL_ENABLE_AUTO_CLUSTER` | Mode-derived | Enables automatic clustering. Accepts `0` or `1`. |
+| `KIMBALL_ENABLE_DEV_CHECKS` | `0` | Enables developer-facing data-quality and grain checks. |
+| `KIMBALL_BATCH_CONTROL_WRITES` | `0` | Batches control-table writes for a pipeline run. |
+| `KIMBALL_ENABLE_INLINE_OPTIMIZE` | `0` | Runs `OPTIMIZE` after merges; this adds latency to each merge. |
+| `KIMBALL_ENABLE_VACUUM` | `0` | Runs configured vacuum maintenance after merges. |
+| `KIMBALL_APPROX_GRAIN_CHECK` | `0` | Uses approximate grain checking where supported. |
+| `KIMBALL_USE_APPROXIMATE_UNIQUE` | `0` | Legacy probabilistic natural-key uniqueness check; may miss duplicates and is retained for compatibility. |
+| `KIMBALL_SKIP_DELETE_DETECTION` | `0` | Skips source-delete detection in SCD processing. |
+| `KIMBALL_OPTIMIZE_SCD2_LAZY_EVAL` | `0` | Enables the lazy-evaluation SCD2 path. |
+| `KIMBALL_SINGLE_WINDOW_SCD2` | `0` | Enables the single-window SCD2 staging path. |
+| `KIMBALL_ETL_SCHEMA` | Unset | ETL control schema fallback when no explicit or target schema is provided. |
+| `KIMBALL_CHECKPOINT_ROOT` | Unset | Root directory for batch Spark checkpoints. |
+| `KIMBALL_STREAMING_CHECKPOINT_ROOT` | Unset | Fallback root for streaming query checkpoints. |
+| `KIMBALL_SHUFFLE_PARTITIONS` | `auto` | Spark shuffle partition count, or `auto`. A numeric value must be positive. |
+| `KIMBALL_SKEW_THRESHOLD_MB` | `256` | Adaptive skew partition threshold in megabytes; must be positive. |
+| `KIMBALL_SKEW_FACTOR` | `5` | Adaptive skew factor; must be positive. |
+| `KIMBALL_CLEANUP_REGISTRY_TABLE` | `default.kimball_staging_registry` | Table used to track staging cleanup registrations. |
+| `KIMBALL_CHECKPOINT_TABLE` | `default.kimball_pipeline_checkpoints` | Table used to persist pipeline checkpoint state. |
+
+Boolean variables accept only `0` and `1`. The removed
+`KIMBALL_SKIP_VALIDATION_IF_UNCHANGED` switch is rejected: an unchanged schema
+or configuration does not establish that source data stayed unchanged, so
+required data-quality, natural-key, and foreign-key validation still runs.
+
+For migration, Jinja templates may still reference process-environment
+variables, but the loader warns because those values are implicit inputs.
+PipelineExecutor, Orchestrator.from_config, and StreamingOrchestrator.from_config
+accept template_context for explicit non-secret variables and
+allow_implicit_environment=False to reject any remaining implicit environment
+references. For example, pass template_context={"application_schema":
+"retail_gold"} to one of these APIs. A selected target owns the target and
+target_name entries; caller-provided values for those entries are replaced by
+the selected target, while other explicit variables are preserved. The default
+keeps legacy implicit access enabled during the compatibility period.
+Secret-like names remain blocked so values cannot leak into rendered config,
+logs, or manifests. ConfigLoader supports the same template_context and
+strict-mode options.
+
+`kimball validate` performs structural SQL checks without starting Spark. Add
+`--sql-explain` to request Spark's `EXPLAIN` validation as well.
 
 ## Kimball Modeling Metadata
 

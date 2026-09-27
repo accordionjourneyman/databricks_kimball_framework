@@ -18,7 +18,6 @@ the algebra is shaped this way.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 
 from pyspark.sql import DataFrame, Window
@@ -75,6 +74,8 @@ def rank_source_versions(
     join_keys: list[str],
     validity_name: str,
     order_col: str,
+    *,
+    single_window_scd2: bool | None = None,
 ) -> tuple[DataFrame, DataFrame]:
     """Rank incoming versions per key; return (latest, older).
 
@@ -83,12 +84,12 @@ def rank_source_versions(
     historical rows leaves the newest historical row open-ended whenever a
     newer current row exists in the same batch (documented in scd2.py).
 
-    ``KIMBALL_SINGLE_WINDOW_SCD2=1`` switches to a single-window variant
-    using ``lag`` over the descending order (behavioral escape hatch kept
-    identical to the original implementation).
+    ``single_window_scd2`` selects the single-window variant using ``lag``
+    over descending order. Pipeline callers pass the validated setting; a
+    missing value selects the canonical two-window plan.
     """
     w_desc = Window.partitionBy(*join_keys).orderBy(col(order_col).desc())
-    if os.environ.get("KIMBALL_SINGLE_WINDOW_SCD2") == "1":
+    if single_window_scd2:
         ranked = upserts.withColumn("_rn", row_number().over(w_desc)).withColumn(
             "__scd2_next_valid_from", lag(validity_name, 1).over(w_desc)
         )

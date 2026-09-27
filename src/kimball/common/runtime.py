@@ -1,153 +1,232 @@
-"""Runtime configuration for Kimball Framework.
+"""Typed, injectable settings for one Kimball pipeline execution.
 
-This module provides a centralized RuntimeOptions class that encapsulates
-all runtime configuration, replacing scattered environment variable checks.
-
-Usage:
-    # Create with defaults (reads from environment)
-    options = RuntimeOptions.from_environment()
-
-    # Create with explicit values (for testing/DI)
-    options = RuntimeOptions(
-        etl_schema="gold",
-        checkpoint_root="/dbfs/checkpoints",
-        mode="lite",
-    )
-
-    # Pass to Orchestrator
-    orchestrator = Orchestrator(config, runtime_options=options)
+Environment values are read and validated once at an entry boundary. Batch,
+streaming, and library callers can pass the resulting ``RuntimeOptions`` to all
+pipeline objects instead of consulting the process environment while a run is
+in progress.
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from collections.abc import Mapping
+from typing import Any, Literal
 
-if TYPE_CHECKING:
-    from pyspark.sql import SparkSession
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 
-@dataclass
-class RuntimeOptions:
-    """Centralized runtime configuration for Kimball pipelines.
+class RuntimeOptions(BaseModel):
+    """Validated runtime settings and performance controls.
 
-    This replaces scattered os.environ.get() calls with a single,
-    testable, injectable configuration object.
-
-    Attributes:
-        etl_schema: Schema for ETL control tables (e.g., 'gold', 'catalog.schema').
-        checkpoint_root: Path for Spark checkpoints. If None, uses local checkpointing.
-        mode: 'lite' (default) or 'full'. Full mode enables all resilience features.
-        enable_checkpoints: Enable pipeline checkpointing (default: from mode).
-        enable_staging_cleanup: Enable staging table cleanup (default: from mode).
-        enable_metrics: Enable query metrics collection (default: from mode).
-        enable_auto_cluster: Enable auto-clustering (default: from mode).
-        spark_session: Optional injected SparkSession for testing.
-
-    JVM Performance Tuning (read this before going to production):
-        shuffle_partitions: Number of partitions for shuffles. Spark's default (200)
-            is almost always wrong:
-            - Too HIGH for small data: creates tiny partitions, namenode pressure,
-              excessive task scheduling overhead
-            - Too LOW for large data: creates huge partitions that spill to disk
-              and cause GC thrashing
-            Set to 'auto' (recommended) to let AQE handle it dynamically, or
-            calculate: target_partition_size_mb * num_partitions ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¹ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â  shuffle_data_size
-            Rule of thumb: 128-256MB per partition.
-
-        skew_threshold_mb: Partition size threshold for skew detection (default: 256MB).
-            If you have dimension defaults like -1 or 'Unknown' with millions of rows,
-            those partitions will be skewed. AQE will split them if > this threshold.
-
+    The environment reader accepts explicit ``KIMBALL_*`` names and keeps
+    Databricks/runtime detection and secret resolution at their adapter
+    boundaries. Optional feature switches inherit from ``mode`` when unset.
     """
+
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
     etl_schema: str | None = None
     checkpoint_root: str | None = None
+    streaming_checkpoint_root: str | None = None
     mode: Literal["lite", "full"] = "lite"
 
-    # Feature flags (None means inherit from mode)
+    # Feature flags: None means inherit from mode.
     enable_checkpoints: bool | None = None
     enable_staging_cleanup: bool | None = None
     enable_metrics: bool | None = None
     enable_auto_cluster: bool | None = None
 
-    # Performance Optimization Flags (opt-in; not all are safe as defaults)
-    approx_grain_check: bool | None = None
-    skip_delete_detection: bool | None = None
-
-    # JVM/Spark Performance Tuning
-    # These settings have direct impact on GC pressure and shuffle efficiency
-    shuffle_partitions: str | int = "auto"  # 'auto' = let AQE decide, or explicit int
-    skew_threshold_mb: int = 256  # Partition size threshold for skew handling
-    skew_factor: int = 5  # Partition Nx larger than median = skewed
+    # Runtime and performance controls.
+    enable_dev_checks: bool = False
+    batch_control_writes: bool = False
+    enable_inline_optimize: bool = False
+    enable_vacuum: bool = False
+    approx_grain_check: bool = False
+    skip_delete_detection: bool = False
+    optimize_scd2_lazy_eval: bool = False
+    single_window_scd2: bool = False
     use_approximate_unique: bool = False
-    """Use HLL-based approx_count_distinct instead of exact groupBy for uniqueness checks.
-    O(n) instead of O(n log n) shuffle. Probabilistic (~1.5% error)."""
+    shuffle_partitions: Literal["auto"] | int = "auto"
+    skew_threshold_mb: int = Field(default=256, gt=0)
+    skew_factor: int = Field(default=5, gt=0)
 
-    # Injected dependencies (for testing)
-    spark_session: SparkSession | None = field(default=None, repr=False)
+    cleanup_registry_table: str = "default.kimball_staging_registry"
+    checkpoint_table: str = "default.kimball_pipeline_checkpoints"
 
-    def __post_init__(self) -> None:
-        """Resolve feature flags based on mode if not explicitly set."""
-        is_full_mode = self.mode == "full"
+    # Retained for compatibility with older callers; runtime dependencies are
+    # excluded from serialized settings and are never read from the environment.
+    spark_session: Any = Field(default=None, exclude=True, repr=False)
 
-        if self.enable_checkpoints is None:
-            self.enable_checkpoints = is_full_mode
-        if self.enable_staging_cleanup is None:
-            self.enable_staging_cleanup = is_full_mode
-        if self.enable_metrics is None:
-            self.enable_metrics = is_full_mode
-        if self.enable_auto_cluster is None:
-            self.enable_auto_cluster = is_full_mode
+    @field_validator("shuffle_partitions", mode="before")
+    @classmethod
+    def _parse_shuffle_partitions(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            stripped = value.strip().lower()
+            if stripped == "auto":
+                return "auto"
+            try:
+                value = int(stripped)
+            except ValueError as exc:
+                raise ValueError("must be 'auto' or a positive integer") from exc
+        if isinstance(value, int) and value > 0:
+            return value
+        raise ValueError("must be 'auto' or a positive integer")
+
+    @model_validator(mode="after")
+    def _resolve_mode_flags(self) -> RuntimeOptions:
+        full_mode = self.mode == "full"
+        for field_name in (
+            "enable_checkpoints",
+            "enable_staging_cleanup",
+            "enable_metrics",
+            "enable_auto_cluster",
+        ):
+            if getattr(self, field_name) is None:
+                setattr(self, field_name, full_mode)
+        return self
 
     @classmethod
-    def from_environment(cls) -> RuntimeOptions:
-        """Create RuntimeOptions from environment variables.
+    def from_environment(
+        cls, environ: Mapping[str, str] | None = None
+    ) -> RuntimeOptions:
+        """Read the supported environment variables once and validate them.
 
-        Environment Variables:
-            KIMBALL_ETL_SCHEMA: Schema for ETL control tables.
-            KIMBALL_CHECKPOINT_ROOT: Path for Spark checkpoints.
-            KIMBALL_MODE: 'lite' or 'full' (default: 'lite').
-            KIMBALL_ENABLE_CHECKPOINTS: '1' to enable checkpoints.
-            KIMBALL_ENABLE_STAGING_CLEANUP: '1' to enable staging cleanup.
-            KIMBALL_ENABLE_METRICS: '1' to enable metrics collection.
-            KIMBALL_ENABLE_AUTO_CLUSTER: '1' to enable auto-clustering.
-
-        Returns:
-            RuntimeOptions instance configured from environment.
+        Boolean variables use ``1`` or ``0``. Invalid values fail with the
+        environment-variable name instead of silently selecting a default.
         """
-        mode_str = os.environ.get("KIMBALL_MODE", "lite").lower()
-        mode: Literal["lite", "full"] = "full" if mode_str == "full" else "lite"
-        if "KIMBALL_SKIP_VALIDATION_IF_UNCHANGED" in os.environ:
+        source = os.environ if environ is None else environ
+        if "KIMBALL_SKIP_VALIDATION_IF_UNCHANGED" in source:
             raise ValueError(
                 "KIMBALL_SKIP_VALIDATION_IF_UNCHANGED was removed because unchanged "
                 "schema/configuration does not prove unchanged data. Remove the variable; "
                 "data-quality, natural-key, and foreign-key checks now always run."
             )
 
-        def _flag(env_var: str) -> bool | None:
-            """Parse feature flag: '1' -> True, '0' -> False, missing -> None."""
-            val = os.environ.get(env_var)
-            if val == "1":
-                return True
-            return False if val == "0" else None
+        fields = {
+            "etl_schema": "KIMBALL_ETL_SCHEMA",
+            "checkpoint_root": "KIMBALL_CHECKPOINT_ROOT",
+            "streaming_checkpoint_root": "KIMBALL_STREAMING_CHECKPOINT_ROOT",
+            "mode": "KIMBALL_MODE",
+            "enable_checkpoints": "KIMBALL_ENABLE_CHECKPOINTS",
+            "enable_staging_cleanup": "KIMBALL_ENABLE_STAGING_CLEANUP",
+            "enable_metrics": "KIMBALL_ENABLE_METRICS",
+            "enable_auto_cluster": "KIMBALL_ENABLE_AUTO_CLUSTER",
+            "enable_dev_checks": "KIMBALL_ENABLE_DEV_CHECKS",
+            "batch_control_writes": "KIMBALL_BATCH_CONTROL_WRITES",
+            "enable_inline_optimize": "KIMBALL_ENABLE_INLINE_OPTIMIZE",
+            "enable_vacuum": "KIMBALL_ENABLE_VACUUM",
+            "approx_grain_check": "KIMBALL_APPROX_GRAIN_CHECK",
+            "skip_delete_detection": "KIMBALL_SKIP_DELETE_DETECTION",
+            "optimize_scd2_lazy_eval": "KIMBALL_OPTIMIZE_SCD2_LAZY_EVAL",
+            "single_window_scd2": "KIMBALL_SINGLE_WINDOW_SCD2",
+            "use_approximate_unique": "KIMBALL_USE_APPROXIMATE_UNIQUE",
+            "shuffle_partitions": "KIMBALL_SHUFFLE_PARTITIONS",
+            "skew_threshold_mb": "KIMBALL_SKEW_THRESHOLD_MB",
+            "skew_factor": "KIMBALL_SKEW_FACTOR",
+            "cleanup_registry_table": "KIMBALL_CLEANUP_REGISTRY_TABLE",
+            "checkpoint_table": "KIMBALL_CHECKPOINT_TABLE",
+        }
+        flag_fields = {
+            "enable_checkpoints",
+            "enable_staging_cleanup",
+            "enable_metrics",
+            "enable_auto_cluster",
+            "enable_dev_checks",
+            "batch_control_writes",
+            "enable_inline_optimize",
+            "enable_vacuum",
+            "approx_grain_check",
+            "skip_delete_detection",
+            "optimize_scd2_lazy_eval",
+            "single_window_scd2",
+        }
+        values: dict[str, Any] = {}
+        for field_name, environment_name in fields.items():
+            if environment_name not in source:
+                continue
+            raw = source[environment_name]
+            if field_name in flag_fields:
+                if raw not in {"0", "1"}:
+                    raise ValueError(f"{environment_name} must be '0' or '1'")
+                values[field_name] = raw == "1"
+            elif field_name == "mode":
+                values[field_name] = raw.strip().lower()
+            elif field_name in {"skew_threshold_mb", "skew_factor"}:
+                try:
+                    values[field_name] = int(raw)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"{environment_name} must be a positive integer"
+                    ) from exc
+            elif field_name == "shuffle_partitions":
+                values[field_name] = raw
+            elif field_name == "use_approximate_unique":
+                # Preserve the legacy N3 flag contract; its behavior is not
+                # part of this runtime-settings refactor.
+                values[field_name] = raw == "1"
+            else:
+                values[field_name] = raw or None
 
-        return cls(
-            etl_schema=os.environ.get("KIMBALL_ETL_SCHEMA"),
-            checkpoint_root=os.environ.get("KIMBALL_CHECKPOINT_ROOT"),
-            mode=mode,
-            enable_checkpoints=_flag("KIMBALL_ENABLE_CHECKPOINTS"),
-            enable_staging_cleanup=_flag("KIMBALL_ENABLE_STAGING_CLEANUP"),
-            enable_metrics=_flag("KIMBALL_ENABLE_METRICS"),
-            enable_auto_cluster=_flag("KIMBALL_ENABLE_AUTO_CLUSTER"),
-            # Performance Optimization Flags
-            approx_grain_check=_flag("KIMBALL_APPROX_GRAIN_CHECK"),
-            skip_delete_detection=_flag("KIMBALL_SKIP_DELETE_DETECTION"),
-            # JVM Performance Tuning
-            shuffle_partitions=os.environ.get("KIMBALL_SHUFFLE_PARTITIONS", "auto"),
-            skew_threshold_mb=int(os.environ.get("KIMBALL_SKEW_THRESHOLD_MB", "256")),
-            skew_factor=int(os.environ.get("KIMBALL_SKEW_FACTOR", "5")),
-            use_approximate_unique=os.environ.get("KIMBALL_USE_APPROXIMATE_UNIQUE", "")
-            == "1",
+        try:
+            return cls.model_validate(values)
+        except ValidationError as exc:
+            errors: list[str] = []
+            for error in exc.errors(include_input=False):
+                field_name = str(error["loc"][0]) if error["loc"] else "settings"
+                environment_name = fields.get(field_name, field_name)
+                errors.append(f"{environment_name}: {error['msg']}")
+            raise ValueError(
+                "Invalid runtime settings:\n- " + "\n- ".join(errors)
+            ) from exc
+
+    def resolved(
+        self,
+        *,
+        etl_schema: str | None = None,
+        target_etl_schema: str | None = None,
+        checkpoint_root: str | None = None,
+        target_checkpoint_root: str | None = None,
+        streaming_checkpoint_root: str | None = None,
+    ) -> RuntimeOptions:
+        """Apply explicit arguments, then target values, then environment.
+
+        A target checkpoint root is used for both Spark checkpointing and the
+        default streaming query root. A dedicated streaming root remains the
+        fallback when no explicit or target root was selected.
+        """
+        resolved_schema = etl_schema or target_etl_schema or self.etl_schema
+        resolved_checkpoint = (
+            checkpoint_root or target_checkpoint_root or self.checkpoint_root
         )
+        resolved_streaming = (
+            streaming_checkpoint_root
+            or checkpoint_root
+            or target_checkpoint_root
+            or self.streaming_checkpoint_root
+        )
+        return self.model_copy(
+            update={
+                "etl_schema": resolved_schema,
+                "checkpoint_root": resolved_checkpoint,
+                "streaming_checkpoint_root": resolved_streaming,
+            }
+        )
+
+    def feature_enabled(self, feature: str) -> bool:
+        """Return the resolved value for a named resilience feature."""
+        field_name = f"enable_{feature}"
+        if field_name not in {
+            "enable_checkpoints",
+            "enable_staging_cleanup",
+            "enable_metrics",
+            "enable_auto_cluster",
+        }:
+            raise ValueError(f"Unknown runtime feature: {feature}")
+        return bool(getattr(self, field_name))

@@ -4,7 +4,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kimball.common.config import SourceConfig, TableConfig
+from kimball.common.config import SourceConfig, TableConfig, TargetConfig
+from kimball.common.runtime import RuntimeOptions
 from kimball.orchestration.executor import (
     ExecutionSummary,
     PipelineExecutor,
@@ -46,14 +47,19 @@ def mock_config_loader():
 @pytest.fixture
 def mock_get_etl_schema():
     with patch(
-        "kimball.orchestration.executor.get_etl_schema", return_value="test_schema"
+        "kimball.orchestration.executor.RuntimeOptions.from_environment",
+        return_value=RuntimeOptions(etl_schema="test_schema"),
     ) as mock:
         yield mock
 
 
 class TestPipelineExecutorInit:
-    def test_raises_when_no_etl_schema(self, mock_config_loader):
-        with patch("kimball.orchestration.executor.get_etl_schema", return_value=None):
+    def test_raises_when_no_etl_schema(self, mock_config_loader, monkeypatch):
+        monkeypatch.delenv("KIMBALL_ETL_SCHEMA", raising=False)
+        with patch(
+            "kimball.orchestration.executor.RuntimeOptions.from_environment",
+            return_value=RuntimeOptions(),
+        ):
             with pytest.raises(ValueError, match="ETL schema must be specified"):
                 PipelineExecutor(config_paths=[])
 
@@ -82,6 +88,44 @@ class TestCategorizePipelines:
 
         with pytest.raises(NonRetriableError, match="Invalid config file"):
             PipelineExecutor(config_paths=["bad.yml"])
+
+
+def test_executor_reuses_compiled_config_and_runtime_options(
+    mock_config_loader, mock_get_etl_schema
+):
+    config = _dim_config()
+    mock_config_loader.load_config.return_value = config
+    orchestrator = MagicMock()
+    runtime = MagicMock()
+
+    with (
+        patch(
+            "kimball.orchestration.executor.RuntimeOptions.from_environment",
+            return_value=RuntimeOptions(),
+        ) as read_environment,
+        patch(
+            "kimball.orchestration.executor.PipelineRuntime.for_config",
+            return_value=runtime,
+        ) as build_runtime,
+        patch(
+            "kimball.orchestration.executor.Orchestrator",
+            return_value=orchestrator,
+        ) as build_orchestrator,
+    ):
+        executor = PipelineExecutor(config_paths=["dim.yml"], etl_schema="test")
+        result = executor._create_orchestrator("dim.yml")
+        executor._create_orchestrator("dim.yml")
+
+    assert result is orchestrator
+    mock_config_loader.load_config.assert_called_once_with("dim.yml")
+    assert read_environment.call_count == 1
+    assert build_runtime.call_count == 2
+    assert all(call.args[0] is config for call in build_runtime.call_args_list)
+    assert all(
+        call.kwargs["runtime_options"] is executor.runtime_options
+        for call in build_runtime.call_args_list
+    )
+    assert build_orchestrator.call_count == 2
 
 
 class TestRunSinglePipeline:
@@ -200,3 +244,48 @@ class TestExecutionSummary:
         assert "Successful: 7" in s
         assert "Failed: 2" in s
         assert "Skipped: 1" in s
+
+
+def test_executor_passes_target_context_and_resolved_options():
+    config = _dim_config()
+    target = TargetConfig(
+        name="dev",
+        catalog="workspace",
+        silver_schema="dev_silver",
+        gold_schema="dev_gold",
+        etl_schema="target_ops",
+        checkpoint_root="/target/checkpoints",
+    )
+    options = RuntimeOptions(
+        etl_schema="environment_ops", checkpoint_root="/env/checkpoints"
+    )
+
+    explicit_context = {
+        "application_schema": "app_gold",
+        "target": {"gold_schema": "untrusted_override"},
+    }
+    expected_context = {
+        **explicit_context,
+        **target.template_context(),
+    }
+    with patch("kimball.orchestration.executor.ConfigLoader") as loader_class:
+        loader_class.return_value.load_config.return_value = config
+        executor = PipelineExecutor(
+            ["dim.yml"],
+            target=target,
+            runtime_options=options,
+            template_context=explicit_context,
+            allow_implicit_environment=False,
+        )
+        loader_class.assert_called_once_with(
+            template_context=expected_context,
+            allow_implicit_environment=False,
+        )
+
+    assert executor.runtime_options.etl_schema == "target_ops"
+    assert executor.runtime_options.checkpoint_root == "/target/checkpoints"
+    with patch("kimball.orchestration.executor.PipelineRuntime.for_config") as build:
+        build.return_value = MagicMock()
+        executor._create_orchestrator("dim.yml")
+    assert build.call_args.kwargs["runtime_options"] is executor.runtime_options
+    assert build.call_args.kwargs["target"] is target

@@ -18,6 +18,7 @@ class SourceWorkItem:
     ending_version: int | None
     active: bool
     delete_mode: DeleteMode
+    snapshot_version: int | None = None
 
     @property
     def source_name(self) -> str:
@@ -77,6 +78,39 @@ def build_source_work_plan(
                 ending_version=end,
                 active=active,
                 delete_mode="explicit_cdf",
+            )
+        )
+    return SourceWorkPlan(tuple(items))
+
+
+def build_snapshot_work_plan(
+    sources: Sequence[SourceConfig], snapshot_versions: dict[str, int]
+) -> SourceWorkPlan:
+    """Plan a full snapshot rebuild from one exact Delta version per source."""
+    missing = sorted({source.name for source in sources} - set(snapshot_versions))
+    unknown = sorted(set(snapshot_versions) - {source.name for source in sources})
+    if missing or unknown:
+        details = []
+        if missing:
+            details.append("missing source versions: " + ", ".join(missing))
+        if unknown:
+            details.append("unknown sources: " + ", ".join(unknown))
+        raise ValueError("; ".join(details))
+    items = []
+    for source in sources:
+        version = snapshot_versions[source.name]
+        if version < 0:
+            raise ValueError(f"snapshot version for {source.name} must be non-negative")
+        items.append(
+            SourceWorkItem(
+                source=source,
+                prior_watermark=None,
+                latest_version=version,
+                starting_version=None,
+                ending_version=None,
+                active=True,
+                delete_mode="full_snapshot",
+                snapshot_version=version,
             )
         )
     return SourceWorkPlan(tuple(items))

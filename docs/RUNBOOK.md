@@ -284,6 +284,114 @@ signature above.
 **Fix.** `kimball recover --target <env> --table <t>` (with `--dry-run` first).
 Always re-`inspect` afterwards to confirm `consistent`.
 
+<a id="source-repair"></a>
+### Corrected source version (semantic data repair)
+
+**Meaning.** The source table has a newer corrected version, but one or more
+targets already contain data derived from the bad version. This is different
+from a failed or zombie batch: use `kimball recover` for a failed batch and
+`kimball repair` when a completed run produced semantically bad data.
+
+Delta history stores snapshots and commits per table. It can restore one table
+to a retained version, but it does not plan a multi-table rebuild or keep one
+repair's inputs, attempts, output commits, timings, and cursor state together.
+The framework stores those facts in normalized `etl_repair_*` Delta tables.
+Each table has a specific audit grain:
+
+| Repair fact | Ledger table |
+|---|---|
+| Bad and replacement source versions | `etl_repair_input_correction` |
+| Planned target steps and dependency order | `etl_repair_step`, `etl_repair_step_dependency` |
+| Pre-repair output versions used as rollback points | `etl_repair_write` |
+| Planned and actually consumed source versions | `etl_repair_read`, `etl_repair_attempt_read` |
+| Actual target Delta commits and their operation tokens | `etl_repair_commit` |
+| Attempt identity and per-step start state | `etl_repair_attempt`, `etl_repair_step_attempt` |
+| Attempt outcome and elapsed milliseconds | `etl_repair_event` |
+
+Source versions belong to these repair/read records; business rows do not need
+a combined source-version dictionary column.
+
+**Plan.** Use the same repair ID for the plan, apply, status, and rollback. The
+bad version identifies the source correction; by default the replacement is
+the source's current version when the plan is created. Set `--read-version`
+when the replacement must be a specific retained version:
+
+```bash
+kimball repair plan \
+  --target prod \
+  --config configs/dim_customer.yml configs/fact_orders.yml \
+  --repair-id customer-feed-2026-09-27 \
+  --reason "replace the malformed customer feed" \
+  --bad-version silver.customers=42 \
+  --read-version silver.customers=43
+```
+
+The plan shows affected targets, each configured input and whether it is a
+snapshot or an internal dependency, the dependency order, physical table
+generations, and each planned output's exact pre-repair Delta version.
+External inputs are pinned to snapshots at plan time; internal dependencies
+resolve to the output version produced by an earlier repair step. Consumers
+of the corrected source and their configured downstream consumers are included
+automatically. Use `--table`
+to add an explicit output target; its downstream consumers are included too.
+If `--table` is used without `--bad-version`, the plan rebuilds those targets
+from the input snapshots selected at planning time.
+Every `--read-version TABLE=VERSION` must have a matching
+`--bad-version TABLE=VERSION`.
+Transformation SQL must be a single read-only `SELECT`/`WITH` and reference
+declared sources so their Delta versions can be pinned. A downstream step that
+reads an output rebuilt by an earlier step consumes that step's produced
+version; apply records the actual version in the attempt-read ledger. A plan
+is frozen: use a new repair ID for a different version vector or configuration.
+Each external table is pinned independently; the set of versions is not
+automatically a transactionally consistent source release. Select source
+versions that belong to the intended release before applying the repair.
+
+**Apply and inspect.** Snapshot rebuild currently supports batch Delta sources
+and SCD1 targets. Apply with the same `--config` set and target used to create
+the plan; it rejects a different project manifest. Pause scheduled and
+streaming writers, manual writers, and readers that need a consistent
+multi-table view for the full operation. The flag below records that operator
+acknowledgement; it does not acquire a lock.
+Tables are rebuilt in dependency order, so the series is not a cross-table
+atomic publication.
+
+```bash
+kimball repair apply --target prod --config configs/dim_customer.yml configs/fact_orders.yml \
+  --repair-id customer-feed-2026-09-27 --writers-stopped
+kimball repair status --target prod --repair-id customer-feed-2026-09-27
+```
+
+`status` includes the correction, per-step input versions and prior source
+watermarks, target writes, tagged Delta commit versions, and elapsed times.
+`PARTIAL` means inspect every listed table before retrying or rolling back.
+Once rollback has started, that repair ID cannot be applied again; create a
+new ID to reapply after a successful rollback. SCD2/SCD4 history, separate
+history tables, streaming checkpoints, temporal contracts,
+`preserve_all_changes`, and non-read-only or undeclared SQL inputs need their
+own replay strategies and are rejected by this snapshot-rebuild path.
+
+**Rollback.** Rollback returns each changed model or auxiliary output to the
+version recorded before planning, in reverse dependency order, and rewinds each
+pipeline's source cursors to their recorded prior watermarks. It proceeds only
+when the target generation and complete retained history match the repair's
+tagged commits; any unrelated write after the rollback point blocks whole-table
+RESTORE because it would be discarded too. Newly created outputs are also
+rejected because a Delta version cannot represent the table's prior absence.
+
+```bash
+kimball repair rollback --target prod \
+  --repair-id customer-feed-2026-09-27 --writers-stopped
+```
+
+Keep the maintenance window active until rollback and cursor rewinds complete.
+The `--writers-stopped` flag is an operator acknowledgement, not a lock.
+Repairs update tables in place, so readers may see different tables at
+different points in the ordered rebuild; there is no cross-table atomic
+publication. Do not VACUUM the source or target history needed by an open
+repair. If the source's corrected version is unavailable, restore it from the
+upstream archive first and create a new plan.
+
 <a id="resource"></a>
 ### Resource / transient
 

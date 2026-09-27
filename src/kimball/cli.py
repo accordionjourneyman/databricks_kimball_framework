@@ -12,8 +12,17 @@ from pathlib import Path
 import yaml
 from jsonschema import ValidationError as JsonSchemaValidationError
 
-from kimball.common.config import ConfigLoader, TargetConfig, TargetLoader
-from kimball.common.errors import KimballError
+from kimball.common.config import (
+    ConfigLoader,
+    TargetConfig,
+    TargetLoader,
+    load_config_entries,
+)
+from kimball.common.errors import (
+    ConfigIssue,
+    ConfigurationValidationError,
+    KimballError,
+)
 from kimball.contracts.compatibility import check_compatibility
 from kimball.contracts.odcs import ODCSContractLoader
 from kimball.ops.errors import ErrorCategory, StructuredError
@@ -72,7 +81,7 @@ def load_compiled_project(
             remediation="Check that --config points to .yml/.yaml files or a directory containing them.",
         )
     loader = ConfigLoader(template_context=target.template_context())
-    entries = [(path, loader.load_config(path)) for path in paths]
+    entries = load_config_entries(loader, paths)
     return ProjectCompiler(
         profile=_profile_for_target(target), rule_policy=target.model_integrity
     ).compile(entries)
@@ -96,6 +105,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     validate = commands.add_parser("validate", help="Validate and compile a project")
     _add_project_arguments(validate)
+    validate.add_argument(
+        "--sql-explain",
+        action="store_true",
+        help="Run Spark EXPLAIN for transformation SQL (requires Spark)",
+    )
     validate.set_defaults(handler=_validate)
 
     compile_command = commands.add_parser(
@@ -187,6 +201,74 @@ def _build_parser() -> argparse.ArgumentParser:
     recover.add_argument("--config")
     recover.set_defaults(handler=_recover)
 
+    repair = commands.add_parser(
+        "repair", help="Plan, replay, inspect, or roll back a versioned data repair"
+    )
+    repair_commands = repair.add_subparsers(dest="repair_command", required=True)
+    repair_plan = repair_commands.add_parser(
+        "plan", help="Freeze corrected source versions and affected rebuild targets"
+    )
+    _add_project_arguments(repair_plan)
+    repair_plan.add_argument("--repair-id", required=True)
+    repair_plan.add_argument("--reason", required=True)
+    repair_plan.add_argument(
+        "--bad-version", action="append", default=[], metavar="TABLE=VERSION"
+    )
+    repair_plan.add_argument(
+        "--read-version",
+        action="append",
+        default=[],
+        metavar="TABLE=VERSION",
+        help="Replacement source snapshot (defaults to the current version)",
+    )
+    repair_plan.add_argument(
+        "--table",
+        action="append",
+        default=[],
+        help="Add an output target and its downstream consumers to the rebuild",
+    )
+    repair_plan.add_argument("--owner")
+    repair_plan.set_defaults(handler=_repair_plan)
+
+    repair_apply = repair_commands.add_parser(
+        "apply", help="Rebuild targets from their frozen source snapshots"
+    )
+    _add_project_arguments(repair_apply)
+    repair_apply.add_argument("--repair-id", required=True)
+    repair_apply.add_argument("--owner")
+    repair_apply.add_argument(
+        "--writers-stopped",
+        action="store_true",
+        help="Acknowledge that writers and readers needing a consistent view are quiesced",
+    )
+    repair_apply.set_defaults(handler=_repair_apply)
+
+    repair_status = repair_commands.add_parser(
+        "status", help="Show the normalized repair plan, commits, and elapsed times"
+    )
+    repair_status.add_argument(
+        "--target", required=True, choices=("dev", "test", "prod")
+    )
+    repair_status.add_argument("--targets", default="kimball.targets.yml")
+    repair_status.add_argument("--repair-id", required=True)
+    repair_status.set_defaults(handler=_repair_status)
+
+    repair_rollback = repair_commands.add_parser(
+        "rollback", help="Restore every repair-written table to its frozen version"
+    )
+    repair_rollback.add_argument(
+        "--target", required=True, choices=("dev", "test", "prod")
+    )
+    repair_rollback.add_argument("--targets", default="kimball.targets.yml")
+    repair_rollback.add_argument("--repair-id", required=True)
+    repair_rollback.add_argument("--owner")
+    repair_rollback.add_argument(
+        "--writers-stopped",
+        action="store_true",
+        help="Acknowledge that writers and readers needing a consistent view are quiesced",
+    )
+    repair_rollback.set_defaults(handler=_repair_rollback)
+
     explain = commands.add_parser(
         "explain", help="Explain a target failure / dangerous state"
     )
@@ -227,9 +309,39 @@ def _build_parser() -> argparse.ArgumentParser:
 def _validate(args: argparse.Namespace) -> int:
     target = load_target(args.target, args.targets)
     project = load_compiled_project(args.config, target)
+    loader = ConfigLoader(template_context=target.template_context())
+    spark = None
+    if args.sql_explain:
+        from kimball.common.spark_session import get_spark
+
+        spark = get_spark()
+
+    sql_issues: list[ConfigIssue] = []
+    checked_paths: set[str] = set()
+    for node in project.nodes.values():
+        if node.config_path in checked_paths:
+            continue
+        checked_paths.add(node.config_path)
+        for message in loader.validate_transformation_sql(node.config, spark=spark):
+            sql_issues.append(
+                ConfigIssue(
+                    node.config_path,
+                    "transformation_sql",
+                    message,
+                    "sql_validation",
+                )
+            )
+    if sql_issues:
+        raise ConfigurationValidationError(sql_issues)
+
     for warning in project.warnings:
         print(f"WARNING {warning}")
     print(f"Validated {len(project.nodes)} pipelines in {len(project.levels)} levels")
+    print(
+        "SQL validation: Spark EXPLAIN completed"
+        if spark is not None
+        else "SQL validation: structural checks only (Spark EXPLAIN not run)"
+    )
     return 0
 
 
@@ -282,11 +394,7 @@ def _run(args: argparse.Namespace) -> int:
     config = ConfigLoader(template_context=target.template_context()).load_config(
         args.config
     )
-    runtime = PipelineRuntime.for_config(
-        config,
-        etl_schema=target.etl_schema,
-        checkpoint_root=target.checkpoint_root,
-    )
+    runtime = PipelineRuntime.for_config(config, target=target)
     result = Orchestrator(config, runtime).run()
     print(json.dumps(result, indent=2, sort_keys=True, default=str))
     return 0
@@ -386,6 +494,115 @@ def _ops_runtime_and_providers(args: argparse.Namespace):
     runtime = detect_runtime_profile(spark)
     providers = build_providers(spark, target.etl_schema)
     return runtime, providers
+
+
+def _repair_context(args: argparse.Namespace):
+    from kimball.common.spark_session import get_spark
+    from kimball.ops.repair_ledger import DeltaRepairLedger
+    from kimball.ops.runtime_profile import detect_runtime_profile
+    from kimball.ops.spark_adapters import build_providers
+
+    target = load_target(args.target, args.targets)
+    spark = get_spark()
+    runtime = detect_runtime_profile(spark)
+    providers = build_providers(spark, target.etl_schema)
+    ledger = DeltaRepairLedger(spark, target.etl_schema)
+    return spark, target, runtime, providers, ledger
+
+
+def _table_versions(values: Sequence[str], argument: str) -> dict[str, int]:
+    parsed: dict[str, int] = {}
+    for value in values:
+        table, separator, raw_version = value.rpartition("=")
+        if not separator or not table.strip():
+            raise ValueError(f"{argument} must use TABLE=VERSION; got {value!r}")
+        try:
+            version = int(raw_version)
+        except ValueError as exc:
+            raise ValueError(
+                f"{argument} version must be an integer; got {value!r}"
+            ) from exc
+        if version < 0:
+            raise ValueError(f"{argument} version must be non-negative; got {value!r}")
+        table = table.strip()
+        if table in parsed:
+            raise ValueError(f"{argument} specifies {table} more than once")
+        parsed[table] = version
+    return parsed
+
+
+def _repair_plan(args: argparse.Namespace) -> int:
+    from kimball.ops.repair_execution import plan_source_reprocess
+
+    spark, target, runtime, providers, ledger = _repair_context(args)
+    bad_versions = _table_versions(args.bad_version, "--bad-version")
+    replacement_versions = _table_versions(args.read_version, "--read-version")
+    project = load_compiled_project(args.config, target)
+    result = plan_source_reprocess(
+        spark=spark,
+        project=project,
+        providers=providers,
+        ledger=ledger,
+        repair_id=args.repair_id,
+        reason=args.reason,
+        bad_versions=bad_versions,
+        replacement_versions=replacement_versions,
+        target_tables=tuple(args.table),
+        owner=args.owner,
+        environment=target.name,
+        runtime=runtime,
+    )
+    print(json.dumps(result.to_dict(), indent=2, sort_keys=True, default=str))
+    return 0
+
+
+def _repair_apply(args: argparse.Namespace) -> int:
+    from kimball.ops.repair_execution import apply_source_reprocess
+
+    spark, target, runtime, providers, ledger = _repair_context(args)
+    project = load_compiled_project(args.config, target)
+    result = apply_source_reprocess(
+        spark=spark,
+        project=project,
+        providers=providers,
+        ledger=ledger,
+        runtime=runtime,
+        repair_id=args.repair_id,
+        etl_schema=target.etl_schema,
+        target_config=target,
+        owner=args.owner,
+        environment=target.name,
+        writers_stopped=args.writers_stopped,
+    )
+    print(json.dumps(result.to_dict(), indent=2, sort_keys=True, default=str))
+    return 0 if result.status == "SUCCEEDED" else 1
+
+
+def _repair_status(args: argparse.Namespace) -> int:
+    _, _, _, _, ledger = _repair_context(args)
+    print(
+        json.dumps(ledger.status(args.repair_id), indent=2, sort_keys=True, default=str)
+    )
+    return 0
+
+
+def _repair_rollback(args: argparse.Namespace) -> int:
+    from dataclasses import asdict
+
+    from kimball.ops.repair import rollback_repair
+
+    _, target, runtime, providers, ledger = _repair_context(args)
+    result = rollback_repair(
+        repair_id=args.repair_id,
+        providers=providers,
+        ledger=ledger,
+        runtime=runtime,
+        owner=args.owner,
+        environment=target.name,
+        writers_stopped=args.writers_stopped,
+    )
+    print(json.dumps(asdict(result), indent=2, sort_keys=True, default=str))
+    return 0 if result.status == "SUCCEEDED" else 1
 
 
 def _inspect(args: argparse.Namespace) -> int:

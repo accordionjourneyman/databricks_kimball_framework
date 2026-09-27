@@ -12,10 +12,13 @@ import yaml
 from jsonschema import Draft201909Validator, FormatChecker
 
 from kimball.common.config import (
+    AcceptedValuesContractQualityRule,
     ContractCDCConfig,
     ContractColumnConfig,
     ContractQualityRule,
+    NotNullContractQualityRule,
     SourceContractConfig,
+    UniqueContractQualityRule,
 )
 
 _SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
@@ -178,7 +181,7 @@ def _adapt_quality(obj: ODCSObject) -> list[ContractQualityRule]:
             metric = quality.get("metric")
             if metric == "nullValues" and quality.get("mustBe") == 0:
                 rules.append(
-                    ContractQualityRule(
+                    NotNullContractQualityRule(
                         name=quality.get("id"),
                         rule="not_null",
                         column=prop.name,
@@ -187,7 +190,7 @@ def _adapt_quality(obj: ODCSObject) -> list[ContractQualityRule]:
                 )
             elif metric == "duplicateValues" and quality.get("mustBe") == 0:
                 rules.append(
-                    ContractQualityRule(
+                    UniqueContractQualityRule(
                         name=quality.get("id"),
                         rule="unique",
                         column=prop.name,
@@ -200,7 +203,7 @@ def _adapt_quality(obj: ODCSObject) -> list[ContractQualityRule]:
                 and "validValues" in quality.get("arguments", {})
             ):
                 rules.append(
-                    ContractQualityRule(
+                    AcceptedValuesContractQualityRule(
                         name=quality.get("id"),
                         rule="accepted_values",
                         column=prop.name,
@@ -216,7 +219,7 @@ def _adapt_quality(obj: ODCSObject) -> list[ContractQualityRule]:
             and columns
         ):
             rules.append(
-                ContractQualityRule(
+                UniqueContractQualityRule(
                     name=quality.get("id"),
                     rule="unique",
                     columns=columns,

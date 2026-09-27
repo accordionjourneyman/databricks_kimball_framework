@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from kimball.common.canonical import is_current_config_fingerprint
 from kimball.ops.errors import ErrorCategory, categorize, runbook_link_for
 from kimball.ops.providers import OpsProviders, TargetControlState
 from kimball.ops.runtime_profile import RuntimeProfile
@@ -52,6 +53,7 @@ class ExplainReport:
     config_drift: bool = False
     sources: list[SourceDiagnosis] = field(default_factory=list)
     batch_error_message: str | None = None
+    config_fingerprint_comparison: str = "unknown"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -65,6 +67,7 @@ class ExplainReport:
             "runbook_link": self.runbook_link,
             "recommended_recovery": self.recommended_recovery,
             "config_drift": self.config_drift,
+            "config_fingerprint_comparison": self.config_fingerprint_comparison,
             "sources": [
                 {
                     "source_table": s.source_table,
@@ -136,11 +139,18 @@ def explain(
     recorded_config_fp = (
         rec_candidates[0].config_fingerprint if rec_candidates else None
     )
-    config_drift = bool(
+    comparable_fingerprints = is_current_config_fingerprint(
         current_config_fingerprint
-        and recorded_config_fp
-        and current_config_fingerprint != recorded_config_fp
+    ) and is_current_config_fingerprint(recorded_config_fp)
+    config_drift = bool(
+        comparable_fingerprints and current_config_fingerprint != recorded_config_fp
     )
+    if current_config_fingerprint is None or recorded_config_fp is None:
+        fingerprint_comparison = "unknown"
+    elif not comparable_fingerprints:
+        fingerprint_comparison = "not_comparable"
+    else:
+        fingerprint_comparison = "drift" if config_drift else "matches"
 
     sources: list[SourceDiagnosis] = []
     seen: set[str] = set()
@@ -200,6 +210,7 @@ def explain(
         runbook_link=runbook,
         recommended_recovery=recovery,
         config_drift=config_drift,
+        config_fingerprint_comparison=fingerprint_comparison,
         sources=sources,
         batch_error_message=batch_error_message,
     )

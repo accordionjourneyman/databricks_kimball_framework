@@ -40,7 +40,7 @@ transformation_sql: |
     price,
     cost,
     updated_at
-  FROM silver_products
+  FROM products
 
 table_description: >
   SCD Type 4 product reference: a current-state row plus an EAV history

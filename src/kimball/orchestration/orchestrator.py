@@ -11,15 +11,20 @@ Thin coordinator that delegates to focused service classes:
 from __future__ import annotations
 
 import logging
-import os
 import time
 import uuid
+from collections.abc import Mapping
 from typing import Any, cast
 
 from pyspark.errors import AnalysisException, PySparkException
 from pyspark.sql import SparkSession
 
-from kimball.common.config import ConfigLoader, TableConfig
+from kimball.common.config import (
+    ConfigLoader,
+    TableConfig,
+    TargetConfig,
+    resolve_template_context,
+)
 from kimball.common.constants import (
     SPARK_CONF_AQE_COALESCE,
     SPARK_CONF_AQE_ENABLED,
@@ -39,6 +44,7 @@ from kimball.orchestration.services.source_loader import SourceLoader
 from kimball.orchestration.services.transform_validator import TransformValidator
 from kimball.orchestration.services.work_plan import (
     SourceWorkPlan,
+    build_snapshot_work_plan,
     build_source_work_plan,
 )
 from kimball.orchestration.watermark import (
@@ -52,6 +58,8 @@ logger = logging.getLogger(__name__)
 
 class Orchestrator:
     """Coordinates the ETL process by delegating to focused service classes."""
+
+    runtime_options: RuntimeOptions
 
     def __init__(self, config: TableConfig, runtime: PipelineRuntime) -> None:
         """Create an orchestrator from a validated config and shared runtime."""
@@ -67,6 +75,9 @@ class Orchestrator:
         self._transform_validator = TransformValidator()
         self._merge_executor = MergeExecutor(runtime.table_creator)
         self._recovery_service = RecoveryService(self.transaction_manager)
+        self._repair_snapshot_versions: dict[str, int] | None = None
+        self._repair_id: str | None = None
+        self._repair_operation_token: str | None = None
 
     @classmethod
     def from_config(
@@ -76,11 +87,20 @@ class Orchestrator:
         spark: SparkSession | None = None,
         etl_schema: str | None = None,
         checkpoint_root: str | None = None,
-        enable_metrics: bool = True,
+        enable_metrics: bool | None = None,
+        target: TargetConfig | None = None,
+        runtime_options: RuntimeOptions | None = None,
+        template_context: Mapping[str, Any] | None = None,
+        allow_implicit_environment: bool = True,
     ) -> Orchestrator:
         """Load a configuration and build its runtime convenience bundle."""
         table_config = (
-            ConfigLoader().load_config(config) if isinstance(config, str) else config
+            ConfigLoader(
+                template_context=resolve_template_context(target, template_context),
+                allow_implicit_environment=allow_implicit_environment,
+            ).load_config(config)
+            if isinstance(config, str)
+            else config
         )
         runtime = PipelineRuntime.for_config(
             table_config,
@@ -88,6 +108,8 @@ class Orchestrator:
             etl_schema=etl_schema,
             checkpoint_root=checkpoint_root,
             enable_metrics=enable_metrics,
+            runtime_options=runtime_options,
+            target=target,
         )
         return cls(table_config, runtime)
 
@@ -131,8 +153,9 @@ class Orchestrator:
             config=cast(TableConfig, getattr(self, "config", None)),
             etl_control=cast(ETLControlManager, getattr(self, "etl_control", None)),
             loader=cast(DataLoader, getattr(self, "loader", None)),
-            runtime_options=getattr(
-                self, "runtime_options", RuntimeOptions.from_environment()
+            runtime_options=(
+                getattr(self, "runtime_options", None)
+                or RuntimeOptions.from_environment()
             ),
             batch_id=batch_id,
         )
@@ -145,6 +168,12 @@ class Orchestrator:
         return sl.load(ctx, plan)
 
     def _build_source_work_plan(self) -> SourceWorkPlan:
+        if self._repair_snapshot_versions is not None:
+            source_versions = {
+                source.name: self._repair_snapshot_versions[source.name]
+                for source in self.config.sources
+            }
+            return build_snapshot_work_plan(self.config.sources, source_versions)
         incremental = [
             source for source in self.config.sources if source.cdc_strategy != "full"
         ]
@@ -172,7 +201,10 @@ class Orchestrator:
         previous: dict[str, str | None] = {}
         try:
             spark = self.spark
-            runtime_options = getattr(self, "runtime_options", RuntimeOptions())
+            runtime_options = cast(
+                RuntimeOptions,
+                getattr(self, "runtime_options", RuntimeOptions()),
+            )
             settings = {
                 SPARK_CONF_AQE_ENABLED: "true",
                 SPARK_CONF_AQE_SKEW_JOIN: "true",
@@ -227,6 +259,84 @@ class Orchestrator:
         finally:
             self._restore_spark_configs(previous)
 
+    def run_repair(
+        self,
+        *,
+        snapshot_versions: dict[str, int],
+        repair_id: str,
+        operation_token: str,
+    ) -> dict[str, Any]:
+        """Rebuild an SCD1/fact target from pinned full-table snapshots.
+
+        The target is cleared inside its compensating Delta transaction before
+        the normal merge path runs. Callers must quiesce writers and coordinate
+        downstream readers; a Delta transaction does not hide intermediate
+        commits from readers.
+        """
+        if self.config.scd_type != 1 or self.config.preserve_all_changes:
+            raise ValueError(
+                "snapshot repair currently supports SCD1 models without "
+                "preserve_all_changes"
+            )
+        if self.config.history_table:
+            raise ValueError("snapshot repair does not support separate history tables")
+        if any(
+            source.format != "delta" or source.streaming
+            for source in self.config.sources
+        ):
+            raise ValueError("snapshot repair requires batch Delta catalog sources")
+        if any(
+            source.contract and source.contract.temporal
+            for source in self.config.sources
+        ):
+            raise ValueError("snapshot repair does not support temporal contracts")
+        previous = self._apply_spark_configs()
+        old = (
+            self._repair_snapshot_versions,
+            self._repair_id,
+            self._repair_operation_token,
+        )
+        self._repair_snapshot_versions = dict(snapshot_versions)
+        self._repair_id = repair_id
+        self._repair_operation_token = operation_token
+        metadata_key = "spark.databricks.delta.commitInfo.userMetadata"
+        try:
+            previous_metadata = self.spark.conf.get(metadata_key)
+        except Exception:
+            previous_metadata = None
+        repair_metadata = f"repair_id={repair_id}; operation_token={operation_token}"
+        try:
+            # Tag RUNNING/control writes as well as the target transaction so
+            # commit inventory can distinguish repair effects from outsiders.
+            self.spark.conf.set(metadata_key, repair_metadata)
+        except Exception as exc:
+            (
+                self._repair_snapshot_versions,
+                self._repair_id,
+                self._repair_operation_token,
+            ) = old
+            self._restore_spark_configs(previous)
+            raise RuntimeError(
+                "repair requires Delta commit metadata tagging before execution"
+            ) from exc
+        try:
+            self.transaction_manager.invalidate_version(self.config.table_name)
+            return self._run_pipeline_once()
+        finally:
+            try:
+                if previous_metadata is None:
+                    self.spark.conf.unset(metadata_key)
+                else:
+                    self.spark.conf.set(metadata_key, previous_metadata)
+            except Exception:
+                pass
+            (
+                self._repair_snapshot_versions,
+                self._repair_id,
+                self._repair_operation_token,
+            ) = old
+            self._restore_spark_configs(previous)
+
     def _run_full_reload(self) -> dict[str, Any]:
         ctx = self._make_context_safe()
         rs = getattr(self, "_recovery_service", None) or RecoveryService(
@@ -252,6 +362,8 @@ class Orchestrator:
         logger.info(f"Starting pipeline for {self.config.table_name}")
         batch_id = str(uuid.uuid4())
         ctx = self._make_context(batch_id)
+        ctx.repair_full_rebuild = self._repair_snapshot_versions is not None
+        ctx.repair_snapshot_versions = dict(self._repair_snapshot_versions or {})
 
         if self.metrics_collector:
             self.metrics_collector.start_collection()
@@ -285,7 +397,7 @@ class Orchestrator:
 
         # H4 Optimization: Skip synchronous 'RUNNING' writes to reduce Delta operations.
         # The completion write (batch_complete_all) will later upsert the SUCCESS state.
-        if os.environ.get("KIMBALL_BATCH_CONTROL_WRITES") != "1":
+        if not self.runtime_options.batch_control_writes:
             self.etl_control.batch_start_all(
                 self.config.table_name, active_names, run_batch_id=batch_id
             )
@@ -298,9 +410,26 @@ class Orchestrator:
         active_dfs: dict[str, Any] = {}
         try:
             merge_start = time.time()
+            user_metadata = None
+            if self._repair_id and self._repair_operation_token:
+                user_metadata = (
+                    f"repair_id={self._repair_id}; "
+                    f"operation_token={self._repair_operation_token}; "
+                    f"batch_id={batch_id}"
+                )
             with self.transaction_manager.table_transaction(
-                self.config.table_name, batch_id
+                self.config.table_name,
+                batch_id,
+                user_metadata=user_metadata,
+                require_tagging=user_metadata is not None,
             ):
+                if ctx.repair_full_rebuild and ctx.table_exists(self.config.table_name):
+                    from kimball.common.utils import quote_table_name
+
+                    self.spark.sql(
+                        f"DELETE FROM {quote_table_name(self.config.table_name)}"
+                    )
+                    ctx.invalidate_table(self.config.table_name)
                 result = self._execute_merge_phases(
                     ctx, work_plan, batch_id, merge_start
                 )
@@ -376,8 +505,13 @@ class Orchestrator:
             join_keys = self.config.natural_keys or []
         self._merge_executor.generate_skeletons(ctx, source_df, join_keys)
         self._merge_executor.validate_grain(ctx, source_df, join_keys)
+        for broker in ctx.pending_resolution_metrics:
+            source_df = broker.observe_resolution_metrics(source_df)
         self._merge_executor.execute_merge(ctx, source_df, join_keys)
         merge_executed = True
+        for broker in ctx.pending_resolution_metrics:
+            broker.log_resolution_metrics()
+        ctx.pending_resolution_metrics.clear()
 
         metrics = self._merge_executor.get_merge_metrics(ctx)
         total_rows_read = metrics["rows_read"]
@@ -424,7 +558,11 @@ class Orchestrator:
                     "rows_written": total_rows_written,
                     "config_fingerprint": config_fingerprint,
                     "source_schema_fingerprint": (
-                        compute_source_schema_fingerprint(self.spark, item.source_name)
+                        compute_source_schema_fingerprint(
+                            self.spark,
+                            item.source_name,
+                            version_as_of=item.snapshot_version,
+                        )
                     ),
                 }
                 for item in work_plan.active_items

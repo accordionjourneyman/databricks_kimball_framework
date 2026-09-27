@@ -50,11 +50,17 @@ class TestGetTableVersion:
 
 
 class TestRollback:
-    def test_rollback_executes_restore(self, manager, spark_mock):
+    def test_rollback_executes_restore_and_invalidates_cached_version(
+        self, manager, spark_mock
+    ):
+        manager._version_cache["test_table"] = 7
+
         manager._rollback("test_table", 3)
+
         spark_mock.sql.assert_called_once_with(
             "RESTORE TABLE `test_table` TO VERSION AS OF 3"
         )
+        assert "test_table" not in manager._version_cache
 
     def test_rollback_raises_on_failure(self, manager, spark_mock):
         from pyspark.errors import PySparkException

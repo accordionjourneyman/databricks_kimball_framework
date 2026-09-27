@@ -107,6 +107,9 @@ class ProjectCompiler:
         known_targets = set(grouped)
         nodes: dict[str, CompiledPipeline] = {}
         write_owners: dict[str, list[str]] = defaultdict(list)
+        for _, writer_config in entries:
+            for target in self._writes(writer_config):
+                write_owners[target].append(writer_config.table_name)
 
         for path, config in entries:
             if config.table_name in nodes:
@@ -123,7 +126,7 @@ class ProjectCompiler:
                 for upstream in sorted(missing)
             )
 
-            inferred = self._infer_dependencies(config, known_targets)
+            inferred = self._infer_dependencies(config, known_targets, write_owners)
             undeclared = inferred - explicit
             for upstream in sorted(undeclared):
                 severity: Severity = (
@@ -139,8 +142,6 @@ class ProjectCompiler:
                 )
 
             writes = self._writes(config)
-            for target in writes:
-                write_owners[target].append(config.table_name)
 
             nodes[config.table_name] = CompiledPipeline(
                 table_name=config.table_name,
@@ -206,13 +207,18 @@ class ProjectCompiler:
             for rule in policy.rules:
                 rule_params[rule.code] = dict(rule.params)
         findings = check_project(configs, rule_params=rule_params)
+        waiver_owners: dict[tuple[str, str], str] | None = None
         issues: list[ProjectIssue] = []
         for finding in findings:
             rule_policy = policy.policy_for(finding.code) if policy else None
             if rule_policy is not None and rule_policy.enabled is False:
                 issues.append(self._rule_disabled_issue(finding))
                 continue
-            waived_by = _waiving_table(configs, finding.code, finding.column)
+            if finding.column is not None and waiver_owners is None:
+                waiver_owners = _waiver_owner_index(configs)
+            waived_by = _waiving_table(
+                configs, finding.code, finding.column, owner_index=waiver_owners
+            )
             if waived_by is not None:
                 issues.extend(
                     self._exception_approved_issues(configs, finding, waived_by)
@@ -253,7 +259,8 @@ class ProjectCompiler:
                 exception.decision_ref
                 for exception in configs[waived_by].modeling_exceptions
                 if exception.code == finding.code
-                and (finding.column is None or finding.column in exception.columns)
+                and finding.column is not None
+                and finding.column in exception.columns
             ),
             None,
         )
@@ -280,7 +287,11 @@ class ProjectCompiler:
         return "error" if finding.severity == "error" else "warning"
 
     @staticmethod
-    def _infer_dependencies(config: TableConfig, known_targets: set[str]) -> set[str]:
+    def _infer_dependencies(
+        config: TableConfig,
+        known_targets: set[str],
+        write_owners: dict[str, list[str]],
+    ) -> set[str]:
         candidates = {source.name for source in config.sources}
         candidates.update(
             fk.references for fk in (config.foreign_keys or []) if fk.references
@@ -291,7 +302,11 @@ class ProjectCompiler:
             if fk.lookup and fk.lookup.identity_map
         )
         candidates.discard(config.table_name)
-        return candidates & known_targets
+        inferred = candidates & known_targets
+        for target in candidates:
+            inferred.update(write_owners.get(target, ()))
+        inferred.discard(config.table_name)
+        return inferred
 
     @staticmethod
     def _writes(config: TableConfig) -> set[str]:
@@ -303,89 +318,107 @@ class ProjectCompiler:
 
     @staticmethod
     def _find_cycle(nodes: dict[str, CompiledPipeline]) -> tuple[str, ...] | None:
-        visited: set[str] = set()
+        """Find a dependency cycle without consuming Python call-stack depth."""
+        color = {name: 0 for name in nodes}  # white, gray, black
         active: list[str] = []
-        active_set: set[str] = set()
+        positions: dict[str, int] = {}
 
-        def visit(name: str) -> tuple[str, ...] | None:
-            if name in active_set:
-                start = active.index(name)
-                return tuple(active[start:] + [name])
-            if name in visited:
-                return None
-            active.append(name)
-            active_set.add(name)
-            for dependency in nodes[name].dependencies:
-                if dependency in nodes:
-                    cycle = visit(dependency)
-                    if cycle:
-                        return cycle
-            active.pop()
-            active_set.remove(name)
-            visited.add(name)
-            return None
+        for root in sorted(nodes):
+            if color[root]:
+                continue
+            color[root] = 1
+            positions[root] = len(active)
+            active.append(root)
+            stack = [(root, iter(nodes[root].dependencies))]
 
-        for name in sorted(nodes):
-            cycle = visit(name)
-            if cycle:
-                return cycle
+            while stack:
+                name, dependencies = stack[-1]
+                try:
+                    dependency = next(dependencies)
+                except StopIteration:
+                    stack.pop()
+                    active.pop()
+                    positions.pop(name)
+                    color[name] = 2
+                    continue
+
+                if dependency not in nodes:
+                    continue
+                if color[dependency] == 1:
+                    return tuple(active[positions[dependency] :] + [dependency])
+                if color[dependency] == 0:
+                    color[dependency] = 1
+                    positions[dependency] = len(active)
+                    active.append(dependency)
+                    stack.append((dependency, iter(nodes[dependency].dependencies)))
+
         return None
 
     @staticmethod
     def _topological_levels(
         nodes: dict[str, CompiledPipeline],
     ) -> tuple[tuple[str, ...], ...]:
-        remaining = set(nodes)
-        completed: set[str] = set()
+        """Return deterministic dependency levels using Kahn's algorithm."""
+        indegree: dict[str, int] = {}
+        dependents: dict[str, list[str]] = defaultdict(list)
+        for name, node in nodes.items():
+            dependencies = set(node.dependencies)
+            indegree[name] = len(dependencies)
+            for dependency in dependencies:
+                if dependency in nodes:
+                    dependents[dependency].append(name)
+
+        ready = sorted(name for name, degree in indegree.items() if degree == 0)
         levels: list[tuple[str, ...]] = []
-        while remaining:
-            ready = tuple(
-                sorted(
-                    name
-                    for name in remaining
-                    if set(nodes[name].dependencies) <= completed
-                )
-            )
-            if not ready:
-                # Cycles are reported before this function is called.
-                raise RuntimeError("Cannot order a cyclic dependency graph")
-            levels.append(ready)
-            completed.update(ready)
-            remaining.difference_update(ready)
+        ordered_count = 0
+        while ready:
+            level = tuple(ready)
+            levels.append(level)
+            ordered_count += len(level)
+
+            following: list[str] = []
+            for completed in level:
+                for dependent in dependents[completed]:
+                    indegree[dependent] -= 1
+                    if indegree[dependent] == 0:
+                        following.append(dependent)
+            ready = sorted(following)
+
+        if ordered_count != len(nodes):
+            # This also preserves the existing failure for unresolved inputs.
+            raise RuntimeError("Cannot order a cyclic dependency graph")
         return tuple(levels)
 
 
-def _column_in_exception(config: TableConfig, code: str, column: str | None) -> bool:
-    """True when a modeling exception covers (code, column).
-
-    Table-level findings carry ``column=None``; any entry with the matching
-    code waives them (at least one column entry is required by the model).
-    """
-    for exception in config.modeling_exceptions:
-        if exception.code != code:
-            continue
-        if column is None or column in exception.columns:
-            return True
-    return False
-
-
 def _waiving_table(
-    configs: dict[str, TableConfig], code: str, column: str | None
+    configs: dict[str, TableConfig],
+    code: str,
+    column: str | None,
+    *,
+    owner_index: dict[tuple[str, str], str] | None = None,
 ) -> str | None:
-    """The table whose modeling_exceptions waive this finding, if any.
+    """Return the first configured owner waiving this rule and column.
 
-    The anchored table (``finding.pipeline``) is checked first, then any other
-    project table: a cross-table finding can be waived by the ledger entry of
-    whichever table the modeler annotated (ADR-003 §Decision 4).
+    Table-level findings with ``column=None`` are not waivable. The compilation
+    path supplies its prebuilt index for column-level findings; one-off callers
+    can omit it.
     """
     if column is None:
         return None
-    waived = [
-        name
-        for name, config in configs.items()
-        if _column_in_exception(config, code, column)
-    ]
-    return waived[0] if waived else None
+    index = owner_index if owner_index is not None else _waiver_owner_index(configs)
+    return index.get((code, column))
+
+
+def _waiver_owner_index(
+    configs: dict[str, TableConfig],
+) -> dict[tuple[str, str], str]:
+    """Map each waived (rule, column) to its first owner in config order."""
+    owners: dict[tuple[str, str], str] = {}
+    for name, config in configs.items():
+        for exception in config.modeling_exceptions:
+            for column in exception.columns:
+                owners.setdefault((exception.code, column), name)
+    return owners
 
 
 def _summaries(issues: Sequence[ProjectIssue]) -> str:

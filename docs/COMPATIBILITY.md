@@ -1,21 +1,22 @@
 # Compatibility Matrix
 
-The framework is currently in beta (0.x). We support the current
-major.minor version (0.2.x) only. Retro-compatibility is not
-guaranteed until the project exits beta phase.
+The framework is in beta. Package metadata currently reports version 0.3.0;
+compatibility statements below describe the combinations exercised by the
+repository workflows. They do not imply that every Python version runs every
+Spark or Databricks combination.
 
-## Tested combinations (version 0.2.0)
+## CI coverage for version 0.3.0
 
-Each row below is a combination that passes the full unit test
-suite in CI. The Python matrix runs on every PR; the Spark/Delta
-combinations run on every push and pull request via the
-`integration` job in the `ci` workflow.
+| Workflow path | Python | Runtime | Coverage |
+| --- | --- | --- | --- |
+| Fast unit lane | 3.10, 3.11, 3.12 | No JVM | Lint, type checks, config validation, and non-Spark unit tests |
+| Spark unit lane | 3.11 | Docker image with PySpark 4.0.1 and Delta 4.2.0 | Spark-marked unit tests against local Spark and Delta |
+| Databricks compatibility | 3.11 | Workspace selected by CI environment | Golden tests, scheduled and manually dispatchable |
 
-| Python | PySpark | Delta Lake | Databricks Runtime | Status | CI evidence |
-| ------ | ------- | ---------- | ------------------ | ------ | ----------- |
-| 3.10   | 4.0.1   | 4.2.0      | DBR 17.0 LTS       | ✅     | [lint-and-unit job](https://github.com/accordionjourneyman/databricks_kimball_framework/actions/workflows/ci.yml) |
-| 3.11   | 4.0.1   | 4.2.0      | DBR 17.0 LTS       | ✅     | [lint-and-unit job](https://github.com/accordionjourneyman/databricks_kimball_framework/actions/workflows/ci.yml) |
-| 3.12   | 4.0.1   | 4.2.0      | DBR 17.0 LTS       | ✅     | [lint-and-unit job](https://github.com/accordionjourneyman/databricks_kimball_framework/actions/workflows/ci.yml) |
+See the [CI workflow](../.github/workflows/ci.yml) and
+[Databricks integration workflow](../.github/workflows/integration.yml) for the
+current commands and triggers. The configured Databricks Runtime is external to
+the repository and is not pinned by this matrix.
 
 ## Optional dependencies
 

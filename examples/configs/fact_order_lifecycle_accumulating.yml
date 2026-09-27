@@ -28,4 +28,4 @@ column_descriptions:
   delivered_at: Milestone timestamp when the order was delivered; NULL until delivered.
 transformation_sql: |
   SELECT order_id, ordered_at, shipped_at, delivered_at
-  FROM silver.order_events
+  FROM orders

@@ -872,30 +872,62 @@ class TestRunTestDefinition:
 
 
 class TestValidateNaturalKeyUniqueness:
-    def test_passes_when_no_duplicates(self):
+    def test_passes_when_no_duplicates_after_one_bounded_query(self):
         validator, _ = _make_validator()
         df = MagicMock()
         grouped = MagicMock()
-        grouped.count.return_value = grouped
-        grouped.filter.return_value = grouped
-        grouped.limit.return_value.isEmpty.return_value = True
+        grouped.agg.return_value.filter.return_value.orderBy.return_value.limit.return_value.collect.return_value = []
         df.groupBy.return_value = grouped
-        result = validator.validate_natural_key_uniqueness(df, ["id"])
-        assert result.passed is True
 
-    def test_fails_when_duplicates_exist(self):
+        result = validator.validate_natural_key_uniqueness(df, ["id"])
+
+        assert result.passed is True
+        assert result.failed_rows == 0
+        assert result.sample_failures == []
+        df.groupBy.assert_called_once_with("id")
+        grouped.agg.return_value.filter.return_value.orderBy.return_value.limit.assert_called_once_with(
+            5
+        )
+        grouped.agg.return_value.filter.return_value.orderBy.return_value.limit.return_value.collect.assert_called_once()
+
+    def test_fails_when_duplicates_exist_and_collects_bounded_samples_once(self):
         validator, _ = _make_validator()
         df = MagicMock()
         grouped = MagicMock()
-        grouped.count.return_value = grouped
-        grouped.filter.return_value = grouped
-        grouped.limit.return_value.isEmpty.return_value = False
-        grouped.orderBy.return_value = grouped
-        grouped.limit.return_value.collect.return_value = [{"id": 1, "_dup_count": 2}]
+        row = MagicMock()
+        row.asDict.return_value = {"id": 1, "_dup_count": 2}
+        grouped.agg.return_value.filter.return_value.orderBy.return_value.limit.return_value.collect.return_value = [
+            row
+        ]
         df.groupBy.return_value = grouped
+
         result = validator.validate_natural_key_uniqueness(df, ["id"])
+
         assert result.passed is False
+        assert result.failed_rows is None
+        assert result.total_rows is None
+        assert result.sample_failures == [{"id": 1, "_dup_count": 2}]
         assert "CRITICAL" in result.details
+        df.groupBy.assert_called_once_with("id")
+        grouped.agg.return_value.filter.return_value.orderBy.return_value.limit.assert_called_once_with(
+            5
+        )
+        grouped.agg.return_value.filter.return_value.orderBy.return_value.limit.return_value.collect.assert_called_once()
+
+    def test_dev_mode_unique_keys_return_empty_samples(self):
+        with patch.dict("os.environ", {"KIMBALL_ENABLE_DEV_CHECKS": "1"}):
+            validator, _ = _make_validator()
+            df = MagicMock()
+            df.count.return_value = 10
+            df.select.return_value.distinct.return_value.count.return_value = 10
+
+            result = validator.validate_natural_key_uniqueness(df, ["id"])
+
+            assert result.passed is True
+            assert result.failed_rows == 0
+            assert result.total_rows == 10
+            assert result.sample_failures == []
+            df.groupBy.assert_not_called()
 
     def test_dev_mode_counts(self):
         with patch.dict("os.environ", {"KIMBALL_ENABLE_DEV_CHECKS": "1"}):
@@ -906,12 +938,13 @@ class TestValidateNaturalKeyUniqueness:
             row = MagicMock()
             row.asDict.return_value = {"id": 1, "_dup_count": 2}
             grouped = MagicMock()
-            grouped.agg.return_value = grouped
-            grouped.filter.return_value = grouped
-            grouped.orderBy.return_value = grouped
-            grouped.limit.return_value.collect.return_value = [row]
+            grouped.agg.return_value.filter.return_value.orderBy.return_value.limit.return_value.collect.return_value = [
+                row
+            ]
             df.groupBy.return_value = grouped
+
             result = validator.validate_natural_key_uniqueness(df, ["id"])
+
             assert result.passed is False
             assert "Total rows: 10" in result.details
 
@@ -919,11 +952,11 @@ class TestValidateNaturalKeyUniqueness:
         validator, _ = _make_validator()
         df = MagicMock()
         grouped = MagicMock()
-        grouped.count.return_value = grouped
-        grouped.filter.return_value = grouped
-        grouped.limit.return_value.isEmpty.return_value = True
+        grouped.agg.return_value.filter.return_value.orderBy.return_value.limit.return_value.collect.return_value = []
         df.groupBy.return_value = grouped
+
         result = validator.validate_natural_key_uniqueness(df, ["id"], table_name="dim")
+
         assert "dim:" in result.test_name
 
     def test_error_handling(self):
@@ -948,3 +981,34 @@ class TestSparkProperty:
         with patch.dict("sys.modules", {"databricks.sdk.runtime": mock_runtime}):
             s = validator.spark
         assert s is mock_runtime.spark
+
+
+def test_structured_tests_use_key_discriminated_models():
+    from kimball.common.config import (
+        AcceptedValuesTest,
+        ExpressionTest,
+        RelationshipsTest,
+    )
+    from kimball.common.config import (
+        TestDefinition as TableTestDefinition,
+    )
+
+    parsed = TableTestDefinition.model_validate(
+        {
+            "column": "status",
+            "tests": [
+                "unique",
+                {"accepted_values": ["active", "inactive"]},
+                {"relationships": {"to": "gold.dim_status", "field": "status_sk"}},
+                {"expression": "amount >= 0"},
+            ],
+        }
+    )
+
+    assert parsed.tests[0] == "unique"
+    assert isinstance(parsed.tests[1], AcceptedValuesTest)
+    assert isinstance(parsed.tests[2], RelationshipsTest)
+    assert isinstance(parsed.tests[3], ExpressionTest)
+    schema = TableTestDefinition.model_json_schema()["properties"]["tests"]["items"]
+    assert "anyOf" in schema
+    assert any("oneOf" in branch for branch in schema["anyOf"])

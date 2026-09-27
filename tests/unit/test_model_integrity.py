@@ -18,12 +18,63 @@ from kimball.common.config import (
     SourceContractConfig,
     TableConfig,
 )
-from kimball.planning.compiler import ProjectCompiler, ProjectValidationError
+from kimball.planning.compiler import (
+    ProjectCompiler,
+    ProjectValidationError,
+    _waiver_owner_index,
+    _waiving_table,
+)
 from kimball.planning.model_integrity import (
+    ForeignKeyEdge,
+    ProjectGraph,
     check_project,
 )
 
 _UNSET = object()
+
+
+def test_project_graph_fk_edge_index_preserves_order_and_duplicates() -> None:
+    first = ForeignKeyEdge("fact_a", "customer_id", "dim_customer")
+    second = ForeignKeyEdge("fact_b", "store_id", "dim_store")
+    repeated = ForeignKeyEdge("fact_a", "customer_id", "dim_customer")
+    graph = ProjectGraph(nodes={}, fk_edges=(first, second, repeated))
+
+    assert graph.fk_edges_of("fact_a") == (first, repeated)
+    assert graph.fk_edges_of("fact_b") == (second,)
+    assert graph.fk_edges_of("missing") == ()
+    assert ProjectGraph(nodes={}, fk_edges=(second,)).fk_edges_of("fact_a") == ()
+
+
+def test_waivers_require_exact_column_and_index_preserves_first_config_owner() -> None:
+    code = "FACT_DIMENSION_ATTRIBUTE"
+    first = _fact(
+        "gold.first",
+        modeling_exceptions=[
+            {"code": code, "columns": ["name", "alias"], "reason": "approved"}
+        ],
+    )
+    second = _fact(
+        "gold.second",
+        modeling_exceptions=[
+            {"code": code, "columns": ["name"], "reason": "also approved"}
+        ],
+    )
+    configs = {"gold.first": first, "gold.second": second}
+
+    owners = _waiver_owner_index(configs)
+
+    assert owners[(code, "name")] == "gold.first"
+    assert owners[(code, "alias")] == "gold.first"
+    assert owners.get((code, "missing")) is None
+    assert owners.get((code, None)) is None
+    assert _waiving_table(configs, code, None, owner_index=owners) is None
+
+    graph = ProjectGraph(nodes=configs)
+    assert graph.waives("gold.first", code, "name")
+    assert not graph.waives("gold.first", code, None)
+    assert not graph.waives("gold.first", code, "missing")
+    assert graph.any_waives(code, "name") == "gold.first"
+    assert graph.any_waives(code, None) is None
 
 
 def _source(

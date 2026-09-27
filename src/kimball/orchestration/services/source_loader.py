@@ -60,12 +60,15 @@ class SourceLoader:
         """Load one active source by CDC strategy and register its view."""
         source = item.source
         processed_version = (
-            item.ending_version if item.ending_version is not None else 0
+            item.snapshot_version
+            if item.snapshot_version is not None
+            else item.ending_version
+            if item.ending_version is not None
+            else 0
         )
         source_versions[source.name] = processed_version
-        self._validate_source_contract(ctx, source, processed_version)
-
         df = self._read_by_strategy(ctx, item, source)
+        self._validate_source_contract(ctx, source, processed_version, df)
 
         if source.cdc_strategy == "append":
             # Append sources are pure inserts; CDF metadata is noise.
@@ -86,7 +89,7 @@ class SourceLoader:
         ):
             self._validate_temporal(ctx, source, df, processed_version)
 
-        if source.cdc_strategy == "cdf":
+        if source.cdc_strategy == "cdf" and item.snapshot_version is None:
             df = ctx.loader.deduplicate_cdf(df, source.primary_keys)
         df.createOrReplaceTempView(source.alias)
         active_dfs[source.name] = df
@@ -95,7 +98,27 @@ class SourceLoader:
     def _read_by_strategy(
         ctx: PipelineContext, item: SourceWorkItem, source
     ) -> DataFrame:
-        """Full snapshot or versioned CDF read, per the source's strategy."""
+        """Pinned snapshot or versioned CDF read, per the planned work item."""
+        if item.snapshot_version is not None:
+            df = ctx.loader.load_full_snapshot(
+                source.name,
+                format=source.format,
+                options=source.options,
+                version_as_of=item.snapshot_version,
+            )
+            if source.cdc_strategy == "cdf":
+                from pyspark.sql import functions as F
+                from pyspark.sql.types import LongType, StringType, TimestampType
+
+                df = (
+                    df.withColumn("_change_type", F.lit("insert").cast(StringType()))
+                    .withColumn(
+                        "_commit_version",
+                        F.lit(item.snapshot_version).cast(LongType()),
+                    )
+                    .withColumn("_commit_timestamp", F.lit(None).cast(TimestampType()))
+                )
+            return df
         if source.cdc_strategy == "full":
             return ctx.loader.load_full_snapshot(
                 source.name, format=source.format, options=source.options
@@ -173,12 +196,12 @@ class SourceLoader:
         )
 
     def _validate_source_contract(
-        self, ctx: PipelineContext, source: Any, source_version: int
+        self, ctx: PipelineContext, source: Any, source_version: int, source_df=None
     ) -> None:
         if not isinstance(source.contract, SourceContractConfig):
             return
         validator = ContractValidator(ctx.spark)
-        findings = validator.validate_source(source)
+        findings = validator.validate_source(source, dataframe=source_df)
         sink = self._event_sink(ctx)
         observability = ctx.config.observability
         events = [

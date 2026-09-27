@@ -23,6 +23,19 @@ from kimball.common.errors import DataQualityError
 from kimball.processing.key_broker import KeyBroker, _any_null, _placeholder
 
 
+def test_key_broker_reads_dimension_at_pinned_repair_version() -> None:
+    spark = MagicMock()
+    reader = spark.read.format.return_value
+    reader.option.return_value = reader
+    frame = reader.option.return_value.table.return_value
+    broker = KeyBroker(spark, snapshot_versions={"gold.dim_customer": 42})
+
+    assert broker._read_table("gold.dim_customer") is frame
+    spark.read.format.assert_called_once_with("delta")
+    reader.option.assert_called_once_with("versionAsOf", 42)
+    reader.table.assert_called_once_with("gold.dim_customer")
+
+
 @pytest.mark.parametrize(
     "data_type",
     [
@@ -243,6 +256,20 @@ def test_resolution_rate_is_logged(caplog) -> None:
     assert "5 sentinels" in caplog.text
 
 
+def test_resolution_stats_are_skipped_when_info_logging_is_disabled(caplog) -> None:
+    spark = _make_dim_spark()
+    broker = KeyBroker(spark)
+    joined = _make_joined_df(total=100, resolved=95)
+
+    with caplog.at_level("WARNING", logger="kimball.processing.key_broker"):
+        broker._validate_resolution(
+            _make_fact_df(), joined, _make_fk(detect_fanout=False)
+        )
+
+    joined.agg.assert_not_called()
+    assert "Key resolution for" not in caplog.text
+
+
 def test_fanout_raises_on_duplicate_dimension_keys() -> None:
     spark = _make_dim_spark(duplicate_keys=True)
     broker = KeyBroker(spark)
@@ -264,21 +291,37 @@ def test_validate_resolution_raises_on_unresolved_nks() -> None:
     spark = _make_dim_spark()
     broker = KeyBroker(spark)
     joined = _make_joined_df(total=100, resolved=80)
-    fact = _make_fact_df(nk_count=10)
-    joined.filter.return_value.select.return_value.distinct.return_value.count.return_value = 8
+    stats = MagicMock()
+    stats.__getitem__ = lambda self, key: {
+        "fact_nk_distinct": 10,
+        "resolved_nk_distinct": 8,
+    }[key]
+    joined.groupBy.return_value.agg.return_value.agg.return_value.first.return_value = (
+        stats
+    )
 
     with pytest.raises(DataQualityError, match="Resolution count mismatch"):
-        broker._validate_resolution(fact, joined, _make_fk(validate_resolution=True))
+        broker._validate_resolution(
+            _make_fact_df(), joined, _make_fk(validate_resolution=True)
+        )
 
 
 def test_validate_resolution_passes_when_all_nks_resolve() -> None:
     spark = _make_dim_spark()
     broker = KeyBroker(spark)
     joined = _make_joined_df(total=100, resolved=100)
-    fact = _make_fact_df(nk_count=10)
-    joined.filter.return_value.select.return_value.distinct.return_value.count.return_value = 10
+    stats = MagicMock()
+    stats.__getitem__ = lambda self, key: {
+        "fact_nk_distinct": 10,
+        "resolved_nk_distinct": 10,
+    }[key]
+    joined.groupBy.return_value.agg.return_value.agg.return_value.first.return_value = (
+        stats
+    )
 
-    broker._validate_resolution(fact, joined, _make_fk(validate_resolution=True))
+    broker._validate_resolution(
+        _make_fact_df(), joined, _make_fk(validate_resolution=True)
+    )
 
 
 def test_validate_resolution_skipped_by_default() -> None:
@@ -288,3 +331,67 @@ def test_validate_resolution_skipped_by_default() -> None:
     fact = _make_fact_df(nk_count=10)
 
     broker._validate_resolution(fact, joined, _make_fk())
+
+
+@pytest.mark.spark
+def test_resolution_validation_groups_once_across_join_fanout(spark) -> None:
+    fk = _make_fk(detect_fanout=False, validate_resolution=True)
+    fact = spark.createDataFrame([("A",), ("A",), ("B",)], "customer_id string")
+    joined = spark.createDataFrame(
+        [("A", 10), ("A", 11), ("B", 20)], "customer_id string, customer_sk long"
+    )
+
+    KeyBroker(spark)._validate_resolution(fact, joined, fk)
+
+
+@pytest.mark.spark
+def test_resolution_validation_reports_distinct_unresolved_keys(spark) -> None:
+    fk = _make_fk(detect_fanout=False, validate_resolution=True)
+    fact = spark.createDataFrame(
+        [("A",), ("A",), ("B",), (None,)], "customer_id string"
+    )
+    joined = spark.createDataFrame(
+        [("A", 10), ("A", -1), ("B", -1), (None, -1)],
+        "customer_id string, customer_sk long",
+    )
+
+    with pytest.raises(
+        DataQualityError,
+        match=r"3 distinct NKs in fact, 1 resolved\. 2 unresolved\.",
+    ):
+        KeyBroker(spark)._validate_resolution(fact, joined, fk)
+
+
+@pytest.mark.spark
+def test_deferred_resolution_metrics_are_logged_after_delta_merge(
+    spark, tmp_path, caplog
+) -> None:
+    from delta.tables import DeltaTable
+
+    target_path = str(tmp_path / "observation_metrics")
+    spark.createDataFrame([], "customer_id string, customer_sk long").write.format(
+        "delta"
+    ).save(target_path)
+    fact = spark.createDataFrame([("A",), ("B",)], "customer_id string")
+    joined = spark.createDataFrame(
+        [("A", 10), ("B", -1)], "customer_id string, customer_sk long"
+    )
+    broker = KeyBroker(spark, defer_resolution_metrics=True)
+
+    with caplog.at_level("INFO", logger="kimball.processing.key_broker"):
+        resolved = broker._validate_resolution(
+            fact, joined, _make_fk(detect_fanout=False), index=0
+        )
+        # Model downstream validation reads before observations are attached.
+        resolved.limit(1).collect()
+        observed = broker.observe_resolution_metrics(resolved)
+        DeltaTable.forPath(spark, target_path).alias("target").merge(
+            observed.alias("source"), "target.customer_id = source.customer_id"
+        ).whenNotMatchedInsertAll().execute()
+        broker.log_resolution_metrics()
+
+    assert (
+        "Key resolution for customer_sk: 1/2 resolved (50.0%), 1 sentinels"
+        in caplog.text
+    )
+    assert spark.read.format("delta").load(target_path).count() == 2

@@ -74,6 +74,70 @@
       "title": "ABACPolicyConfig",
       "type": "object"
     },
+    "AcceptedValuesContractQualityRule": {
+      "additionalProperties": false,
+      "properties": {
+        "column": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Column",
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "rule": {
+          "const": "accepted_values",
+          "title": "Rule",
+          "type": "string"
+        },
+        "severity": {
+          "default": "error",
+          "enum": [
+            "warn",
+            "error"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "values": {
+          "items": {},
+          "title": "Values",
+          "type": "array"
+        }
+      },
+      "required": [
+        "rule",
+        "column",
+        "values"
+      ],
+      "title": "AcceptedValuesContractQualityRule",
+      "type": "object"
+    },
+    "AcceptedValuesTest": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted_values": {
+          "items": {},
+          "title": "Accepted Values",
+          "type": "array"
+        }
+      },
+      "required": [
+        "accepted_values"
+      ],
+      "title": "AcceptedValuesTest",
+      "type": "object"
+    },
     "ConformedDimensionConfig": {
       "additionalProperties": false,
       "properties": {
@@ -153,6 +217,7 @@
       "additionalProperties": false,
       "properties": {
         "max_age": {
+          "pattern": "^\\d+\\s*(?:[sS]|[mM]|[hH]|[dD]|[sS][eE][cC][oO][nN][dD][sS]?|[mM][iI][nN][uU][tT][eE][sS]?|[hH][oO][uU][rR][sS]?|[dD][aA][yY][sS]?)$",
           "title": "Max Age",
           "type": "string"
         }
@@ -163,119 +228,12 @@
       "title": "ContractFreshnessConfig",
       "type": "object"
     },
-    "ContractQualityRule": {
-      "additionalProperties": false,
-      "properties": {
-        "column": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Column"
-        },
-        "columns": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Columns"
-        },
-        "expression": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Expression"
-        },
-        "max_ratio": {
-          "anyOf": [
-            {
-              "maximum": 1,
-              "minimum": 0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Max Ratio"
-        },
-        "name": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Name"
-        },
-        "rule": {
-          "enum": [
-            "not_null",
-            "unique",
-            "null_rate",
-            "accepted_values",
-            "expression"
-          ],
-          "title": "Rule",
-          "type": "string"
-        },
-        "severity": {
-          "default": "error",
-          "enum": [
-            "warn",
-            "error"
-          ],
-          "title": "Severity",
-          "type": "string"
-        },
-        "values": {
-          "anyOf": [
-            {
-              "items": {},
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Values"
-        }
-      },
-      "required": [
-        "rule"
-      ],
-      "title": "ContractQualityRule",
-      "type": "object"
-    },
     "ContractTemporalConfig": {
       "additionalProperties": false,
       "properties": {
         "allowed_lateness": {
           "default": "0 hours",
+          "pattern": "^\\d+\\s*(?:[sS]|[mM]|[hH]|[dD]|[sS][eE][cC][oO][nN][dD][sS]?|[mM][iI][nN][uU][tT][eE][sS]?|[hH][oO][uU][rR][sS]?|[dD][aA][yY][sS]?)$",
           "title": "Allowed Lateness",
           "type": "string"
         },
@@ -376,6 +334,63 @@
         }
       },
       "title": "ContractValidationPolicy",
+      "type": "object"
+    },
+    "ExpressionContractQualityRule": {
+      "additionalProperties": false,
+      "properties": {
+        "expression": {
+          "minLength": 1,
+          "title": "Expression",
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "rule": {
+          "const": "expression",
+          "title": "Rule",
+          "type": "string"
+        },
+        "severity": {
+          "default": "error",
+          "enum": [
+            "warn",
+            "error"
+          ],
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "rule",
+        "expression"
+      ],
+      "title": "ExpressionContractQualityRule",
+      "type": "object"
+    },
+    "ExpressionTest": {
+      "additionalProperties": false,
+      "properties": {
+        "expression": {
+          "minLength": 1,
+          "title": "Expression",
+          "type": "string"
+        }
+      },
+      "required": [
+        "expression"
+      ],
+      "title": "ExpressionTest",
       "type": "object"
     },
     "FactMeasureConfig": {
@@ -787,6 +802,90 @@
       "title": "JunkDimensionConfig",
       "type": "object"
     },
+    "ModelingExceptionConfig": {
+      "additionalProperties": false,
+      "description": "A recorded, intentional deviation from a model-integrity rule.",
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "columns": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Columns",
+          "type": "array"
+        },
+        "decision_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Decision Ref"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "columns",
+        "reason"
+      ],
+      "title": "ModelingExceptionConfig",
+      "type": "object"
+    },
+    "NotNullContractQualityRule": {
+      "additionalProperties": false,
+      "properties": {
+        "column": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Column",
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "rule": {
+          "const": "not_null",
+          "title": "Rule",
+          "type": "string"
+        },
+        "severity": {
+          "default": "error",
+          "enum": [
+            "warn",
+            "error"
+          ],
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "rule",
+        "column"
+      ],
+      "title": "NotNullContractQualityRule",
+      "type": "object"
+    },
     "NullPolicyConfig": {
       "additionalProperties": false,
       "properties": {
@@ -797,6 +896,56 @@
         }
       },
       "title": "NullPolicyConfig",
+      "type": "object"
+    },
+    "NullRateContractQualityRule": {
+      "additionalProperties": false,
+      "properties": {
+        "column": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Column",
+          "type": "string"
+        },
+        "max_ratio": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Max Ratio",
+          "type": "number"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "rule": {
+          "const": "null_rate",
+          "title": "Rule",
+          "type": "string"
+        },
+        "severity": {
+          "default": "error",
+          "enum": [
+            "warn",
+            "error"
+          ],
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "rule",
+        "column",
+        "max_ratio"
+      ],
+      "title": "NullRateContractQualityRule",
       "type": "object"
     },
     "ObservabilityConfig": {
@@ -970,6 +1119,76 @@
       "title": "PIIPolicy",
       "type": "object"
     },
+    "RelationshipTestTarget": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Field"
+        },
+        "to": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "To",
+          "type": "string"
+        }
+      },
+      "required": [
+        "to"
+      ],
+      "title": "RelationshipTestTarget",
+      "type": "object"
+    },
+    "RelationshipsTest": {
+      "additionalProperties": false,
+      "properties": {
+        "relationships": {
+          "additionalProperties": false,
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "pattern": "\\S",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Field"
+            },
+            "to": {
+              "minLength": 1,
+              "pattern": "\\S",
+              "title": "To",
+              "type": "string"
+            }
+          },
+          "required": [
+            "to"
+          ],
+          "title": "RelationshipTestTarget",
+          "type": "object"
+        }
+      },
+      "required": [
+        "relationships"
+      ],
+      "title": "RelationshipsTest",
+      "type": "object"
+    },
     "RowFilterConfig": {
       "additionalProperties": false,
       "description": "Unity Catalog row-level security via ``ALTER TABLE SET ROW FILTER``.\n\nDeclares a SQL UDF that returns a boolean per row.  Rows for which the\nfunction returns ``False`` are hidden from queries.",
@@ -1014,6 +1233,9 @@
       "additionalProperties": false,
       "properties": {
         "alias": {
+          "description": "Optional source alias. When omitted, the final component of name is used.",
+          "minLength": 1,
+          "pattern": "\\S",
           "title": "Alias",
           "type": "string"
         },
@@ -1022,7 +1244,6 @@
           "enum": [
             "cdf",
             "full",
-            "timestamp",
             "append"
           ],
           "title": "Cdc Strategy",
@@ -1076,6 +1297,7 @@
                       "additionalProperties": false,
                       "properties": {
                         "max_age": {
+                          "pattern": "^\\d+\\s*(?:[sS]|[mM]|[hH]|[dD]|[sS][eE][cC][oO][nN][dD][sS]?|[mM][iI][nN][uU][tT][eE][sS]?|[hH][oO][uU][rR][sS]?|[dD][aA][yY][sS]?)$",
                           "title": "Max Age",
                           "type": "string"
                         }
@@ -1110,112 +1332,269 @@
                 },
                 "quality": {
                   "items": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "column": {
-                        "anyOf": [
-                          {
+                    "discriminator": {
+                      "mapping": {
+                        "accepted_values": "#/$defs/AcceptedValuesContractQualityRule",
+                        "expression": "#/$defs/ExpressionContractQualityRule",
+                        "not_null": "#/$defs/NotNullContractQualityRule",
+                        "null_rate": "#/$defs/NullRateContractQualityRule",
+                        "unique": "#/$defs/UniqueContractQualityRule"
+                      },
+                      "propertyName": "rule"
+                    },
+                    "oneOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "column": {
+                            "minLength": 1,
+                            "pattern": "\\S",
+                            "title": "Column",
                             "type": "string"
                           },
-                          {
-                            "type": "null"
-                          }
-                        ],
-                        "default": null,
-                        "title": "Column"
-                      },
-                      "columns": {
-                        "anyOf": [
-                          {
-                            "items": {
-                              "type": "string"
-                            },
-                            "type": "array"
+                          "name": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Name"
                           },
-                          {
-                            "type": "null"
-                          }
-                        ],
-                        "default": null,
-                        "title": "Columns"
-                      },
-                      "expression": {
-                        "anyOf": [
-                          {
+                          "rule": {
+                            "const": "not_null",
+                            "title": "Rule",
                             "type": "string"
                           },
-                          {
-                            "type": "null"
+                          "severity": {
+                            "default": "error",
+                            "enum": [
+                              "warn",
+                              "error"
+                            ],
+                            "title": "Severity",
+                            "type": "string"
                           }
+                        },
+                        "required": [
+                          "rule",
+                          "column"
                         ],
-                        "default": null,
-                        "title": "Expression"
+                        "title": "NotNullContractQualityRule",
+                        "type": "object"
                       },
-                      "max_ratio": {
-                        "anyOf": [
-                          {
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "column": {
+                            "anyOf": [
+                              {
+                                "minLength": 1,
+                                "pattern": "\\S",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Column"
+                          },
+                          "columns": {
+                            "anyOf": [
+                              {
+                                "items": {
+                                  "minLength": 1,
+                                  "pattern": "\\S",
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Columns"
+                          },
+                          "name": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Name"
+                          },
+                          "rule": {
+                            "const": "unique",
+                            "title": "Rule",
+                            "type": "string"
+                          },
+                          "severity": {
+                            "default": "error",
+                            "enum": [
+                              "warn",
+                              "error"
+                            ],
+                            "title": "Severity",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "rule"
+                        ],
+                        "title": "UniqueContractQualityRule",
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "column": {
+                            "minLength": 1,
+                            "pattern": "\\S",
+                            "title": "Column",
+                            "type": "string"
+                          },
+                          "max_ratio": {
                             "maximum": 1,
                             "minimum": 0,
+                            "title": "Max Ratio",
                             "type": "number"
                           },
-                          {
-                            "type": "null"
-                          }
-                        ],
-                        "default": null,
-                        "title": "Max Ratio"
-                      },
-                      "name": {
-                        "anyOf": [
-                          {
+                          "name": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Name"
+                          },
+                          "rule": {
+                            "const": "null_rate",
+                            "title": "Rule",
                             "type": "string"
                           },
-                          {
-                            "type": "null"
+                          "severity": {
+                            "default": "error",
+                            "enum": [
+                              "warn",
+                              "error"
+                            ],
+                            "title": "Severity",
+                            "type": "string"
                           }
+                        },
+                        "required": [
+                          "rule",
+                          "column",
+                          "max_ratio"
                         ],
-                        "default": null,
-                        "title": "Name"
+                        "title": "NullRateContractQualityRule",
+                        "type": "object"
                       },
-                      "rule": {
-                        "enum": [
-                          "not_null",
-                          "unique",
-                          "null_rate",
-                          "accepted_values",
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "column": {
+                            "minLength": 1,
+                            "pattern": "\\S",
+                            "title": "Column",
+                            "type": "string"
+                          },
+                          "name": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Name"
+                          },
+                          "rule": {
+                            "const": "accepted_values",
+                            "title": "Rule",
+                            "type": "string"
+                          },
+                          "severity": {
+                            "default": "error",
+                            "enum": [
+                              "warn",
+                              "error"
+                            ],
+                            "title": "Severity",
+                            "type": "string"
+                          },
+                          "values": {
+                            "items": {},
+                            "title": "Values",
+                            "type": "array"
+                          }
+                        },
+                        "required": [
+                          "rule",
+                          "column",
+                          "values"
+                        ],
+                        "title": "AcceptedValuesContractQualityRule",
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "expression": {
+                            "minLength": 1,
+                            "title": "Expression",
+                            "type": "string"
+                          },
+                          "name": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Name"
+                          },
+                          "rule": {
+                            "const": "expression",
+                            "title": "Rule",
+                            "type": "string"
+                          },
+                          "severity": {
+                            "default": "error",
+                            "enum": [
+                              "warn",
+                              "error"
+                            ],
+                            "title": "Severity",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "rule",
                           "expression"
                         ],
-                        "title": "Rule",
-                        "type": "string"
-                      },
-                      "severity": {
-                        "default": "error",
-                        "enum": [
-                          "warn",
-                          "error"
-                        ],
-                        "title": "Severity",
-                        "type": "string"
-                      },
-                      "values": {
-                        "anyOf": [
-                          {
-                            "items": {},
-                            "type": "array"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ],
-                        "default": null,
-                        "title": "Values"
+                        "title": "ExpressionContractQualityRule",
+                        "type": "object"
                       }
-                    },
-                    "required": [
-                      "rule"
-                    ],
-                    "title": "ContractQualityRule",
-                    "type": "object"
+                    ]
                   },
                   "title": "Quality",
                   "type": "array"
@@ -1256,6 +1635,7 @@
                       "properties": {
                         "allowed_lateness": {
                           "default": "0 hours",
+                          "pattern": "^\\d+\\s*(?:[sS]|[mM]|[hH]|[dD]|[sS][eE][cC][oO][nN][dD][sS]?|[mM][iI][nN][uU][tT][eE][sS]?|[hH][oO][uU][rR][sS]?|[dD][aA][yY][sS]?)$",
                           "title": "Allowed Lateness",
                           "type": "string"
                         },
@@ -1413,6 +1793,8 @@
           "title": "Join On"
         },
         "name": {
+          "minLength": 1,
+          "pattern": "\\S",
           "title": "Name",
           "type": "string"
         },
@@ -1517,6 +1899,7 @@
                 },
                 "trigger_interval": {
                   "default": "30 seconds",
+                  "pattern": "^\\d+\\s*(?:[sS]|[mM]|[hH]|[dD]|[sS][eE][cC][oO][nN][dD][sS]?|[mM][iI][nN][uU][tT][eE][sS]?|[hH][oO][uU][rR][sS]?|[dD][aA][yY][sS]?)$",
                   "title": "Trigger Interval",
                   "type": "string"
                 }
@@ -1532,8 +1915,7 @@
         }
       },
       "required": [
-        "name",
-        "alias"
+        "name"
       ],
       "title": "SourceConfig",
       "type": "object"
@@ -1584,6 +1966,7 @@
               "additionalProperties": false,
               "properties": {
                 "max_age": {
+                  "pattern": "^\\d+\\s*(?:[sS]|[mM]|[hH]|[dD]|[sS][eE][cC][oO][nN][dD][sS]?|[mM][iI][nN][uU][tT][eE][sS]?|[hH][oO][uU][rR][sS]?|[dD][aA][yY][sS]?)$",
                   "title": "Max Age",
                   "type": "string"
                 }
@@ -1618,112 +2001,269 @@
         },
         "quality": {
           "items": {
-            "additionalProperties": false,
-            "properties": {
-              "column": {
-                "anyOf": [
-                  {
+            "discriminator": {
+              "mapping": {
+                "accepted_values": "#/$defs/AcceptedValuesContractQualityRule",
+                "expression": "#/$defs/ExpressionContractQualityRule",
+                "not_null": "#/$defs/NotNullContractQualityRule",
+                "null_rate": "#/$defs/NullRateContractQualityRule",
+                "unique": "#/$defs/UniqueContractQualityRule"
+              },
+              "propertyName": "rule"
+            },
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "column": {
+                    "minLength": 1,
+                    "pattern": "\\S",
+                    "title": "Column",
                     "type": "string"
                   },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "title": "Column"
-              },
-              "columns": {
-                "anyOf": [
-                  {
-                    "items": {
-                      "type": "string"
-                    },
-                    "type": "array"
+                  "name": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Name"
                   },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "title": "Columns"
-              },
-              "expression": {
-                "anyOf": [
-                  {
+                  "rule": {
+                    "const": "not_null",
+                    "title": "Rule",
                     "type": "string"
                   },
-                  {
-                    "type": "null"
+                  "severity": {
+                    "default": "error",
+                    "enum": [
+                      "warn",
+                      "error"
+                    ],
+                    "title": "Severity",
+                    "type": "string"
                   }
+                },
+                "required": [
+                  "rule",
+                  "column"
                 ],
-                "default": null,
-                "title": "Expression"
+                "title": "NotNullContractQualityRule",
+                "type": "object"
               },
-              "max_ratio": {
-                "anyOf": [
-                  {
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "column": {
+                    "anyOf": [
+                      {
+                        "minLength": 1,
+                        "pattern": "\\S",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Column"
+                  },
+                  "columns": {
+                    "anyOf": [
+                      {
+                        "items": {
+                          "minLength": 1,
+                          "pattern": "\\S",
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Columns"
+                  },
+                  "name": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Name"
+                  },
+                  "rule": {
+                    "const": "unique",
+                    "title": "Rule",
+                    "type": "string"
+                  },
+                  "severity": {
+                    "default": "error",
+                    "enum": [
+                      "warn",
+                      "error"
+                    ],
+                    "title": "Severity",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "rule"
+                ],
+                "title": "UniqueContractQualityRule",
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "column": {
+                    "minLength": 1,
+                    "pattern": "\\S",
+                    "title": "Column",
+                    "type": "string"
+                  },
+                  "max_ratio": {
                     "maximum": 1,
                     "minimum": 0,
+                    "title": "Max Ratio",
                     "type": "number"
                   },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "title": "Max Ratio"
-              },
-              "name": {
-                "anyOf": [
-                  {
+                  "name": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Name"
+                  },
+                  "rule": {
+                    "const": "null_rate",
+                    "title": "Rule",
                     "type": "string"
                   },
-                  {
-                    "type": "null"
+                  "severity": {
+                    "default": "error",
+                    "enum": [
+                      "warn",
+                      "error"
+                    ],
+                    "title": "Severity",
+                    "type": "string"
                   }
+                },
+                "required": [
+                  "rule",
+                  "column",
+                  "max_ratio"
                 ],
-                "default": null,
-                "title": "Name"
+                "title": "NullRateContractQualityRule",
+                "type": "object"
               },
-              "rule": {
-                "enum": [
-                  "not_null",
-                  "unique",
-                  "null_rate",
-                  "accepted_values",
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "column": {
+                    "minLength": 1,
+                    "pattern": "\\S",
+                    "title": "Column",
+                    "type": "string"
+                  },
+                  "name": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Name"
+                  },
+                  "rule": {
+                    "const": "accepted_values",
+                    "title": "Rule",
+                    "type": "string"
+                  },
+                  "severity": {
+                    "default": "error",
+                    "enum": [
+                      "warn",
+                      "error"
+                    ],
+                    "title": "Severity",
+                    "type": "string"
+                  },
+                  "values": {
+                    "items": {},
+                    "title": "Values",
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "rule",
+                  "column",
+                  "values"
+                ],
+                "title": "AcceptedValuesContractQualityRule",
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "expression": {
+                    "minLength": 1,
+                    "title": "Expression",
+                    "type": "string"
+                  },
+                  "name": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Name"
+                  },
+                  "rule": {
+                    "const": "expression",
+                    "title": "Rule",
+                    "type": "string"
+                  },
+                  "severity": {
+                    "default": "error",
+                    "enum": [
+                      "warn",
+                      "error"
+                    ],
+                    "title": "Severity",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "rule",
                   "expression"
                 ],
-                "title": "Rule",
-                "type": "string"
-              },
-              "severity": {
-                "default": "error",
-                "enum": [
-                  "warn",
-                  "error"
-                ],
-                "title": "Severity",
-                "type": "string"
-              },
-              "values": {
-                "anyOf": [
-                  {
-                    "items": {},
-                    "type": "array"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "title": "Values"
+                "title": "ExpressionContractQualityRule",
+                "type": "object"
               }
-            },
-            "required": [
-              "rule"
-            ],
-            "title": "ContractQualityRule",
-            "type": "object"
+            ]
           },
           "title": "Quality",
           "type": "array"
@@ -1764,6 +2304,7 @@
               "properties": {
                 "allowed_lateness": {
                   "default": "0 hours",
+                  "pattern": "^\\d+\\s*(?:[sS]|[mM]|[hH]|[dD]|[sS][eE][cC][oO][nN][dD][sS]?|[mM][iI][nN][uU][tT][eE][sS]?|[hH][oO][uU][rR][sS]?|[dD][aA][yY][sS]?)$",
                   "title": "Allowed Lateness",
                   "type": "string"
                 },
@@ -1956,6 +2497,7 @@
         },
         "trigger_interval": {
           "default": "30 seconds",
+          "pattern": "^\\d+\\s*(?:[sS]|[mM]|[hH]|[dD]|[sS][eE][cC][oO][nN][dD][sS]?|[mM][iI][nN][uU][tT][eE][sS]?|[hH][oO][uU][rR][sS]?|[dD][aA][yY][sS]?)$",
           "title": "Trigger Interval",
           "type": "string"
         }
@@ -1967,6 +2509,8 @@
       "additionalProperties": false,
       "properties": {
         "column": {
+          "minLength": 1,
+          "pattern": "\\S",
           "title": "Column",
           "type": "string"
         },
@@ -1983,11 +2527,85 @@
           "items": {
             "anyOf": [
               {
+                "enum": [
+                  "unique",
+                  "not_null"
+                ],
                 "type": "string"
               },
               {
-                "additionalProperties": true,
-                "type": "object"
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "accepted_values": {
+                        "items": {},
+                        "title": "Accepted Values",
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "accepted_values"
+                    ],
+                    "title": "AcceptedValuesTest",
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "relationships": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "field": {
+                            "anyOf": [
+                              {
+                                "minLength": 1,
+                                "pattern": "\\S",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Field"
+                          },
+                          "to": {
+                            "minLength": 1,
+                            "pattern": "\\S",
+                            "title": "To",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "to"
+                        ],
+                        "title": "RelationshipTestTarget",
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "relationships"
+                    ],
+                    "title": "RelationshipsTest",
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "expression": {
+                        "minLength": 1,
+                        "title": "Expression",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "expression"
+                    ],
+                    "title": "ExpressionTest",
+                    "type": "object"
+                  }
+                ]
               }
             ]
           },
@@ -1999,6 +2617,73 @@
         "column"
       ],
       "title": "TestDefinition",
+      "type": "object"
+    },
+    "UniqueContractQualityRule": {
+      "additionalProperties": false,
+      "properties": {
+        "column": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Column"
+        },
+        "columns": {
+          "anyOf": [
+            {
+              "items": {
+                "minLength": 1,
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Columns"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "rule": {
+          "const": "unique",
+          "title": "Rule",
+          "type": "string"
+        },
+        "severity": {
+          "default": "error",
+          "enum": [
+            "warn",
+            "error"
+          ],
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "rule"
+      ],
+      "title": "UniqueContractQualityRule",
       "type": "object"
     }
   },
@@ -2569,6 +3254,44 @@
       "title": "Junk Dimensions",
       "type": "array"
     },
+    "keys": {
+      "additionalProperties": false,
+      "description": "Legacy grouped form of the table key fields.",
+      "properties": {
+        "durable_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Durable Key"
+        },
+        "natural_keys": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Natural Keys",
+          "type": "array"
+        },
+        "surrogate_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Surrogate Key"
+        }
+      },
+      "type": "object"
+    },
     "measures": {
       "items": {
         "additionalProperties": false,
@@ -2659,6 +3382,51 @@
         "type": "object"
       },
       "title": "Milestones",
+      "type": "array"
+    },
+    "modeling_exceptions": {
+      "items": {
+        "additionalProperties": false,
+        "description": "A recorded, intentional deviation from a model-integrity rule.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Columns",
+            "type": "array"
+          },
+          "decision_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Decision Ref"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "columns",
+          "reason"
+        ],
+        "title": "ModelingExceptionConfig",
+        "type": "object"
+      },
+      "title": "Modeling Exceptions",
       "type": "array"
     },
     "natural_keys": {
@@ -2915,6 +3683,9 @@
         "additionalProperties": false,
         "properties": {
           "alias": {
+            "description": "Optional source alias. When omitted, the final component of name is used.",
+            "minLength": 1,
+            "pattern": "\\S",
             "title": "Alias",
             "type": "string"
           },
@@ -2923,7 +3694,6 @@
             "enum": [
               "cdf",
               "full",
-              "timestamp",
               "append"
             ],
             "title": "Cdc Strategy",
@@ -2977,6 +3747,7 @@
                         "additionalProperties": false,
                         "properties": {
                           "max_age": {
+                            "pattern": "^\\d+\\s*(?:[sS]|[mM]|[hH]|[dD]|[sS][eE][cC][oO][nN][dD][sS]?|[mM][iI][nN][uU][tT][eE][sS]?|[hH][oO][uU][rR][sS]?|[dD][aA][yY][sS]?)$",
                             "title": "Max Age",
                             "type": "string"
                           }
@@ -3011,112 +3782,269 @@
                   },
                   "quality": {
                     "items": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "column": {
-                          "anyOf": [
-                            {
+                      "discriminator": {
+                        "mapping": {
+                          "accepted_values": "#/$defs/AcceptedValuesContractQualityRule",
+                          "expression": "#/$defs/ExpressionContractQualityRule",
+                          "not_null": "#/$defs/NotNullContractQualityRule",
+                          "null_rate": "#/$defs/NullRateContractQualityRule",
+                          "unique": "#/$defs/UniqueContractQualityRule"
+                        },
+                        "propertyName": "rule"
+                      },
+                      "oneOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "column": {
+                              "minLength": 1,
+                              "pattern": "\\S",
+                              "title": "Column",
                               "type": "string"
                             },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "default": null,
-                          "title": "Column"
-                        },
-                        "columns": {
-                          "anyOf": [
-                            {
-                              "items": {
-                                "type": "string"
-                              },
-                              "type": "array"
+                            "name": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "default": null,
+                              "title": "Name"
                             },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "default": null,
-                          "title": "Columns"
-                        },
-                        "expression": {
-                          "anyOf": [
-                            {
+                            "rule": {
+                              "const": "not_null",
+                              "title": "Rule",
                               "type": "string"
                             },
-                            {
-                              "type": "null"
+                            "severity": {
+                              "default": "error",
+                              "enum": [
+                                "warn",
+                                "error"
+                              ],
+                              "title": "Severity",
+                              "type": "string"
                             }
+                          },
+                          "required": [
+                            "rule",
+                            "column"
                           ],
-                          "default": null,
-                          "title": "Expression"
+                          "title": "NotNullContractQualityRule",
+                          "type": "object"
                         },
-                        "max_ratio": {
-                          "anyOf": [
-                            {
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "column": {
+                              "anyOf": [
+                                {
+                                  "minLength": 1,
+                                  "pattern": "\\S",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "default": null,
+                              "title": "Column"
+                            },
+                            "columns": {
+                              "anyOf": [
+                                {
+                                  "items": {
+                                    "minLength": 1,
+                                    "pattern": "\\S",
+                                    "type": "string"
+                                  },
+                                  "type": "array"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "default": null,
+                              "title": "Columns"
+                            },
+                            "name": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "default": null,
+                              "title": "Name"
+                            },
+                            "rule": {
+                              "const": "unique",
+                              "title": "Rule",
+                              "type": "string"
+                            },
+                            "severity": {
+                              "default": "error",
+                              "enum": [
+                                "warn",
+                                "error"
+                              ],
+                              "title": "Severity",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "rule"
+                          ],
+                          "title": "UniqueContractQualityRule",
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "column": {
+                              "minLength": 1,
+                              "pattern": "\\S",
+                              "title": "Column",
+                              "type": "string"
+                            },
+                            "max_ratio": {
                               "maximum": 1,
                               "minimum": 0,
+                              "title": "Max Ratio",
                               "type": "number"
                             },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "default": null,
-                          "title": "Max Ratio"
-                        },
-                        "name": {
-                          "anyOf": [
-                            {
+                            "name": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "default": null,
+                              "title": "Name"
+                            },
+                            "rule": {
+                              "const": "null_rate",
+                              "title": "Rule",
                               "type": "string"
                             },
-                            {
-                              "type": "null"
+                            "severity": {
+                              "default": "error",
+                              "enum": [
+                                "warn",
+                                "error"
+                              ],
+                              "title": "Severity",
+                              "type": "string"
                             }
+                          },
+                          "required": [
+                            "rule",
+                            "column",
+                            "max_ratio"
                           ],
-                          "default": null,
-                          "title": "Name"
+                          "title": "NullRateContractQualityRule",
+                          "type": "object"
                         },
-                        "rule": {
-                          "enum": [
-                            "not_null",
-                            "unique",
-                            "null_rate",
-                            "accepted_values",
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "column": {
+                              "minLength": 1,
+                              "pattern": "\\S",
+                              "title": "Column",
+                              "type": "string"
+                            },
+                            "name": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "default": null,
+                              "title": "Name"
+                            },
+                            "rule": {
+                              "const": "accepted_values",
+                              "title": "Rule",
+                              "type": "string"
+                            },
+                            "severity": {
+                              "default": "error",
+                              "enum": [
+                                "warn",
+                                "error"
+                              ],
+                              "title": "Severity",
+                              "type": "string"
+                            },
+                            "values": {
+                              "items": {},
+                              "title": "Values",
+                              "type": "array"
+                            }
+                          },
+                          "required": [
+                            "rule",
+                            "column",
+                            "values"
+                          ],
+                          "title": "AcceptedValuesContractQualityRule",
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "expression": {
+                              "minLength": 1,
+                              "title": "Expression",
+                              "type": "string"
+                            },
+                            "name": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "default": null,
+                              "title": "Name"
+                            },
+                            "rule": {
+                              "const": "expression",
+                              "title": "Rule",
+                              "type": "string"
+                            },
+                            "severity": {
+                              "default": "error",
+                              "enum": [
+                                "warn",
+                                "error"
+                              ],
+                              "title": "Severity",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "rule",
                             "expression"
                           ],
-                          "title": "Rule",
-                          "type": "string"
-                        },
-                        "severity": {
-                          "default": "error",
-                          "enum": [
-                            "warn",
-                            "error"
-                          ],
-                          "title": "Severity",
-                          "type": "string"
-                        },
-                        "values": {
-                          "anyOf": [
-                            {
-                              "items": {},
-                              "type": "array"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "default": null,
-                          "title": "Values"
+                          "title": "ExpressionContractQualityRule",
+                          "type": "object"
                         }
-                      },
-                      "required": [
-                        "rule"
-                      ],
-                      "title": "ContractQualityRule",
-                      "type": "object"
+                      ]
                     },
                     "title": "Quality",
                     "type": "array"
@@ -3157,6 +4085,7 @@
                         "properties": {
                           "allowed_lateness": {
                             "default": "0 hours",
+                            "pattern": "^\\d+\\s*(?:[sS]|[mM]|[hH]|[dD]|[sS][eE][cC][oO][nN][dD][sS]?|[mM][iI][nN][uU][tT][eE][sS]?|[hH][oO][uU][rR][sS]?|[dD][aA][yY][sS]?)$",
                             "title": "Allowed Lateness",
                             "type": "string"
                           },
@@ -3314,6 +4243,8 @@
             "title": "Join On"
           },
           "name": {
+            "minLength": 1,
+            "pattern": "\\S",
             "title": "Name",
             "type": "string"
           },
@@ -3418,6 +4349,7 @@
                   },
                   "trigger_interval": {
                     "default": "30 seconds",
+                    "pattern": "^\\d+\\s*(?:[sS]|[mM]|[hH]|[dD]|[sS][eE][cC][oO][nN][dD][sS]?|[mM][iI][nN][uU][tT][eE][sS]?|[hH][oO][uU][rR][sS]?|[dD][aA][yY][sS]?)$",
                     "title": "Trigger Interval",
                     "type": "string"
                   }
@@ -3433,8 +4365,7 @@
           }
         },
         "required": [
-          "name",
-          "alias"
+          "name"
         ],
         "title": "SourceConfig",
         "type": "object"
@@ -3467,6 +4398,8 @@
       "title": "Table Description"
     },
     "table_name": {
+      "minLength": 1,
+      "pattern": "\\S",
       "title": "Table Name",
       "type": "string"
     },
@@ -3485,6 +4418,8 @@
             "additionalProperties": false,
             "properties": {
               "column": {
+                "minLength": 1,
+                "pattern": "\\S",
                 "title": "Column",
                 "type": "string"
               },
@@ -3501,11 +4436,85 @@
                 "items": {
                   "anyOf": [
                     {
+                      "enum": [
+                        "unique",
+                        "not_null"
+                      ],
                       "type": "string"
                     },
                     {
-                      "additionalProperties": true,
-                      "type": "object"
+                      "oneOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "accepted_values": {
+                              "items": {},
+                              "title": "Accepted Values",
+                              "type": "array"
+                            }
+                          },
+                          "required": [
+                            "accepted_values"
+                          ],
+                          "title": "AcceptedValuesTest",
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "relationships": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "field": {
+                                  "anyOf": [
+                                    {
+                                      "minLength": 1,
+                                      "pattern": "\\S",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "default": null,
+                                  "title": "Field"
+                                },
+                                "to": {
+                                  "minLength": 1,
+                                  "pattern": "\\S",
+                                  "title": "To",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "to"
+                              ],
+                              "title": "RelationshipTestTarget",
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "relationships"
+                          ],
+                          "title": "RelationshipsTest",
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "expression": {
+                              "minLength": 1,
+                              "title": "Expression",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "expression"
+                          ],
+                          "title": "ExpressionTest",
+                          "type": "object"
+                        }
+                      ]
                     }
                   ]
                 },

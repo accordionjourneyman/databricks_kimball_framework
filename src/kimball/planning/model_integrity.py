@@ -153,6 +153,19 @@ class ProjectGraph:
     descriptions: dict[str, dict[str, str]] = field(default_factory=dict)
     column_types: dict[str, dict[str, str]] = field(default_factory=dict)
     column_tables: dict[str, set[str]] = field(default_factory=dict)
+    _fk_edges_by_pipeline: dict[str, tuple[ForeignKeyEdge, ...]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        edges_by_pipeline: dict[str, list[ForeignKeyEdge]] = {}
+        for edge in self.fk_edges:
+            edges_by_pipeline.setdefault(edge.pipeline, []).append(edge)
+        object.__setattr__(
+            self,
+            "_fk_edges_by_pipeline",
+            {pipeline: tuple(edges) for pipeline, edges in edges_by_pipeline.items()},
+        )
 
     @property
     def dimensions(self) -> dict[str, TableConfig]:
@@ -163,21 +176,21 @@ class ProjectGraph:
         }
 
     def fk_edges_of(self, table: str) -> tuple[ForeignKeyEdge, ...]:
-        return tuple(edge for edge in self.fk_edges if edge.pipeline == table)
+        return self._fk_edges_by_pipeline.get(table, ())
 
     def waives(self, table: str, code: str, column: str | None) -> bool:
         """True when ``table``'s modeling_exceptions cover (code, column).
 
-        Table-level findings carry ``column=None``; any entry with the
-        matching code waives them (the model requires >=1 column entry).
+        Exceptions are exact on rule and column. Table-level findings carry
+        ``column=None`` and cannot match an exception listing named columns.
         """
         config = self.nodes.get(table)
-        if config is None:
+        if config is None or column is None:
             return False
         for exception in config.modeling_exceptions:
             if exception.code != code:
                 continue
-            if column is None or column in exception.columns:
+            if column in exception.columns:
                 return True
         return False
 

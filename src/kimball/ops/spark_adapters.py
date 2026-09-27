@@ -32,7 +32,11 @@ class SparkETLControlStore:
 
     def __init__(self, etl_control: Any) -> None:
         self._ctl = etl_control
-        self._fq = etl_control.fq_table
+        self._fq: str = etl_control.fq_table
+
+    @property
+    def control_table_name(self) -> str:
+        return self._fq
 
     @property
     def _spark(self) -> Any:
@@ -70,6 +74,30 @@ class SparkETLControlStore:
             return
         self._ctl.rewind_to_version(target_table, source_table, version)
 
+    def rewind_watermark_tagged(
+        self,
+        target_table: str,
+        source_table: str,
+        version: int | None,
+        user_metadata: str,
+    ) -> None:
+        key = "spark.databricks.delta.commitInfo.userMetadata"
+        try:
+            previous = self._spark.conf.get(key)
+        except Exception:
+            previous = None
+        self._spark.conf.set(key, user_metadata)
+        try:
+            self.rewind_watermark(target_table, source_table, version)
+        finally:
+            try:
+                if previous is None:
+                    self._spark.conf.unset(key)
+                else:
+                    self._spark.conf.set(key, previous)
+            except Exception:
+                pass
+
 
 def _row_to_batch(row: Any) -> BatchInfo:
     d = _as_dict(row)
@@ -101,7 +129,7 @@ class SparkDeltaHistoryProvider:
         except Exception:  # noqa: BLE001
             exists = False
         if not exists:
-            return TargetDeltaState(target_table, False, None, ())
+            return TargetDeltaState(target_table, False, None, (), None)
         from delta.tables import DeltaTable
 
         history = (
@@ -111,12 +139,33 @@ class SparkDeltaHistoryProvider:
         )
         commits = tuple(_row_to_commit(r) for r in history)
         current = int(history[0]["version"]) if history else None
-        return TargetDeltaState(target_table, True, current, commits)
+        generation_id = _delta_table_id(self._spark, target_table)
+        return TargetDeltaState(target_table, True, current, commits, generation_id)
 
     def restore_to_version(self, target_table: str, version: int) -> None:
         self._spark.sql(
             f"RESTORE TABLE {quote_table_name(target_table)} TO VERSION AS OF {version}"
         )
+
+    def restore_to_version_tagged(
+        self, target_table: str, version: int, user_metadata: str
+    ) -> None:
+        key = "spark.databricks.delta.commitInfo.userMetadata"
+        try:
+            previous = self._spark.conf.get(key)
+        except Exception:
+            previous = None
+        self._spark.conf.set(key, user_metadata)
+        try:
+            self.restore_to_version(target_table, version)
+        finally:
+            try:
+                if previous is None:
+                    self._spark.conf.unset(key)
+                else:
+                    self._spark.conf.set(key, previous)
+            except Exception:
+                pass
 
     def restore_to_timestamp(self, target_table: str, ts: Any) -> None:
         self._spark.sql(
@@ -132,7 +181,27 @@ def _row_to_commit(row: Any) -> DeltaCommit:
         operation=d.get("operation"),
         batch_id=_extract_batch_id(d.get("userMetadata")),
         timestamp=d.get("timestamp"),
+        operation_token=_extract_operation_token(d.get("userMetadata")),
     )
+
+
+def _extract_operation_token(raw: Any) -> str | None:
+    if not raw:
+        return None
+    text = str(raw)
+    for part in text.split(";"):
+        key, separator, value = part.strip().partition("=")
+        if separator and key.strip() == "operation_token":
+            return value.strip() or None
+    return None
+
+
+def _delta_table_id(spark: Any, table: str) -> str | None:
+    try:
+        rows = spark.sql(f"DESCRIBE DETAIL {quote_table_name(table)}").collect()
+        return str(_as_dict(rows[0]).get("id")) if rows else None
+    except Exception:  # noqa: BLE001 - older runtimes may not expose detail
+        return None
 
 
 def _extract_batch_id(raw: Any) -> str | None:

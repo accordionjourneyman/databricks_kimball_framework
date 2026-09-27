@@ -303,6 +303,30 @@ class TestValidateTransformationSql:
         issues = loader.validate_transformation_sql(config)
         assert any("UPDATE" in i for i in issues)
 
+    def test_forbidden_word_in_comment_or_string_is_not_a_statement(self):
+        config = MagicMock(spec=TableConfig)
+        config.transformation_sql = (
+            "SELECT 'DELETE FROM t' AS note FROM src_a -- UPDATE t"
+        )
+        source = MagicMock()
+        source.alias = "src_a"
+        config.sources = [source]
+
+        assert ConfigLoader().validate_transformation_sql(config) == []
+
+    def test_alias_name_in_string_does_not_count_as_source_relation(self):
+        config = MagicMock(spec=TableConfig)
+        config.transformation_sql = "SELECT 'src_a' AS note"
+        source = MagicMock()
+        source.alias = "src_a"
+        config.sources = [source]
+
+        issues = ConfigLoader().validate_transformation_sql(config)
+
+        assert any(
+            "does not reference source alias 'src_a'" in issue for issue in issues
+        )
+
     def test_valid_sql_no_spark(self):
         config = MagicMock(spec=TableConfig)
         config.transformation_sql = "SELECT * FROM src_a"
@@ -458,3 +482,51 @@ class TestExplainDryRun:
         loader._explain_dry_run(config, spark)
 
         spark.sql.assert_any_call("EXPLAIN SELECT 1 AS x")
+
+
+def test_table_config_reports_all_independent_rule_violations(tmp_path):
+    from kimball.common.errors import ConfigurationValidationError
+
+    config_path = tmp_path / "invalid_dimension.yml"
+    config_path.write_text(
+        """
+table_name: gold.dim_invalid
+table_type: dimension
+sources:
+  - name: silver.input
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationValidationError) as exc_info:
+        ConfigLoader(env_vars={}).load_config(str(config_path))
+
+    issues = exc_info.value.issues
+    assert len(issues) == 2
+    assert {issue.field_path for issue in issues} == {
+        "rules.dimension_keys",
+    }  # both failures have a stable rule location
+    assert "keys.surrogate_key" in str(exc_info.value)
+    assert "keys.natural_keys" in str(exc_info.value)
+
+
+def test_config_errors_keep_file_and_field_without_echoing_invalid_values(tmp_path):
+    from kimball.common.errors import ConfigurationValidationError
+
+    config_path = tmp_path / "bad_type.yml"
+    config_path.write_text(
+        """
+table_name: gold.dim_invalid
+table_type: DO-NOT-ECHO-secret-value
+sources:
+  - name: silver.input
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationValidationError) as exc_info:
+        ConfigLoader(env_vars={}).load_config(str(config_path))
+
+    assert str(config_path) in str(exc_info.value)
+    assert "table_type" in str(exc_info.value)
+    assert "DO-NOT-ECHO-secret-value" not in str(exc_info.value)

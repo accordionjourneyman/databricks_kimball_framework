@@ -26,7 +26,7 @@ KIMBALL_ETL_SCHEMA_ENV = "KIMBALL_ETL_SCHEMA"
 
 
 def compute_source_schema_fingerprint(
-    spark: SparkSession, source_name: str
+    spark: SparkSession, source_name: str, version_as_of: int | None = None
 ) -> str | None:
     """Compute a fingerprint of a source table's schema (columns + types).
 
@@ -37,7 +37,10 @@ def compute_source_schema_fingerprint(
     try:
         if not spark.catalog.tableExists(source_name):
             return None
-        fields = spark.read.format("delta").table(source_name).schema.fields
+        reader = spark.read.format("delta")
+        if version_as_of is not None:
+            reader = reader.option("versionAsOf", version_as_of)
+        fields = reader.table(source_name).schema.fields
         schema_repr = ",".join(f"{f.name}:{f.dataType.simpleString()}" for f in fields)
         return hashlib.sha256(schema_repr.encode("utf-8")).hexdigest()[:16]
     except PySparkException:

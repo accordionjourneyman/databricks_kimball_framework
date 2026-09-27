@@ -3,7 +3,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-from pyspark.sql.types import StringType
+from pyspark.sql.types import BinaryType, StringType
 
 from kimball.common.config import NullPolicyConfig
 from kimball.orchestration.services.merge_executor import MergeExecutor
@@ -32,6 +32,7 @@ def ctx():
     mock.config.default_rows = None
     mock.config.enable_lineage_truncation = False
     mock.config.sources = []
+    mock.active_dfs = {}
     mock.batch_id = "batch-1"
     mock.runtime_options.approx_grain_check = False
     mock.runtime_options.use_approximate_unique = False
@@ -77,11 +78,8 @@ class TestCreateTargetTable:
         executor.table_creator.add_system_columns.return_value = MagicMock()
         executor.table_creator.create_table_with_clustering = MagicMock()
 
-        with patch(
-            "kimball.orchestration.services.merge_executor._feature_enabled",
-            return_value=True,
-        ):
-            executor._create_target_table(ctx, MagicMock())
+        ctx.runtime_options.enable_auto_cluster = True
+        executor._create_target_table(ctx, MagicMock())
 
         call_kwargs = (
             executor.table_creator.create_table_with_clustering.call_args.kwargs
@@ -96,11 +94,8 @@ class TestCreateTargetTable:
         executor.table_creator.add_system_columns.return_value = MagicMock()
         executor.table_creator.create_table_with_clustering = MagicMock()
 
-        with patch(
-            "kimball.orchestration.services.merge_executor._feature_enabled",
-            return_value=True,
-        ):
-            executor._create_target_table(ctx, MagicMock())
+        ctx.runtime_options.enable_auto_cluster = True
+        executor._create_target_table(ctx, MagicMock())
 
         call_kwargs = (
             executor.table_creator.create_table_with_clustering.call_args.kwargs
@@ -243,15 +238,15 @@ class TestSchemaEvolution:
 
 class TestEvolveTargetSchema:
     def test_adds_new_columns(self, executor, ctx):
-        ctx.config.sources = [MagicMock(name="src_table")]
+        source = MagicMock()
+        source.name = "src_table"
+        ctx.config.sources = [source]
         target_df = MagicMock()
         target_df.schema.fields = [MagicMock(name="existing")]
         ctx.spark.table.return_value = target_df
-        src_schema = MagicMock()
-        src_field = MagicMock()
-        src_field.dataType = StringType()
-        src_schema.__getitem__ = MagicMock(return_value=src_field)
-        ctx.spark.table.return_value.schema = src_schema
+        source_df = MagicMock()
+        source_df.schema.__getitem__.return_value.dataType = StringType()
+        ctx.active_dfs = {"src_table": source_df}
         executor._evolve_target_schema(ctx, ["new_col"])
         # The dimension mode triggers backfill + not-null constraint after ALTER,
         # so sql is called 3 times (ALTER, UPDATE, ALTER SET NOT NULL).
@@ -259,15 +254,15 @@ class TestEvolveTargetSchema:
 
     def test_strict_dimension_backfills_and_constrains_new_column(self, executor, ctx):
         ctx.config.null_policy = NullPolicyConfig()
-        ctx.config.sources = [MagicMock(name="src_table")]
+        source = MagicMock()
+        source.name = "src_table"
+        ctx.config.sources = [source]
         target_df = MagicMock()
         target_df.schema.fields = [MagicMock(name="existing")]
         ctx.spark.table.return_value = target_df
-        src_schema = MagicMock()
-        src_field = MagicMock()
-        src_field.dataType = StringType()
-        src_schema.__getitem__ = MagicMock(return_value=src_field)
-        ctx.spark.table.return_value.schema = src_schema
+        source_df = MagicMock()
+        source_df.schema.__getitem__.return_value.dataType = StringType()
+        ctx.active_dfs = {"src_table": source_df}
 
         executor._evolve_target_schema(ctx, ["new_col"])
 
@@ -275,6 +270,28 @@ class TestEvolveTargetSchema:
         assert len(statements) == 3
         assert "SET `new_col` = 'Missing'" in statements[1]
         assert "SET NOT NULL" in statements[2]
+
+    def test_explicit_substitute_supports_otherwise_unsupported_type(
+        self, executor, ctx
+    ):
+        ctx.config.null_policy = NullPolicyConfig(
+            attribute_substitutes={"new_col": "custom"}
+        )
+        source = MagicMock()
+        source.name = "src_table"
+        ctx.config.sources = [source]
+        target_df = MagicMock()
+        target_df.schema.fields = []
+        ctx.spark.table.return_value = target_df
+        source_df = MagicMock()
+        source_df.schema.__getitem__.return_value.dataType = BinaryType()
+        ctx.active_dfs = {"src_table": source_df}
+
+        executor._evolve_target_schema(ctx, ["new_col"])
+
+        statements = [call.args[0] for call in ctx.spark.sql.call_args_list]
+        assert "new_col" in statements[1]
+        assert "'custom'" in statements[1]
 
     def test_skips_existing_columns(self, executor, ctx):
         target_df = MagicMock()
@@ -361,13 +378,10 @@ class TestExecuteMerge:
     def test_optimize_when_enabled(self, executor, ctx):
         ctx.config.optimize_after_merge = True
         ctx.config.vacuum_retention_hours = 168
+        ctx.runtime_options.enable_inline_optimize = True
         source_df = MagicMock()
         with (
             patch("kimball.orchestration.services.merge_executor._merger.merge"),
-            patch(
-                "kimball.orchestration.services.merge_executor.os.environ.get",
-                return_value="1",
-            ),
             patch(
                 "kimball.orchestration.services.merge_executor._merger.optimize_table"
             ) as mock_opt,
@@ -375,26 +389,20 @@ class TestExecuteMerge:
             executor.execute_merge(ctx, source_df, ["key"])
             mock_opt.assert_called_once()
 
-    def test_optimize_skipped_when_env_not_set(self, executor, ctx):
+    def test_optimize_skipped_when_runtime_flag_is_disabled(self, executor, ctx):
         ctx.config.optimize_after_merge = True
         ctx.config.vacuum_retention_hours = 168
+        ctx.runtime_options.enable_inline_optimize = False
         source_df = MagicMock()
         with (
             patch(
                 "kimball.orchestration.services.merge_executor._merger.merge"
             ) as mock_merge,
             patch(
-                "kimball.orchestration.services.merge_executor.os.environ.get",
-                return_value="0",
-            ),
-            patch(
                 "kimball.orchestration.services.merge_executor._merger.optimize_table"
             ) as mock_opt,
         ):
             executor.execute_merge(ctx, source_df, ["key"])
-        # The merge still runs, but optimize_table must be skipped when
-        # KIMBALL_ENABLE_INLINE_OPTIMIZE is not "1" -- otherwise the env gate
-        # is meaningless and optimize runs on every merge.
         mock_merge.assert_called_once()
         mock_opt.assert_not_called()
 

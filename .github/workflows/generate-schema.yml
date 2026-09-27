@@ -4,12 +4,16 @@ on:
   push:
     branches: [main]
     paths:
-      - "src/kimball/common/config.py"
+      - "src/kimball/common/**"
+      - "src/kimball/contracts/**"
       - "tools/generate_schema.py"
+      - "schemas/pipeline-config.schema.json"
   pull_request:
     paths:
-      - "src/kimball/common/config.py"
+      - "src/kimball/common/**"
+      - "src/kimball/contracts/**"
       - "tools/generate_schema.py"
+      - "schemas/pipeline-config.schema.json"
       - "schemas/pipeline-config.schema.json"
   workflow_dispatch:
 
@@ -34,6 +38,4 @@ jobs:
 
       - name: Verify schema is up to date
         run: |
-          if [[ -n "${{ github.event.pull_request.head.sha }}" ]]; then
-            git diff --exit-code schemas/pipeline-config.schema.json
-          fi
+          git diff --exit-code schemas/pipeline-config.schema.json

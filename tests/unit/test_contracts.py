@@ -1,5 +1,5 @@
 from typing import Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pyspark.sql.types import LongType, StringType, StructField, StructType
@@ -68,7 +68,7 @@ def test_contract_rejects_mismatched_cdc_keys() -> None:
 
 
 def test_source_rejects_unsupported_timestamp_cdc_at_configuration_time() -> None:
-    with pytest.raises(ValueError, match="not implemented"):
+    with pytest.raises(ValueError, match="cdc_strategy"):
         SourceConfig(name="silver.customer", alias="customer", cdc_strategy="timestamp")
 
 
@@ -196,3 +196,42 @@ def test_event_sink_error_mode_fails_closed() -> None:
             failure_mode="error",
             writer_type=BrokenWriter,
         )
+
+
+def test_approximate_unique_rules_run_one_aggregation_per_rule() -> None:
+    source = _source(
+        {
+            "id": "customer",
+            "version": "1.0.0",
+            "schema": {"customer_id": {"type": "bigint"}},
+            "quality": [
+                {"name": "customer_unique", "rule": "unique", "column": "customer_id"},
+                {
+                    "name": "customer_country_unique",
+                    "rule": "unique",
+                    "columns": ["customer_id", "country"],
+                    "severity": "warn",
+                },
+            ],
+            "validation": {"mode": "approximate"},
+        }
+    )
+    df = MagicMock()
+    df.agg.return_value.first.side_effect = [
+        {"total": 10, "distinct": 10},
+        {"total": 10, "distinct": 8},
+    ]
+
+    validator = ContractValidator(MagicMock())
+    with patch("kimball.orchestration.services.contracts.F"):
+        findings = validator.validate_data(df, source)
+
+    assert df.agg.call_count == 2
+    assert all(len(call.args) == 2 for call in df.agg.call_args_list)
+    assert [finding.check_name for finding in findings] == [
+        "customer_unique",
+        "customer_country_unique",
+    ]
+    assert [finding.failed_rows for finding in findings] == [0, 2]
+    assert findings[1].severity == Severity.WARN
+    assert validator.last_metrics["spark_actions"] == 2
