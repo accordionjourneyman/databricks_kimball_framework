@@ -74,7 +74,7 @@ def test_two_phase_restores_and_rewinds_watermark():
     hist = FakeHistory(True, 6, commits)
     res = recover_target("gold.t", providers(ctrl, hist, FakeSources_none()), CLASSIC)
     assert hist.restored == [("gold.t", 5)]
-    # phase 2: set_batch_failed + rewind_watermark to 3
+    # Reconcile the control row and rewind the source watermark.
     actions = [c[0] for c in ctrl.calls]
     assert "fail" in actions and "rewind" in actions
     rewinds = [c for c in ctrl.calls if c[0] == "rewind"]

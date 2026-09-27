@@ -1,10 +1,4 @@
-"""Runtime fault-injection proof for the Phase 1 operator workflow.
-
-These tests deliberately leave the two crash states that ROADMAP 1.8d requires:
-an orphan Delta commit with no control row and a fresh RUNNING control row whose
-target commit has completed.  They use the real Spark/Delta adapters and run on
-both local (Classic semantics) and Databricks Serverless.
-"""
+"""Integration tests for recovering incomplete pipeline runs."""
 
 from __future__ import annotations
 
@@ -43,7 +37,7 @@ def _inject_commit(
             spark.conf.unset(conf)
 
 
-def test_orphan_commit_operator_proof(spark: SparkSession, test_db: str) -> None:
+def test_orphan_commit_requires_attribution(spark: SparkSession, test_db: str) -> None:
     """Recover an attributable orphan or stop safely when tags are unavailable."""
     target = f"{test_db}.operator_orphan"
     batch_id = f"orphan-{uuid.uuid4().hex}"
@@ -90,7 +84,9 @@ def test_orphan_commit_operator_proof(spark: SparkSession, test_db: str) -> None
     }
 
 
-def test_fresh_zombie_operator_proof(spark: SparkSession, test_db: str) -> None:
+def test_fresh_zombie_restores_target_and_rewinds_watermark(
+    spark: SparkSession, test_db: str
+) -> None:
     """A seconds-old RUNNING row is recovered without waiting for a TTL."""
     target = f"{test_db}.operator_fresh_zombie"
     source = f"{test_db}.operator_source"

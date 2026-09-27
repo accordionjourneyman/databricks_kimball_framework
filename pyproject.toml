@@ -37,7 +37,6 @@ dependencies = [
 Homepage = "https://github.com/accordionjourneyman/databricks_kimball_framework"
 Documentation = "https://github.com/accordionjourneyman/databricks_kimball_framework#readme"
 Repository = "https://github.com/accordionjourneyman/databricks_kimball_framework"
-Changelog = "https://github.com/accordionjourneyman/databricks_kimball_framework/blob/main/CHANGELOG.md"
 
 [project.scripts]
 kimball = "kimball.cli:main"

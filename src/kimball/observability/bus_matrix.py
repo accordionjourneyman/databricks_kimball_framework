@@ -31,18 +31,7 @@ def parse_configs(config_dir: str) -> list[TableConfig]:
 def validate_conformed_dimensions(
     configs: list[TableConfig],
 ) -> list[str]:
-    """
-    FINDING-022: Validate that dimensions used by multiple facts are truly conformed.
-
-    Identifies dimensions referenced by multiple fact tables and warns if they
-    reference different physical tables (indicating non-conformity).
-
-    Args:
-        configs: List of parsed TableConfig objects.
-
-    Returns:
-        List of warning messages for non-conformed dimensions.
-    """
+    """Warn when related facts use different physical tables for a dimension."""
     warnings = []
 
     # Track dimension references: dim_name -> set of (fact_name, actual_table)
@@ -197,12 +186,7 @@ def render_markdown(
 
 
 def generate_bus_matrix(config_dir: str) -> str:
-    """
-    Scans a directory for YAML configs and generates an Enterprise Bus Matrix in Markdown.
-    Uses a pipeline of Parse -> Analyze -> Validate -> Render.
-
-    FINDING-022: Now includes validation for conformed dimensions.
-    """
+    """Generate a Markdown bus matrix from YAML table configurations."""
     configs = parse_configs(config_dir)
 
     # Validate conformed dimensions and print warnings

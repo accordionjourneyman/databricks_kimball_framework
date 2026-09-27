@@ -628,7 +628,7 @@ class TestCompilerIntegration:
                     "code": "FACT_DIMENSION_ATTRIBUTE",
                     "columns": ["customer_name"],
                     "reason": "dashboard latency spike, see ADR-002",
-                    "decision_ref": "phase2/evidence/ADR-002",
+                    "decision_ref": "analytics/customer-summary/42",
                 },
             ],
         )
@@ -640,7 +640,7 @@ class TestCompilerIntegration:
         # only the dim-attribute ledger entry carries a decision_ref.
         assert len(approved) == 2
         assert any(
-            "decision_ref=phase2/evidence/ADR-002" in issue.message
+            "decision_ref=analytics/customer-summary/42" in issue.message
             for issue in approved
         )
         assert project.model_integrity_summary is not None

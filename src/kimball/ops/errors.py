@@ -1,10 +1,4 @@
-"""Structured error taxonomy for operational tooling (ROADMAP 1.E).
-
-User-facing failures carry a category, a one-line remediation and a runbook
-link so ``kimball explain`` and ``kimball inspect`` present actionable
-diagnosis instead of bare tracebacks. Legacy exceptions without these fields
-are categorised by type via :func:`categorize`.
-"""
+"""Error categories and runbook guidance for operational commands."""
 
 from __future__ import annotations
 

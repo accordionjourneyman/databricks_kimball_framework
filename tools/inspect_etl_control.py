@@ -1,28 +1,10 @@
 #!/usr/bin/env python3
-"""
-Standalone operator entry point for ``kimball inspect`` (ROADMAP 1.1).
+"""Standalone entry point for ``kimball inspect``.
 
-This is a thin wrapper over :func:`kimball.ops.inspect.inspect_target`, so the
-standalone and CLI (``kimball inspect``) surfaces share one harness and never
-diverge on state reasoning. The harness (StateReconciler, WriterContract,
-SourceHealth, RuntimeProfile) does the work; this script only resolves the
-Spark session / target and renders the report.
+Examples::
 
-Usage::
-
-    # Deep diagnosis of one target (canonical 1.1 output)
     python tools/inspect_etl_control.py --target prod --table gold.fact_sales
-
-    # Overview of every target in etl_control
-    python tools/inspect_etl_control.py --target prod
-
-    # Machine-readable JSON (valid: env messages go to stderr)
     python tools/inspect_etl_control.py --target prod --table gold.t --json
-
-    # Filter displayed batches
-    python tools/inspect_etl_control.py --target prod --table gold.t --running --older-than 30
-
-Exit codes: 0 = healthy (consistent), 1 = attention required, 2 = could not run.
 """
 
 from __future__ import annotations

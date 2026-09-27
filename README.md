@@ -66,11 +66,11 @@ docs/         operational and design documentation
 
 - [Getting Started](docs/GETTING_STARTED.md) - canonical installation and first-pipeline guide
 - [Configuration](docs/CONFIGURATION.md)
+- [Liquid Clustering](docs/LIQUID_CLUSTERING.md)
 - [Type 7, Key Brokering, Identity Maps, and Null Semantics](docs/SCD7_KEYS_AND_NULLS.md)
 - [Data Supplier Contracts](docs/DATA_CONTRACTS.md)
 - [Production Readiness](docs/PRODUCTION_READINESS.md)
 - [Operational Runbook](docs/RUNBOOK.md) - recovery and semantic source repair
-- [Repair Ledger Assessment](docs/REPAIR_LEDGER_ASSESSMENT.md) - evidence, design, and implementation boundary
 - [Framework Features vs SQL Patterns](docs/SQL_PATTERNS.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Streaming CDF](docs/STREAMING.md)

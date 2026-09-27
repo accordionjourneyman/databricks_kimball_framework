@@ -1,13 +1,4 @@
-"""Transform-and-validate pipeline for one configured pipeline.
-
-``TransformValidator.transform_and_validate`` is the orchestrator; each
-phase of the transform/gate pipeline lives in its own ``_phase_*`` method
-(ADR-004 grade-A pass) so the sequence is readable and every phase is
-independently testable. Phases run in a fixed order — transformation,
-PII masking, junk materialization, FK resolution, contract gates, null
-policy, declared tests, grain gate, FK-integrity gate — because some
-gates (FK integrity) observe columns that earlier phases add.
-"""
+"""Transform, enrich, and validate one pipeline's source data."""
 
 from __future__ import annotations
 

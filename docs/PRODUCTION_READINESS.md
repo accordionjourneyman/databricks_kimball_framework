@@ -18,9 +18,8 @@ must pass:
 6. ODCS producer/consumer compatibility checks.
 7. CodeQL, dependency review, `pip-audit`, Gitleaks, and Dependabot review.
 
-New behavior is developed test-first. A correctness fix requires a regression
-that fails before the fix. Spark/Delta semantics require a real-Delta test in
-addition to mocks.
+New behavior is developed test-first. Correctness fixes require regression
+coverage. Spark/Delta changes require a real-Delta test in addition to mocks.
 
 ## Compile before execution
 

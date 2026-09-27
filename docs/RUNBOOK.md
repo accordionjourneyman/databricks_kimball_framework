@@ -88,10 +88,10 @@ kimball recover --target prod --table gold.fact_sales --dry-run
 # review the planned RESTORE version + watermark rewinds, then:
 kimball recover --target prod --table gold.fact_sales
 ```
-This is **two-phase**: RESTORE the target to the pre-batch version, then mark the
-batch FAILED and rewind the watermark to the previous SUCCESS watermark (or
-`None` → full CDF replay next run). If phase 2 fails, the result is reported
-`partial: true` — re-run with `--rewind-watermark`.
+Recovery restores the target to its pre-batch version, then marks the batch
+FAILED and rewinds the watermark to the previous SUCCESS watermark (or
+`None` → full CDF replay next run). If the watermark update fails, the result
+is reported as `partial: true`; re-run with `--rewind-watermark`.
 
 **Pitfall.** If the pre-batch version was VACUUMed, `recover` refuses to RESTORE
 and falls back: re-run with `--full-reload` (drops the watermark; the next run
@@ -426,16 +426,15 @@ known category.
 
 **Fix.** `kimball inspect --target <env> --table <t>` for the full state; if the
 batch recorded an error, `kimball explain --target <env> --table <t> --batch-id
-<b>`. Fall back to `system.query.history` (Phase 1.4, Databricks-only) for
-query-level evidence.
+<b>`. On Databricks, use `system.query.history` for query-level evidence.
 
 ---
 
 ## Reference: exit codes
 
 `kimball inspect` / `kimball explain`: `0` consistent, `1` attention required.
-`kimball recover`: `0` success (or dry-run), `1` partial recovery (phase 2 did
-not complete — re-run) or a `StructuredError` (e.g. control-table-missing /
+`kimball recover`: `0` success (or dry-run), `1` partial recovery (watermark
+update incomplete — re-run) or a `StructuredError` (e.g. control-table-missing /
 target-missing). `kimball deploy`: `0` clear (gate passed), `2` blocked
 (breaking without `--allow-breaking`, or a pre-flight blocker).
 `tools/inspect_etl_control.py`: `0` consistent, `1` attention, `2` could not

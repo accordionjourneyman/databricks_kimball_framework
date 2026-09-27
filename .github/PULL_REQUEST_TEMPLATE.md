@@ -20,7 +20,6 @@
 - [ ] `pytest tests/unit/` passes locally
 - [ ] `ruff check src/ tests/` passes
 - [ ] `mypy src/kimball/common/ src/kimball/cli.py` passes
-- [ ] `CHANGELOG.md` updated under `## Unreleased`
 - [ ] Docs updated if public API changed (`docs/CONFIGURATION.md`,
       `README.md`, or relevant doc page)
 - [ ] Tests added for new behavior or regression coverage

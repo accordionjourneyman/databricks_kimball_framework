@@ -1,17 +1,4 @@
-"""Typed model and serializer for CREATE TABLE DDL (ADR-004 step 3).
-
-Pure module: builds and serializes the DDL for a Delta table from typed
-column specs. No SparkSession, no DeltaTable — the caller
-(``TableCreator.create_table_with_clustering``) collects the spec list and
-executes the returned SQL string.
-
-Safety contract (property-tested): identifiers must match
-``^[A-Za-z_][A-Za-z0-9_]*$``, data types and expressions pass the existing
-whitelist regexes, and the serializer quotes every identifier so no
-statement terminator, comment, or extra clause can be smuggled through a
-name slot. Expression and data-type validation raise before any SQL is
-built (fail closed, matching the previous inline behavior).
-"""
+"""Validate typed column specs and serialize safe `CREATE TABLE` DDL."""
 
 from __future__ import annotations
 

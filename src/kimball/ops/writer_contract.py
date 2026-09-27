@@ -1,11 +1,4 @@
-"""Single-writer contract checker (ROADMAP 1.C).
-
-Recovery (RESTORE) and deploy safety both depend on one writer per target.
-A commit tagged with a batch_id the control table does not know about is
-evidence the contract was violated (another kimball run, or an external
-writer reusing the tagging convention). On Serverless, tagging is off so
-the verdict is UNKNOWN rather than a false CLEAN.
-"""
+"""Check whether target commits can be attributed to known pipeline runs."""
 
 from __future__ import annotations
 

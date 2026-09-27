@@ -1,19 +1,4 @@
-"""``kimball recover`` command logic (ROADMAP 1.2) - two-phase recovery.
-
-Phase 1: RESTORE the target to the version before the zombie's first commit
-(or to an operator-supplied ``--version`` / ``--timestamp`` when commit
-tagging is unavailable on Serverless).
-Phase 2: reconcile ``etl_control`` - mark the zombie batch FAILED and rewind
-the watermark to the last SUCCESS watermark for each source (or None, forcing
-a full CDF replay on the next run). The two stores are separate transactions,
-so phase 2 failing is reported loudly and is re-runnable.
-
-Pre-flight:
-* Refuses a RESTORE that would land on a version Delta history no longer
-  retains (VACUUM removed it), falling back to a documented full-reload path.
-* Blocks on a suspected single-writer violation unless ``--force`` is given.
-* Warns when upstream targets (DAG) also have RUNNING batches.
-"""
+"""Plan and execute recovery of incomplete or inconsistent pipeline runs."""
 
 from __future__ import annotations
 
@@ -54,7 +39,7 @@ class RecoverResult:
     dry_run: bool
     plans: list[ZombieRecoveryPlan]
     executed: list[str]  # human-readable actions taken
-    partial: bool  # phase 2 did not fully complete
+    partial: bool  # Recovery stopped before all state was reconciled.
     warnings: list[str]
 
     def to_dict(self) -> dict[str, Any]:

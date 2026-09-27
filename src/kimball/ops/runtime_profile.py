@@ -1,10 +1,4 @@
-"""Runtime detection (ROADMAP 1.D).
-
-On Serverless compute, setting ``spark.databricks.delta.commitInfo.userMetadata``
-is restricted (KNOWN_LIMITATIONS S2), so crash recovery cannot attribute
-commits to a batch_id. Tools must detect this and degrade explicitly rather
-than silently producing wrong answers.
-"""
+"""Detect runtime capabilities that affect commit attribution and recovery."""
 
 from __future__ import annotations
 

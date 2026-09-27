@@ -104,12 +104,9 @@ class StreamingMicroBatchProcessor:
         batch_id: int,
         source_version: int | None = None,
     ) -> None:
-        """Process one streaming microbatch through the merge pipeline.
+        """Process a micro-batch through validation, merge, and commit.
 
-        Orchestrates six ordered phases: prepare, contract gates, CDF
-        metadata re-attachment, key resolution/null policy, merge, and
-        commit (metrics + watermarks + temporal state). Each phase lives
-        in its own ``_batch_*`` method (ADR-004 grade-A pass).
+        Commit metrics, watermarks, and temporal state after the merge.
         """
         source_name = source.name
         self._pending_resolution_metrics = []

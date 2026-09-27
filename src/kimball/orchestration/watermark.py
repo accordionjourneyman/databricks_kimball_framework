@@ -408,12 +408,7 @@ class ETLControlManager:
         return self._delta_table
 
     def _upsert_control_records(self, records: list[ETLControlRecord]) -> None:
-        """Upsert batch records into etl_control with concurrent-writer retries.
-
-        Phases (ADR-004 grade-A pass): normalize records against the update
-        schema, build the conditional update/insert sets, then execute with
-        bounded retries on Delta concurrency conflicts.
-        """
+        """Upsert control records, retrying Delta concurrency conflicts."""
         if not records:
             return
         delta_table = self._get_delta_table()

@@ -63,23 +63,20 @@ Spark session (JDK 17) or a Databricks Connect connection.
    a regression test will be asked for. A new feature without tests
    will be asked for.
 
-3. **CHANGELOG.md updated** under the `## Unreleased` section.
-
-4. **Documentation updated** if you change public APIs. The schema
+3. **Documentation updated** if you change public APIs. The schema
    reference is `docs/CONFIGURATION.md`; add your change there.
 
-5. **No secrets, tokens, or hardcoded credentials** in diffs. Use
+4. **No secrets, tokens, or hardcoded credentials** in diffs. Use
    `env://NAME` or `databricks://scope/key` references.
 
-6. **Backward compatibility considered.** If your change breaks
+5. **Backward compatibility considered.** If your change breaks
    existing configs, note it in the PR description. Breaking changes
    are accepted during the beta phase with a deprecation note.
 
-7. **Pass the production-readiness checklist:**
+6. **Pass the production-readiness checklist:**
    - [ ] `pytest tests/unit/` passes locally
    - [ ] `ruff check src/ tests/` passes
    - [ ] `mypy src/kimball/common/ src/kimball/cli.py` passes
-   - [ ] `CHANGELOG.md` updated
    - [ ] Docs updated if public API changed
 
 ## Issue-first policy

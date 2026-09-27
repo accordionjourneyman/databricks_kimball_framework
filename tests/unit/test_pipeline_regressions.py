@@ -1,8 +1,4 @@
-"""Regression tests for Algorithmic Bug Report findings.
-
-Each test documents a specific bug (TRUE findings from the report) and asserts
-the *fixed* behaviour so that any regression will cause the test to fail.
-"""
+"""Pipeline behavior tests for loading, execution, and change tracking."""
 
 from __future__ import annotations
 
@@ -66,7 +62,7 @@ def _setup_running_batches_mock(spark_mock, stale_rows):
 
 
 # ===================================================================
-# #1  SCD6 missing generate_keys: NULL surrogate keys
+# SCD Type 6 key generation
 # ===================================================================
 
 
@@ -75,7 +71,7 @@ def _setup_running_batches_mock(spark_mock, stale_rows):
 # =====================================================================
 
 
-class TestBugSCD2TimeMixing:
+class TestSCD2Timeline:
     """Validity boundaries use one explicit business-time column."""
 
     def test_validity_chain_uses_consistent_timeline(self):
@@ -94,11 +90,11 @@ class TestBugSCD2TimeMixing:
 
 
 # ===================================================================
-# #5  Double FK validation
+# Foreign-key validation
 # ===================================================================
 
 
-class TestBugDoubleFKValidation:
+class TestForeignKeyValidation:
     """Both validate_relationships and validate_fact_fk_integrity apply __is_current."""
 
     def test_both_validators_called_for_same_fk(self):
@@ -146,17 +142,18 @@ class TestBugDoubleFKValidation:
         orch._transform_and_validate({"src": transformed_df})
 
         orch._validator.run_config_tests.assert_called_once()
-        # validate_fact_fk_integrity is now skipped when tests are defined
+        # Configured tests suppress the separate FK-integrity pass.
         orch._validator.validate_fact_fk_integrity.assert_not_called()
 
 
 # ===================================================================
-# #8 + #11  Config fingerprint omits key fields
+# Configuration fingerprints
 # ===================================================================
 
 
-class TestBugConfigFingerprintIncomplete:
-    """compute_fingerprint now includes foreign_keys, delete_strategy, etc."""
+class TestConfigFingerprints:
+    """Fingerprints include execution-relevant configuration such as
+    foreign keys and delete strategy."""
 
     def test_fingerprint_includes_foreign_keys(self):
         from kimball.common.config import (
@@ -261,12 +258,12 @@ class TestBugConfigFingerprintIncomplete:
 
 
 # ===================================================================
-# #9  preserve_all_changes early return on first caught-up source
+# Per-source version planning
 # ===================================================================
 
 
-class TestBugPreserveAllChangesEarlyReturn:
-    """Version loop now checks ALL sources before returning."""
+class TestPreserveAllChanges:
+    """Version planning checks every source before completing a batch."""
 
     @patch("kimball.orchestration.orchestrator.Orchestrator._run_pipeline_once")
     def test_runs_when_not_all_sources_caught_up(self, mock_run):
@@ -312,12 +309,12 @@ class TestBugPreserveAllChangesEarlyReturn:
 
 
 # ===================================================================
-# #10  stop_on_failure cancel is cosmetic
+# Stop-on-failure cancellation
 # ===================================================================
 
 
-class TestBugStopOnFailureCosmetic:
-    """f.cancel() now only cancels futures that haven't started."""
+class TestStopOnFailure:
+    """Cancellation applies only to futures that have not started."""
 
     def test_cancel_only_affects_unstarted_futures(self):
 
@@ -334,12 +331,12 @@ class TestBugStopOnFailureCosmetic:
 
 
 # ===================================================================
-# #14  SCD2 has no no-op short-circuit
+# SCD Type 2 no-op handling
 # ===================================================================
 
 
-class TestBugSCD2NoNoopShortcircuit:
-    """SCD2 now short-circuits when upserts and deletes are both empty."""
+class TestSCD2Noop:
+    """Empty SCD2 changes return without a merge."""
 
     @patch("kimball.processing.scd2.generate_keys")
     @patch("kimball.processing.scd2.compute_hashdiff")
@@ -374,12 +371,12 @@ class TestBugSCD2NoNoopShortcircuit:
 
 
 # ===================================================================
-# #16  SCD1 no-op check materializes source+target before merge
+# SCD Type 1 no-op handling
 # ===================================================================
 
 
-class TestBugSCD1NoopPreScan:
-    """SCD1 no-op check now skips empty sources and selects only needed columns."""
+class TestSCD1Noop:
+    """SCD1 no-op detection skips empty inputs and reads only required columns."""
 
     @patch("kimball.processing.scd1.DeltaTable")
     @patch("kimball.processing.scd1.generate_keys")
@@ -420,11 +417,11 @@ class TestBugSCD1NoopPreScan:
 
 
 # ===================================================================
-# #19  Streaming per-version writes full Delta table
+# Streaming per-version processing
 # ===================================================================
 
 
-class TestBugStreamingPerVersionMaterialization:
+class TestStreamingVersionMaterialization:
     """Per-version processing filters the persisted micro-batch in memory."""
 
     def test_per_version_avoids_delta_staging_tables(self):
@@ -470,12 +467,12 @@ class TestBugStreamingPerVersionMaterialization:
 
 
 # ===================================================================
-# #20  Streaming extra count action
+# Streaming metrics
 # ===================================================================
 
 
-class TestBugStreamingExtraCount:
-    """_execute_one_microbatch no longer issues a separate count()."""
+class TestStreamingMetrics:
+    """Micro-batch metrics are collected without a separate count action."""
 
     @patch("kimball.streaming.services.microbatch._merger")
     def test_count_not_called_separately(self, microbatch_merger):
@@ -519,11 +516,11 @@ class TestBugStreamingExtraCount:
 
 
 # ===================================================================
-# #23  Re-derive versions per run
+# Source version planning
 # ===================================================================
 
 
-class TestBugReDeriveVersions:
+class TestVersionCaching:
     """The work-plan owns version discovery; the version loop does not."""
 
     def test_versions_cached_exactly_once(self):
@@ -556,12 +553,12 @@ class TestBugReDeriveVersions:
 
 
 # ===================================================================
-# #24  bus_matrix substring misclassification
+# Bus-matrix classification
 # ===================================================================
 
 
-class TestBugBusMatrixSubstring:
-    """analyze_dependencies now uses prefix/suffix matching, not substring."""
+class TestBusMatrixClassification:
+    """Dimension names are classified using their full prefixes and suffixes."""
 
     def test_staging_table_with_dim_in_name_not_treated_as_dimension(self):
         from kimball.common.config import ForeignKeyConfig, SourceConfig, TableConfig
@@ -607,12 +604,12 @@ class TestBugBusMatrixSubstring:
 
 
 # ===================================================================
-# #25  validate_relationships vs _check_single_fk filter mismatch
+# Current dimension relationships
 # ===================================================================
 
 
-class TestBugValidateRelationshipsFilterMismatch:
-    """validate_relationships now applies __is_current filter on the dimension."""
+class TestRelationshipValidation:
+    """Relationship validation considers only current dimension rows."""
 
     def test_validate_relationships_filters_current(self):
         from kimball.orchestration.validation import DataQualityValidator
@@ -645,17 +642,17 @@ class TestBugValidateRelationshipsFilterMismatch:
 
 
 # ===================================================================
-# #26  _generate_skeletons columnâ†’df map collision
+# Skeleton generation columns
 # ===================================================================
 
 
 # ===================================================================
-# #28  metrics total_pipeline double count
+# Metrics aggregation
 # ===================================================================
 
 
-class TestBugMetricsDoubleCount:
-    """total_pipeline is now excluded from total_execution_time_ms."""
+class TestMetrics:
+    """The aggregate pipeline duration is excluded from the sum of stage durations."""
 
     def test_total_pipeline_not_double_counted(self):
         from kimball.observability.resilience import QueryMetricsCollector
@@ -678,12 +675,12 @@ class TestBugMetricsDoubleCount:
 
 
 # ===================================================================
-# #30  _get_table_version swallows all errors
+# Delta history error handling
 # ===================================================================
 
 
-class TestBugGetTableVersionSwallowsErrors:
-    """_get_table_version now only catches AnalysisException, not all errors."""
+class TestDeltaHistoryErrors:
+    """Delta history lookup handles missing tables and propagates other failures."""
 
     def test_permission_error_propagates(self):
         from kimball.orchestration.transaction import TransactionManager
@@ -704,12 +701,12 @@ class TestBugGetTableVersionSwallowsErrors:
 
 
 # ===================================================================
-# #31  _upsert_control_record key leak
+# Control-record update fields
 # ===================================================================
 
 
-class TestBugUpsertControlRecordKeyLeak:
-    """update_set is now restricted to schema fields only."""
+class TestWatermarkUpdateFields:
+    """Control-record updates contain only fields in the target schema."""
 
     @patch("kimball.orchestration.watermark.DeltaTable")
     def test_non_schema_keys_not_in_update_set(self, mock_dt_class):
@@ -760,12 +757,12 @@ class TestBugUpsertControlRecordKeyLeak:
 
 
 # ===================================================================
-# #32  Zombie detection no TTL
+# Zombie detection
 # ===================================================================
 
 
-class TestBugZombieDetectionNoTTL:
-    """get_running_batches now applies a TTL to filter stale RUNNING records."""
+class TestZombieDetection:
+    """Zombie detection filters stale RUNNING records using the configured TTL."""
 
     def test_stale_running_batches_filtered_by_ttl(self):
         manager, spark_mock = _make_etl_manager()

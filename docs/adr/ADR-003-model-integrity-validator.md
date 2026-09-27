@@ -131,7 +131,7 @@ modeling_exceptions:
   - code: FACT_DIMENSION_ATTRIBUTE   # must be a known code
     columns: [customer_name]
     reason: denormalized for dashboard latency; see dashboard spike
-    decision_ref: phase2/evidence/ADR-002
+    decision_ref: analytics/customer-summary/42
 ```
 
 Pydantic validates the shape (unknown codes, blank reasons, empty columns and
@@ -286,8 +286,5 @@ third-party need appears).
 ## References
 
 - `docs/ARCHITECTURE.md` — compile-time control plane
-- `tools/benchmark_metrics.py` / Sourcery triage (session log, 2026-08-30) —
-  reporting-shape and auto-fixability precedent
-- `phase2/evidence/ADR-002-controlled-dbt-assessment.md` — ADR conventions
 - Kimball & Ross, *The Data Warehouse Toolkit*, 3rd ed. — conformance, grain,
   and fact/dimension attribute placement rules that motivate the check set

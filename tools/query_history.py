@@ -8,10 +8,8 @@ Statement Execution API and classifies each statement into a pattern bucket.
 Reports volume/duration by category, redundant ("waste") operations, query
 source breakdown, and the worst queries.
 
-Databricks-only. Classification is by SQL text: the framework's batch_id lives
-on Delta *commits* (``commitInfo.userMetadata``), not on
-``system.query.history`` rows, so tag-based attribution of query rows is not
-possible today (see ROADMAP 1.4 for the framework query-tag follow-up).
+Databricks-only. Classification uses SQL text because the framework's
+``batch_id`` is stored on Delta commits, not on ``system.query.history`` rows.
 
 Usage::
 

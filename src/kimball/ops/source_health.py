@@ -1,9 +1,4 @@
-"""Source health checker (ROADMAP 1.B).
-
-Detects the most common real-world CDF failure: the source was VACUUMed past
-the watermark, so the next incremental run cannot resume from watermark+1.
-Also surfaces disabled CDF and recorded-vs-current schema drift.
-"""
+"""Assess source availability, CDF retention, and schema drift."""
 
 from __future__ import annotations
 

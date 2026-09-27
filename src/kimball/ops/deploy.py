@@ -1,21 +1,4 @@
-"""``kimball deploy`` command logic (ROADMAP 1.5) - the promotion gate.
-
-Change classification is already provided by :func:`kimball.planning.manifest.
-diff_manifests` (metadata_only / non_breaking / requires_validation /
-requires_backfill / breaking). This module adds the **pre-flight** that the
-refined roadmap mandates and the deploy decision:
-
-* no target in the project may be in an inconsistent state (zombie, watermark
-  drift, orphan commits) or under a suspected single-writer violation -
-  deploying onto either is how you create a second writer;
-* every source must exist, and CDF must be enabled where ``cdc_strategy: cdf``;
-* config secret references (``env://`` / ``databricks://``) must be resolvable
-  in the target environment;
-* breaking changes block unless ``--allow-breaking``.
-
-``kimball deploy`` is a read-only gate; actual manifest/bundle promotion is
-done via the existing ``kimball manifest publish`` once the gate passes.
-"""
+"""Read-only preflight and manifest comparison for `kimball deploy`."""
 
 from __future__ import annotations
 

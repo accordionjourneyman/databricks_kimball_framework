@@ -1,23 +1,4 @@
-"""State reconciler (ROADMAP 1.A) - the crown jewel of Phase 1.
-
-The framework's known correctness boundary is that the Delta target and
-``etl_control`` are separate transactions (KNOWN_LIMITATIONS S2). Recovery
-RESTOREs the target but does not rewind ``etl_control``, so after a crash
-the watermark can be ahead of the target's actual state - and the next run
-silently skips CDF versions.
-
-This module joins the two stores on the one key they share - ``batch_id`` -
-rather than comparing watermark (a *source* CDF version) to target_version
-(a *target* Delta commit count), which are different number spaces. The
-signals used are:
-
-* a RUNNING batch in ``etl_control`` -> zombie
-* a commit tagged with a RUNNING batch_id -> zombie with committed data
-* a RESTORE operation in target history + the last SUCCESS batch's tagged
-  commit now absent -> watermark ahead of target (post-rollback drift)
-* a commit tagged with a batch_id unknown to ``etl_control`` -> target
-  ahead of watermark
-"""
+"""Reconcile pipeline control records with target Delta history."""
 
 from __future__ import annotations
 
@@ -73,14 +54,10 @@ class StateReconciler:
         self._runtime = runtime
 
     def reconcile(self, target_table: str) -> ReconciliationReport:
-        """Reconcile etl_control watermarks against the target's Delta history.
+        """Reconcile control records and Delta history for one target.
 
-        Verdict ladder (first match wins, ADR-004 grade-A pass):
-        1. missing control table / missing target (pre-flight)
-        2. RUNNING zombies (three sub-cases: committed, tagging-off, clean)
-        3. post-rollback drift (RESTORE present, watermark not rewound)
-        4. orphan commits (target ahead of control table)
-        5. consistent
+        Checks missing resources, RUNNING batches, rollback drift, unrecorded
+        commits, then consistent state.
         """
         if not self._control.control_table_exists():
             return _report(

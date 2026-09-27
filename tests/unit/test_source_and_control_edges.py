@@ -1,8 +1,4 @@
-"""Regression tests for Round-2 Bug Report findings.
-
-Each test confirms a specific bug exists in the current code. When the bug
-is fixed, the test will fail — prompting an update to assert the fixed behaviour.
-"""
+"""Tests for source loading, watermark, recovery, and validation behavior."""
 
 from __future__ import annotations
 
@@ -30,19 +26,8 @@ def _make_df(columns: list[str]) -> MagicMock:
     return df
 
 
-# ===================================================================
-# #2  HIGH: SCD6 SK fix clobbers existing rows' SK
-# ===================================================================
-
-
-# ===================================================================
-# #3  MEDIUM: reset_watermark SQL injection
-# ===================================================================
-
-
-class TestBugResetWatermarkSQLInjection:
-    """reset_watermark must escape single quotes in table names so a crafted
-    name cannot break out of the string literal (SQL injection)."""
+class TestWatermarkSqlEscaping:
+    """Watermark values escape quotes so they cannot alter the generated SQL."""
 
     def test_reset_watermark_escapes_injected_quote(self):
         from kimball.orchestration.watermark import ETLControlManager
@@ -53,43 +38,27 @@ class TestBugResetWatermarkSQLInjection:
 
         manager = ETLControlManager(etl_schema="test", spark_session=spark_mock)
 
-        # Payload that would break out of the WHERE string literal if the
-        # table name were interpolated raw (the original bug).
+        # SQL syntax characters must remain part of the string value.
         payload = "evil'; DROP TABLE etl_control;--"
         manager.reset_watermark(payload, "source_table")
 
         sql_call = spark_mock.sql.call_args[0][0]
         assert sql_call.startswith("DELETE FROM `test`.`etl_control` WHERE ")
-        # The injected single quote MUST be doubled ('') so the payload stays
-        # inside the string literal instead of terminating it. Just checking
-        # that "'" appears in the SQL would pass even with no escaping, since
-        # the literal is single-quoted anyway -- the real protection is the
-        # doubling.
+        # Doubling the quote keeps the payload inside the string literal.
         assert "target_table = 'evil''; DROP TABLE etl_control;--'" in sql_call, (
             f"Injected quote not escaped; SQL vulnerable to injection: {sql_call!r}"
         )
-        # The dangerous statement must remain INSIDE the escaped literal, not
-        # appear as a separate top-level statement.
+        # SQL syntax from the payload must remain inside the literal.
         assert "DROP TABLE etl_control" in sql_call  # present but escaped
         assert "DROP TABLE `etl_control`" not in sql_call, (
             f"Injection escaped the string literal: {sql_call!r}"
         )
 
 
-# ===================================================================
-# #4  MEDIUM: SCD4 duplicate __is_current=true EAV rows
-# ===================================================================
+class TestCdfVersionProcessing:
+    """Per-version processing uses the selected CDF data and its metadata."""
 
-
-# ===================================================================
-# #5  MEDIUM: Streaming per-version joins CDF metadata from wrong table
-# ===================================================================
-
-
-class TestBugStreamingPerVersionWrongCDFTable:
-    """Per-version processing must preserve each filtered CDF version."""
-
-    def test_per_version_readsmeta_from_original_batch(self):
+    def test_per_version_processing_preserves_batch_metadata(self):
         from kimball.streaming.orchestrator import StreamingOrchestrator
 
         orch = StreamingOrchestrator.__new__(StreamingOrchestrator)
@@ -127,14 +96,8 @@ class TestBugStreamingPerVersionWrongCDFTable:
         orch._execute_one_microbatch.assert_called_once()
 
 
-# ===================================================================
-# #6  HIGH: Zombie recovery batch_id mismatch
-# ===================================================================
-
-
-class TestBugZombieRecoveryBatchIdMismatch:
-    """batch_start_all generates per-source UUIDs, but recover_zombies
-    matches against the run-level batch_id used as userMetadata."""
+class TestZombieRecoveryBatchIds:
+    """A multi-source batch start returns a distinct ID for each source."""
 
     def test_batch_start_all_uses_per_source_uuids(self):
         from kimball.orchestration.watermark import ETLControlManager
@@ -178,21 +141,16 @@ class TestBugZombieRecoveryBatchIdMismatch:
                 result = manager.batch_start_all("target", ["src_a", "src_b"])
             mock_get_states.assert_called_once_with("target", ["src_a", "src_b"])
 
-        # The bug: each source gets its own UUID, not the run-level batch_id
+        # Each source has its own control-record identifier.
         assert "src_a" in result
         assert "src_b" in result
         assert result["src_a"] != result["src_b"]
 
 
-# ===================================================================
-# #8  MEDIUM: Double FK validation per run
-# ===================================================================
+class TestForeignKeyValidation:
+    """Configured tests suppress the separate foreign-key integrity pass."""
 
-
-class TestBugDoubleFKValidation:
-    """validate_fact_fk_integrity is now skipped when run_config_tests covers FKs."""
-
-    def test_validate_fact_fk_skipped_when_tests_defined(self):
+    def test_separate_fk_validation_skipped_when_tests_configured(self):
         from kimball.common.config import (
             ForeignKeyConfig,
             SourceConfig,
@@ -237,21 +195,12 @@ class TestBugDoubleFKValidation:
         orch._transform_and_validate({"src": transformed_df})
 
         orch._validator.run_config_tests.assert_called_once()
-        # After fix: validate_fact_fk_integrity is skipped when tests are defined
+        # Configured tests suppress the separate integrity pass.
         orch._validator.validate_fact_fk_integrity.assert_not_called()
 
 
-# ===================================================================
-# #13 LOW/MED: SCD2 perpetual churn when tracked history columns are NULL
-# ===================================================================
-
-# ===================================================================
-# #14 LOW: reset_watermark metric attribution
-# ===================================================================
-
-
-class TestBugResetWatermarkMetricAttribution:
-    """Metrics divided by len(active_dfs) inside per-source loop."""
+class TestWatermarkMetricAttribution:
+    """Execution metrics are apportioned across active sources."""
 
     def test_metrics_fractionally_attributed(self):
         from kimball.common.config import SourceConfig, TableConfig

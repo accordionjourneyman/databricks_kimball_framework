@@ -1,9 +1,4 @@
-"""``kimball inspect`` command logic (ROADMAP 1.1).
-
-Composes the harness into a single JSON-serialisable report. Works off
-``etl_control`` + target Delta history only - no YAML config required, so an
-operator can inspect a target whose config file is not at hand.
-"""
+"""Build inspection reports from control records and Delta history."""
 
 from __future__ import annotations
 

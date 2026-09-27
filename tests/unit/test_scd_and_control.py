@@ -1,16 +1,4 @@
-"""
-Regression tests for bugs found and fixed in the Kimball Framework.
-
-Each test documents a specific bug that was identified, the fix applied,
-and asserts the CORRECT (fixed) behavior. These serve as regression tests
-to prevent the bugs from reappearing.
-
-Bug categories:
-  1. SCD logic bugs
-  2. Watermark bugs
-  3. Control table bugs
-  4. Data processing bugs (duplicates, full reload, model change detection)
-"""
+"""Tests for SCD strategies, watermarks, and control records."""
 
 import inspect
 import os
@@ -23,18 +11,12 @@ from pyspark.sql import SparkSession
 os.environ.setdefault("KIMBALL_ETL_SCHEMA", "test_schema")
 
 
-# =====================================================================
-# 1. SCD LOGIC BUGS
-# =====================================================================
+# SCD and control-table behavior
 
 
-class TestSCD1DedupBug:
-    """BUG-SCD1-001: SCD1 dedup was silently skipped when _commit_version
-    was missing but _change_type was present.
-
-    FIX: Now falls back to _commit_timestamp, then __etl_processed_at,
-    and raises a clear ValueError if no ordering column is available.
-    """
+class TestSCD1Deduplication:
+    """SCD1 CDF deduplication uses the first available ordering column:
+    commit version, commit timestamp, or ETL processing time."""
 
     @patch("kimball.processing.scd1.generate_keys")
     @patch("kimball.processing.scd1.dedup_cdf")
@@ -47,8 +29,7 @@ class TestSCD1DedupBug:
         mock_dedup,
         mock_generate_keys,
     ):
-        """If _change_type exists but _commit_version does not, dedup
-        should fall back to __etl_processed_at."""
+        """Use ETL processing time when commit version is unavailable."""
         from kimball.processing.scd1 import merge_scd1
 
         mock_dt = MagicMock()
@@ -86,12 +67,9 @@ class TestSCD1DedupBug:
             schema_evolution=False,
             surrogate_key_col="sk",
         )
-
-        # FIX VERIFIED: "_rn" IS added, meaning dedup ran with fallback column
         assert "_rn" in with_column_calls, (
-            "BUG-SCD1-001 regression: SCD1 dedup was skipped because "
-            "_commit_version is missing. It should fall back to "
-            "__etl_processed_at for ordering."
+            "CDF deduplication should use ETL processing time "
+            "when the commit version is unavailable."
         )
 
     @patch("kimball.processing.scd1.dedup_cdf")
@@ -100,8 +78,7 @@ class TestSCD1DedupBug:
     def test_scd1_dedup_raises_when_no_ordering_column(
         self, mock_get_spark, mock_delta_table, mock_dedup
     ):
-        """If _change_type exists but NO ordering column is available,
-        a clear ValueError should be raised."""
+        """Raise a clear error when no CDF ordering column is available."""
         from kimball.processing.scd1 import merge_scd1
 
         mock_dt = MagicMock()
@@ -129,116 +106,90 @@ class TestSCD1DedupBug:
             )
 
 
-class TestSCD4NullEqualityBug:
-    """BUG-SCD4-001: SCD4 history MERGE used ``=`` instead of ``<=>`` for
-    value comparison, preventing NULL old values from being expired.
-
-    FIX: Changed to ``<=>`` (null-safe equality) so NULL values can be
-    expired correctly.
-    """
+class TestSCD4NullEquality:
+    """SCD4 history comparisons use null-safe equality when expiring rows."""
 
     def test_scd4_expire_merge_condition_uses_null_safe_equality(self):
-        """The SCD4 EXPIRE merge condition should use ``<=>`` for value
-        comparison."""
+        """Use null-safe equality in the SCD4 expiration condition."""
         from kimball.processing.scd4 import _merge_history
 
         source_code = inspect.getsource(_merge_history)
 
         assert "target.value <=> source.value" in source_code, (
-            "BUG-SCD4-001 regression: SCD4 EXPIRE merge condition should use "
+            "SCD4 EXPIRE merge condition should use "
             "<=> (null-safe equality) for value comparison, not '='."
         )
-        # Ensure the old unsafe '=' is no longer used for value comparison
+        # The expiration condition must not use ordinary equality.
         assert "target.value = source.value" not in source_code, (
-            "BUG-SCD4-001 regression: unsafe '=' found for value comparison. "
+            "unsafe '=' found for value comparison. "
             "Should be '<=>'."
         )
 
 
-class TestSCD6CurrentValuesAliasBug:
-    """BUG-SCD6-001: SCD6 ``current_values`` DataFrame was not aliased in
-    the join, causing ``col("current_values.hashdiff")`` to fail.
-
-    FIX: Added ``.alias("current_values")`` to the join.
-    """
+class TestSCD6CurrentValuesJoin:
+    """The current-values DataFrame is aliased for qualified joins."""
 
     def test_scd6_current_values_aliased_in_join(self):
-        """The ``current_values`` DataFrame should be aliased as
-        ``current_values`` in the join."""
+        """Alias the current-values DataFrame used by the join."""
         from kimball.processing.scd6 import merge_scd6
 
         source_code = inspect.getsource(merge_scd6)
 
         assert "current_values" in source_code, (
-            "BUG-SCD6-001 regression: SCD6 'current_values' DataFrame should "
+            "SCD6 'current_values' DataFrame should "
             "be used in the join so that col('current_values.hashdiff') resolves correctly."
         )
 
 
-class TestSCD6DeleteTargetsMissingEffectiveAtBug:
-    """BUG-SCD6-002: SCD6 ``delete_targets`` only selected surrogate_key
-    and ``__action``, omitting ``effective_at_column``.
-
-    FIX: Added ``col(self.effective_at_column)`` to the select so
-    ``__valid_to`` is set correctly on EXPIRE_DELETE.
-    """
+class TestSCD6DeleteColumns:
+    """Delete targets retain effective time so expired rows get the correct validity end."""
 
     def test_scd6_delete_targets_includes_effective_at(self):
-        """``delete_targets`` should include ``self.effective_at_column``
-        so that ``__valid_to`` is set correctly on EXPIRE_DELETE."""
+        """Keep effective time in delete targets for validity updates."""
         from kimball.processing.scd6 import merge_scd6
 
         source_code = inspect.getsource(merge_scd6)
 
         assert "EXPIRE_DELETE" in source_code
-        # Find the delete_targets select block
+        # Check the selected columns used by the expiration branch.
         delete_section = source_code.split("EXPIRE_DELETE")[0].rsplit("select", 1)[-1]
         assert (
             "effective_col" in delete_section or "effective_at_column" in delete_section
         ), (
-            "BUG-SCD6-002 regression: SCD6 delete_targets should include "
+            "SCD6 delete_targets should include "
             "effective_at_column in its select so __valid_to is set correctly."
         )
 
 
-class TestSCD6DuplicateCurrentColumnsBug:
-    """BUG-SCD6-003: SCD6 ``staged_updates`` produced duplicate
-    ``current_*`` column names on 2nd+ run.
-
-    FIX: Added ``and not c.startswith("current_")`` to the filter condition
-    to exclude existing current_* columns from the old.* projection.
-    """
+class TestSCD6UpdatedColumns:
+    """Staged updates omit current-value columns already present in the target."""
 
     def test_scd6_staged_updates_excludes_old_current_columns(self):
-        """The select in staged_updates should exclude existing
-        ``current_*`` columns from the ``old.*`` projection."""
+        """Exclude existing current-value columns from staged updates."""
         from kimball.processing.scd6 import merge_scd6
 
         source_code = inspect.getsource(merge_scd6)
 
         assert "for c in all_existing.columns" in source_code
         assert 'not c.startswith("current_")' in source_code, (
-            "BUG-SCD6-003 regression: SCD6 staged_updates should exclude "
+            "SCD6 staged_updates should exclude "
             "current_* columns from the old.* projection to avoid duplicate "
             "column names on 2nd+ run."
         )
 
 
-# =====================================================================
-# 3. CONTROL TABLE BUGS
-# =====================================================================
+# SCD and control-table behavior
 
 
-class TestControlTableBugs:
-    """Bugs in ETLControlManager control table operations."""
+class TestControlTableOperations:
+    """Control-table updates preserve record fields and metrics."""
 
     @patch("kimball.orchestration.watermark.DeltaTable")
     @patch("kimball.orchestration.watermark.col")
     def test_upsert_mixed_update_keys_uses_union_of_all_keys(
         self, mock_col, mock_delta_table
     ):
-        """BUG-CT-001: _upsert_control_records should compute update_set
-        from the UNION of ALL record keys, not just records[0].keys()."""
+        """Build the update set from fields present across all records."""
         from kimball.orchestration.watermark import ETLControlManager
 
         spark_mock = MagicMock()
@@ -289,11 +240,9 @@ class TestControlTableBugs:
         upsert_builder = merge_builders[0]
         update_call_args = upsert_builder.whenMatchedUpdate.call_args
         update_set = update_call_args.kwargs.get("set", {})
-
-        # FIX VERIFIED: last_processed_version IS in update_set because
-        # the fix computes the union of all record keys
+        # The update set includes fields present in any input record.
         assert "last_processed_version" in update_set, (
-            "BUG-CT-001 regression: _upsert_control_records should compute "
+            "_upsert_control_records should compute "
             "update_set from the UNION of all record keys, not just "
             "records[0].keys()."
         )
@@ -303,7 +252,7 @@ class TestControlTableBugs:
     def test_batch_complete_updates_watermark_and_metrics(
         self, mock_col, mock_delta_table
     ):
-        """BUG-CT-002 (verification): batch_complete should update both
+        """batch_complete should update both
         last_processed_version and row metrics."""
         from kimball.orchestration.watermark import ETLControlManager
 
@@ -354,7 +303,7 @@ class TestControlTableBugs:
 
     @patch("kimball.orchestration.watermark.DeltaTable")
     def test_migrate_schema_detects_type_mismatches(self, mock_delta_table):
-        """BUG-CT-003: _migrate_schema should detect and warn about type
+        """_migrate_schema should detect and warn about type
         mismatches in existing columns."""
         from pyspark.sql.types import (
             IntegerType,
@@ -392,9 +341,7 @@ class TestControlTableBugs:
         spark_mock.table.return_value = existing_df
 
         ETLControlManager(etl_schema="test", spark_session=spark_mock)
-
-        # FIX VERIFIED: _migrate_schema should NOT add last_processed_version
-        # via ALTER TABLE ADD COLUMN because it already exists.
+        # Existing fields must not be added to the table again.
         alter_calls = [
             call.args[0]
             for call in spark_mock.sql.call_args_list
@@ -402,31 +349,27 @@ class TestControlTableBugs:
         ]
         last_processed_alter = [c for c in alter_calls if "last_processed_version" in c]
         assert len(last_processed_alter) == 0, (
-            "BUG-CT-003 regression: _migrate_schema should not ADD COLUMN "
+            "_migrate_schema should not ADD COLUMN "
             "for existing columns. It should detect type mismatches and "
             "log a warning instead."
         )
 
 
 # =====================================================================
-# 4. DATA PROCESSING BUGS (duplicates, full reload, model change detection)
+# SQL expression and SCD behavior
 # =====================================================================
 
 
-class TestSafeSqlExpressionBug:
-    """BUG-DP-001: ``_is_safe_sql_expression`` rejected hyphens, commas,
-    and exclamation marks, blocking valid constraint expressions.
-
-    FIX: Added ``-``, ``,``, ``!``, ``+``, ``*``, ``/`` to the whitelist
-    regex.
-    """
+class TestSqlExpressionValidation:
+    """Expression validation accepts comparison operators, arithmetic,
+    and function arguments."""
 
     def test_negative_number_accepted(self):
         """``amount >= -1`` should be valid."""
         from kimball.processing.table_creator import _is_safe_sql_expression
 
         assert _is_safe_sql_expression("amount >= -1") is True, (
-            "BUG-DP-001 regression: _is_safe_sql_expression should accept "
+            "_is_safe_sql_expression should accept "
             "hyphens for negative numbers."
         )
 
@@ -435,7 +378,7 @@ class TestSafeSqlExpressionBug:
         from kimball.processing.table_creator import _is_safe_sql_expression
 
         assert _is_safe_sql_expression("status != 0") is True, (
-            "BUG-DP-001 regression: _is_safe_sql_expression should accept "
+            "_is_safe_sql_expression should accept "
             "'!' for != operator."
         )
 
@@ -444,29 +387,18 @@ class TestSafeSqlExpressionBug:
         from kimball.processing.table_creator import _is_safe_sql_expression
 
         assert _is_safe_sql_expression("COALESCE(a, b) > 0") is True, (
-            "BUG-DP-001 regression: _is_safe_sql_expression should accept "
+            "_is_safe_sql_expression should accept "
             "commas for function arguments."
         )
 
 
-class TestValidateExpressionFalsePositive:
-    """BUG-DP-002: ``validate_expression`` flagged qualified column
-    references containing SQL keywords as forbidden.
-
-    FIX: Changed regex to require whitespace AFTER the keyword, so
-    ``select.flag = 1`` (where ``select`` is a table alias) is NOT
-    flagged, while ``SELECT * FROM`` (SQL statement) IS flagged.
-    """
+class TestSqlColumnReferences:
+    """Qualified column references may use SQL keywords as aliases;
+    SQL statements are rejected."""
 
     @patch("kimball.orchestration.validation.F")
     def test_qualified_column_ref_not_flagged(self, mock_F):
-        """``select.flag = 1`` should NOT be flagged as forbidden.
-
-        ``F`` is patched so the ``F.expr()`` call inside ``validate_expression``
-        does not require a live SparkContext (which is unavailable in unit
-        tests). The forbidden-keyword regex check runs before ``F.expr`` is
-        ever reached, so patching ``F`` does not mask the behaviour under test.
-        """
+        """Accept a keyword when it is used as a qualified column name."""
         from kimball.orchestration.validation import DataQualityValidator
 
         validator = DataQualityValidator()
@@ -475,19 +407,12 @@ class TestValidateExpressionFalsePositive:
         result = validator.validate_expression(df, "select.flag = 1")
 
         assert result.passed, (
-            "BUG-DP-002 regression: validate_expression should NOT flag "
-            "'select.flag = 1' as a forbidden SQL keyword when 'select' is "
-            "a table/alias name, not a SQL statement."
+            "A keyword used as a table alias is a valid qualified reference."
         )
 
     @patch("kimball.orchestration.validation.F")
     def test_sql_statement_still_flagged(self, mock_F):
-        """``select * from table`` SHOULD still be flagged.
-
-        The forbidden-keyword regex matches ``select `` (whitespace after the
-        keyword) and short-circuits before ``F.expr`` is invoked, so patching
-        ``F`` does not affect this assertion.
-        """
+        """Reject a SQL statement passed as an expression."""
         from kimball.orchestration.validation import DataQualityValidator
 
         validator = DataQualityValidator()
@@ -496,60 +421,45 @@ class TestValidateExpressionFalsePositive:
         result = validator.validate_expression(df, "select * from table")
 
         assert not result.passed, (
-            "BUG-DP-002 regression: validate_expression should still flag "
-            "actual SQL statements like 'select * from table'."
+            "A SQL statement is not a valid column expression."
         )
 
 
-class TestPreserveAllChangesInitialLoadBug:
-    """BUG-DP-003: ``preserve_all_changes`` with SCD2 did NOT process
-    versions one at a time during the initial load.
-
-    FIX: Added preserve_all_changes check to the initial load path
-    (wm is None), processing one version at a time when enabled.
-    """
+class TestPreserveAllChangesInitialLoad:
+    """Initial SCD2 loads preserve every source version when configured."""
 
     def test_initial_load_processes_one_version_at_a_time(self):
-        """The initial load path (wm is None) should use one-version-at-a-time
-        logic when preserve_all_changes is True."""
+        """Process one source version at a time on the initial load."""
         from kimball.orchestration.services.work_plan import build_source_work_plan
 
         source_code = inspect.getsource(build_source_work_plan)
 
         assert "preserve_all_changes" in source_code, (
-            "BUG-DP-003 regression: preserve_all_changes must select one "
+            "preserve_all_changes must select one "
             "initial source version at a time."
         )
 
 
 class TestFullSnapshotSCD2DeleteDetection:
-    """BUG-DP-004: Full snapshot + SCD2 could not detect source deletes.
-
-    FIX: Added anti-join based delete detection in SCD2Strategy.merge()
-    for when _change_type is not present (full snapshot mode).
-    """
+    """Full-snapshot SCD2 processing detects source deletes."""
 
     def test_scd2_has_full_snapshot_delete_detection(self):
-        """SCD2 merge should have anti-join delete detection for
-        full snapshot mode (no _change_type column)."""
+        """Detect rows missing from a full snapshot."""
         from kimball.processing.scd2 import _merge_single_pass
 
         source_code = inspect.getsource(_merge_single_pass)
 
         assert "filter_cdf_deletes" in source_code or "left_anti" in source_code, (
-            "BUG-DP-004 regression: SCD2 should have delete detection "
+            "SCD2 should have delete detection "
             "for full snapshot mode (when _change_type is absent)."
         )
 
 
 class TestHashdiffOrderInvariance:
-    """BUG-DP-006 (verification): ``compute_hashdiff`` with
-    ``sort_columns=True`` should produce the same hash regardless of
-    column order in the input list. Uses a real Spark DataFrame."""
+    """Hashdiff results do not depend on the order of input columns."""
 
     def test_sorts_columns_alphabetically(self, spark: SparkSession):
-        """Reorders columns in the input list; the hash must be identical
-        because the function sorts alphabetically internally."""
+        """Produce the same hash for every ordering of the same columns."""
         from kimball.processing.hashing import compute_hashdiff
 
         df = spark.createDataFrame([(1, 2, 3)], ["zebra", "apple", "mango"])
@@ -561,25 +471,14 @@ class TestHashdiffOrderInvariance:
         )
 
 
-class TestSCD2HashdiffInInsertValues:
-    """BUG-DP-007 (verification): SCD2 hashdiff column should be included
-    in insert_values so it's persisted in the target table for future
-    change detection.
-    """
-
-
 # =====================================================================
-# 6. ADDITIONAL SCD LOGIC EDGE CASES
-# =====================================================================
-
-
-# =====================================================================
-# 8. FULL RELOAD
+# Watermark reset behavior
 # =====================================================================
 
 
 class TestResetWatermark:
-    """reset_watermark deletes control records so the next run starts fresh."""
+    """Resetting a watermark removes control records for the selected
+    target and source."""
 
     def test_reset_watermark_deletes_by_target_and_source(self):
         from kimball.orchestration.watermark import ETLControlManager

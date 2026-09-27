@@ -1,29 +1,4 @@
-"""Regression tests for the two critical bugs in ``_merge_single_pass``.
-
-These cover the canonical SCD2 single-pass path used for snapshots and CDF
-batches of every size. The bugs covered here were silent data-corruption
-issues; the tests pin the fixed behaviour and fail on the pre-fix code.
-
-Bug 1 -- skeleton hydration
-    When a multi-version batch targets an early-arriving-fact skeleton, the
-    skeleton must be hydrated IN PLACE: it keeps its original surrogate key and
-    takes the latest version's attributes. Before the fix the skeleton was left
-    unfilled and a null-SK duplicate was inserted, orphaning fact FKs that
-    already pointed at the skeleton's SK.
-
-Bug 2 -- expire ``__valid_to`` overlap
-    When >=2 new versions of a key arrive, the old current target row must be
-    expired at ``(oldest_new_valid_from - 1us)``, not
-    ``(latest_new_valid_from - 1us)``. The old behaviour made the expired row's
-    validity interval overlap the back-filled intermediate versions, so a
-    point-in-time read between the oldest and latest new version returned the
-    stale old row instead of the correct intermediate version.
-
-The tests call the public ``merge_scd2`` entry point against real Delta tables
-so the single-pass dispatch and the MERGE are both exercised end-to-end. They
-require a real Spark + Delta session (local or Databricks); they are not
-mock-based.
-"""
+"""Integration tests for multi-version SCD2 merges using Delta tables."""
 
 from __future__ import annotations
 
@@ -228,7 +203,7 @@ class TestIncrementalCdfDeleteSafety:
 
 
 # =====================================================================
-# Bug 1: skeleton hydration
+# Skeleton hydration
 # =====================================================================
 
 
@@ -285,7 +260,7 @@ class TestSinglePassSkeletonHydration:
         assert current[0]["name"] == "Alice"
         assert current[0]["email"] == "alice@y.com"
 
-        # No null-SK duplicate (the original bug inserted one).
+        # Skeleton hydration must update the existing surrogate-key row.
         null_row = spark.sql(
             f"SELECT COUNT(*) AS c FROM {scd2_db}.{TABLE} WHERE customer_sk IS NULL"
         ).first()
@@ -344,7 +319,7 @@ class TestSinglePassSkeletonHydration:
 
 
 # =====================================================================
-# Bug 2: expire __valid_to overlap
+# Validity boundaries
 # =====================================================================
 
 
@@ -407,7 +382,7 @@ class TestSinglePassExpireValidTo:
         expected = expected_row["t"]
         assert old_row["__valid_to"] == expected, (
             f"old row __valid_to should equal oldest_new ({expected}); "
-            f"got {old_row['__valid_to']} (overlap bug if 2024-09-01)"
+            f"got {old_row['__valid_to']} (expected 2024-03-01)"
         )
 
     def test_point_in_time_read_between_versions_returns_intermediate(
@@ -417,8 +392,7 @@ class TestSinglePassExpireValidTo:
         self._seed_old_current(spark, scd2_db)
         _run(spark, scd2_db, self._three_version_batch(spark))
 
-        # Before the fix the old row (alice@old.com) stayed valid through
-        # 2024-08-31 and was returned here, masking the correct intermediate.
+        # The old row must end before the intermediate version begins.
         pit = spark.sql(f"""
             SELECT email
             FROM {scd2_db}.{TABLE}

@@ -1,18 +1,4 @@
-"""``kimball explain`` command logic (ROADMAP 1.3).
-
-Explains a failure or dangerous state from one of three entry points:
-
-* ``--config``        - a compile-time / configuration failure (the common case:
-  no ``etl_control`` row is written, because the run never reached the engine
-  and the H4 optimisation skips synchronous RUNNING writes by default).
-* ``--table``         - diagnose a target's current state via the harness.
-* ``--batch-id``      - attribute a recorded failure to a specific batch and
-  compare its recorded config / source-schema fingerprints to the current ones
-  (drift detection) to answer "the world changed under you".
-
-The diagnosis is categorised via :class:`StructuredError` and mapped to a
-RUNBOOK procedure and a recommended recovery command.
-"""
+"""Classify pipeline failures and link them to runbook procedures."""
 
 from __future__ import annotations
 

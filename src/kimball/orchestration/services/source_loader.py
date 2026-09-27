@@ -27,13 +27,7 @@ class SourceLoader:
     def load(
         self, ctx: PipelineContext, plan: SourceWorkPlan
     ) -> tuple[dict[str, Any], dict[str, DataFrame]]:
-        """Load every active source; register inactive ones as empty views.
-
-        Phases (ADR-004 grade-A pass): active sources are version-tracked,
-        contract-validated, loaded by strategy, CDF-deduplicated, and
-        registered as temp views; inactive (caught-up) sources get an empty
-        frame so transformation SQL still resolves.
-        """
+        """Load active sources and register caught-up sources as empty views."""
         stage_start = time.time()
         source_versions: dict[str, Any] = {}
         active_dfs: dict[str, DataFrame] = {}

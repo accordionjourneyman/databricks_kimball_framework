@@ -1,10 +1,4 @@
-"""Spark-backed providers for the operational harness (ROADMAP 1.1-1.5).
-
-These adapt the existing ``ETLControlManager`` / ``TransactionManager`` /
-Delta history APIs to the :mod:`kimball.ops.providers` protocols. They are
-exercised by integration tests against real Spark+Delta; the harness logic
-itself is unit-tested with fakes and never imports Spark.
-"""
+"""Spark and Delta implementations of the operational provider interfaces."""
 
 from __future__ import annotations
 

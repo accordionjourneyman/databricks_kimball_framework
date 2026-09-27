@@ -252,11 +252,3 @@ The two Type 7 equality joins shown at the beginning are supported directly by
 framework-produced columns. The semantic merger view above must be owned and
 deployed by the consuming data product until first-class semantic-view
 materialization is added.
-
-## Evidence used for this contract
-
-- Kimball Group, [Type 7: Dual Type 1 and Type 2 Dimensions](https://www.kimballgroup.com/data-warehouse-business-intelligence-resources/kimball-techniques/dimensional-modeling-techniques/type-7/)
-- Kimball Group, [Design Tip #152](https://www.kimballgroup.com/2013/02/design-tip-152-slowly-changing-dimension-types-0-4-5-6-7/)
-- dbt Developer Hub, [Snapshots](https://docs.getdbt.com/docs/build/snapshots)
-- Apache Spark, [`xxhash64`](https://spark.apache.org/docs/latest/api/python/reference/pyspark.sql/api/pyspark.sql.functions.xxhash64.html)
-- Databricks, [Constraints](https://docs.databricks.com/aws/en/tables/constraints)

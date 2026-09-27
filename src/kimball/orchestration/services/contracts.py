@@ -94,12 +94,7 @@ class ContractValidator:
     def validate_source(
         self, source: SourceConfig, dataframe: DataFrame | None = None
     ) -> list[ContractFinding]:
-        """Validate the live source shape and CDF requirements, without reading rows.
-
-        Phases (ADR-004 grade-A pass): existence, per-column schema
-        comparison, additive-column policy, CDF requirements, primary-key
-        agreement, and the temporal event-time column.
-        """
+        """Check the source against its declared schema and CDF contract."""
         contract = source.contract
         if contract is None:
             return []

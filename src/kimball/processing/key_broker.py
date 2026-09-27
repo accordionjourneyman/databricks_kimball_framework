@@ -253,13 +253,7 @@ class KeyBroker:
         batch_id: str,
         null_policy: NullPolicyConfig,
     ) -> None:
-        """Create skeleton rows for early-arriving Type 7 fact keys.
-
-        Phases (ADR-004 grade-A pass): contract validation, candidate
-        identity derivation (per-key earliest event time), coverage check
-        against existing SCD2 validity intervals, key generation, system
-        column fill, insert-only merge.
-        """
+        """Create required skeleton members for resolvable Type 7 fact keys."""
         self._validate_type7_contract(fk)
         # _validate_type7_contract raises unless both are set.
         assert fk.lookup is not None and fk.references is not None
@@ -437,13 +431,7 @@ class KeyBroker:
         batch_id: str,
         source_version: int,
     ) -> DataFrame:
-        """Resolve one FK via its lookup against the referenced dimension.
-
-        Phases (ADR-004 grade-A pass): project the dimension to broker
-        columns, join + classify each fact row into a sentinel or real SK,
-        enforce resolution policy (error / skeleton / registry), then strip
-        internal broker columns.
-        """
+        """Resolve one foreign key and apply its configured missing-key policy."""
         lookup = fk.lookup
         assert lookup is not None and fk.references is not None
         dimension = self._read_table(fk.references)
